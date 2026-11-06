@@ -52,6 +52,14 @@ type Entry struct {
 	Data  []byte
 }
 
+// Snapshot is the state of the state machine after applying every entry up to
+// and including Index, whose term was Term. It replaces those log entries.
+type Snapshot struct {
+	Index uint64
+	Term  uint64
+	Data  []byte
+}
+
 // MessageType is the kind of a Message.
 type MessageType int
 
@@ -61,6 +69,10 @@ const (
 	// MsgAppend is the AppendEntries RPC. Without entries it is a heartbeat.
 	MsgAppend
 	MsgAppendResp
+	// MsgSnapshot is the InstallSnapshot RPC: the leader no longer has the
+	// entries a follower needs, so it sends the state they were folded into.
+	MsgSnapshot
+	MsgSnapshotResp
 )
 
 func (t MessageType) String() string {
@@ -73,6 +85,10 @@ func (t MessageType) String() string {
 		return "Append"
 	case MsgAppendResp:
 		return "AppendResp"
+	case MsgSnapshot:
+		return "Snapshot"
+	case MsgSnapshotResp:
+		return "SnapshotResp"
 	default:
 		return fmt.Sprintf("MessageType(%d)", int(t))
 	}
@@ -102,13 +118,17 @@ type Message struct {
 	Entries      []Entry
 	LeaderCommit uint64
 
-	// AppendResp: Success says whether the follower's log matched at
-	// PrevLogIndex. On success MatchIndex is the last index now known to match
-	// the leader's log; on failure HintIndex is the last index the leader can
-	// assume matches, which lets it back up faster than one entry at a time.
+	// AppendResp and SnapshotResp: Success says whether the follower's log
+	// matched at PrevLogIndex (or accepted the snapshot). On success MatchIndex
+	// is the last index now known to match the leader's log; on failure
+	// HintIndex is the last index the leader can assume matches, which lets it
+	// back up faster than one entry at a time.
 	Success    bool
 	MatchIndex uint64
 	HintIndex  uint64
+
+	// Snapshot (InstallSnapshot): the complete snapshot.
+	Snapshot *Snapshot
 }
 
 // HardState is the part of the state that Raft requires to survive a restart.
@@ -126,6 +146,15 @@ type Storage interface {
 	Save(HardState) error
 }
 
+// SnapshotStore persists the latest snapshot. Only the newest one is kept.
+type SnapshotStore interface {
+	// Load returns the saved snapshot, or false if there is none.
+	Load() (Snapshot, bool, error)
+	// Save makes snap the stored snapshot. It must be durable, and an old
+	// snapshot must survive until the new one is completely written.
+	Save(Snapshot) error
+}
+
 // Status is a snapshot of a node.
 type Status struct {
 	ID       NodeID
@@ -137,6 +166,8 @@ type Status struct {
 	CommitIndex uint64
 	// LastIndex is the index of the last entry in the node's log.
 	LastIndex uint64
+	// SnapshotIndex is the last log index covered by the latest snapshot, or 0.
+	SnapshotIndex uint64
 }
 
 // ErrNotLeader is returned when a proposal reaches a node that is not the leader.

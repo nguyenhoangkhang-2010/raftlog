@@ -48,6 +48,7 @@ func TestEnvOverridesDefaults(t *testing.T) {
 	}
 	// The Raft settings were not given, so they keep their defaults.
 	want.ElectionTicks, want.HeartbeatTicks, want.TickInterval = defaultElectionTicks, defaultHeartbeatTicks, defaultTickInterval
+	want.MaxMessageBytes = defaultMaxMessageBytes
 	want.Peers = map[uint64]string{}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v, want %+v", cfg, want)

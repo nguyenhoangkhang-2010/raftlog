@@ -26,7 +26,7 @@ Consumer ◄── read by offset
 - [x] Topics, partitions, committed offsets per consumer group (no dynamic membership or rebalance yet)
 - [x] Raft leader election: terms, randomized timeouts, durable vote, heartbeats, step-down
 - [x] Raft log replication: durable log (WAL), AppendEntries with consistency check, commit index, batching, catch-up of lagging followers
-- [ ] Raft snapshots and log compaction
+- [x] Raft snapshots: log compaction, InstallSnapshot for followers that fell behind, recovery from a snapshot at startup
 - [ ] Broker data (produce, offsets) replicated through the Raft log
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking

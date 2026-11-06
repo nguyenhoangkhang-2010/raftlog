@@ -2,6 +2,7 @@ package raft
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"math/rand"
 	"sort"
@@ -37,6 +38,7 @@ type failingLog struct {
 	LogStore
 	failAppend   error
 	failTruncate error
+	failCompact  error
 }
 
 func (l *failingLog) Append(entries []Entry) error {
@@ -51,6 +53,26 @@ func (l *failingLog) TruncateSuffix(from uint64) error {
 		return l.failTruncate
 	}
 	return l.LogStore.TruncateSuffix(from)
+}
+
+func (l *failingLog) CompactTo(index, term uint64) error {
+	if l.failCompact != nil {
+		return l.failCompact
+	}
+	return l.LogStore.CompactTo(index, term)
+}
+
+// failingSnapshots wraps a SnapshotStore and fails saves on demand.
+type failingSnapshots struct {
+	SnapshotStore
+	failSave error
+}
+
+func (s *failingSnapshots) Save(snap Snapshot) error {
+	if s.failSave != nil {
+		return s.failSave
+	}
+	return s.SnapshotStore.Save(snap)
 }
 
 // logWithTerms returns a log whose entry i+1 has term terms[i].
@@ -102,9 +124,13 @@ func clusterIDs(size int) []NodeID {
 
 // cluster is a simulated network of nodes driven by logical ticks. Delivery is
 // instantaneous and in order; links can be cut, and nodes can crash and restart
-// (keeping their storage and log, as a real process would).
+// (keeping their storage, log and snapshot, as a real process would).
 //
-// It also watches the safety properties of Raft while a test runs:
+// Each node has a tiny state machine: the list of entries it has applied. With
+// a snapshot policy, nodes snapshot that list every few entries and load the
+// snapshots that leaders send them.
+//
+// The cluster watches the safety properties of Raft while a test runs:
 //   - election safety: at most one leader per term;
 //   - log matching: two logs that agree on an entry agree on everything before it;
 //   - state machine safety: no two nodes ever apply different entries at the
@@ -117,18 +143,30 @@ type cluster struct {
 	nodes   map[NodeID]*Node
 	stores  map[NodeID]*memStorage
 	logs    map[NodeID]*MemoryLog
+	snaps   map[NodeID]*MemorySnapshotStore
 	down    map[NodeID]bool
 	blocked map[[2]NodeID]bool
 	queue   []Message
 	seed    int64
 	restart int64 // makes the RNG of a restarted node differ from before
 
+	snapEvery    uint64 // 0 disables snapshots
+	snapTrailing uint64
+	snapIdx      map[NodeID]uint64 // index of each node's latest snapshot
+
 	leaderOfTerm map[uint64]NodeID
-	applied      map[NodeID][]Entry // what each node's state machine has applied
+	applied      map[NodeID][]Entry // what each node's state machine holds
 	committed    map[uint64]Entry   // first entry seen committed at each index
+	delivered    map[MessageType]int
 }
 
 func newCluster(t *testing.T, size int, seed int64) *cluster {
+	return newClusterWithSnapshots(t, size, seed, 0, 0)
+}
+
+// newClusterWithSnapshots makes every node snapshot after every `every` applied
+// entries and keep `trailing` entries in the log below the snapshot.
+func newClusterWithSnapshots(t *testing.T, size int, seed int64, every, trailing uint64) *cluster {
 	t.Helper()
 	c := &cluster{
 		t:            t,
@@ -136,27 +174,36 @@ func newCluster(t *testing.T, size int, seed int64) *cluster {
 		nodes:        make(map[NodeID]*Node),
 		stores:       make(map[NodeID]*memStorage),
 		logs:         make(map[NodeID]*MemoryLog),
+		snaps:        make(map[NodeID]*MemorySnapshotStore),
 		down:         make(map[NodeID]bool),
 		blocked:      make(map[[2]NodeID]bool),
 		seed:         seed,
+		snapEvery:    every,
+		snapTrailing: trailing,
+		snapIdx:      make(map[NodeID]uint64),
 		leaderOfTerm: make(map[uint64]NodeID),
 		applied:      make(map[NodeID][]Entry),
 		committed:    make(map[uint64]Entry),
+		delivered:    make(map[MessageType]int),
 	}
 	for _, id := range c.ids {
 		c.stores[id] = &memStorage{}
 		c.logs[id] = NewMemoryLog()
+		c.snaps[id] = NewMemorySnapshotStore()
 		c.start(id)
 	}
 	return c
 }
 
-// start (re)creates the node from its storage and log, like a process restart.
-// The state machine starts empty and is rebuilt from the replayed log.
+// start (re)creates the node from its storage, log and snapshot, like a process
+// restart. The state machine starts empty and is rebuilt from the snapshot and
+// the log.
 func (c *cluster) start(id NodeID) {
 	c.t.Helper()
 	cfg := testConfig(id, c.ids, c.stores[id], c.seed*1000+int64(id)+c.restart)
 	cfg.Log = c.logs[id]
+	cfg.Snapshots = c.snaps[id]
+	cfg.SnapshotTrailing = c.snapTrailing
 	n, err := New(cfg)
 	if err != nil {
 		c.t.Fatalf("New(%d): %v", id, err)
@@ -164,6 +211,8 @@ func (c *cluster) start(id NodeID) {
 	c.nodes[id] = n
 	c.down[id] = false
 	c.applied[id] = nil
+	c.snapIdx[id] = 0
+	c.collect(id) // load the snapshot the node found on disk, if any
 }
 
 func (c *cluster) crash(id NodeID) { c.down[id] = true }
@@ -203,12 +252,43 @@ func (c *cluster) split(group ...NodeID) {
 
 func (c *cluster) heal() { c.blocked = make(map[[2]NodeID]bool) }
 
+// record notes that a node applied e, and checks it against what every other
+// node applied at the same index.
+func (c *cluster) record(id NodeID, e Entry) {
+	c.t.Helper()
+	if first, ok := c.committed[e.Index]; ok {
+		if first.Term != e.Term || first.Type != e.Type || !bytes.Equal(first.Data, e.Data) {
+			c.t.Fatalf("state machine safety violated at index %d: node %d applied (term %d, %q), another node applied (term %d, %q)",
+				e.Index, id, e.Term, e.Data, first.Term, first.Data)
+		}
+	} else {
+		c.committed[e.Index] = e
+	}
+}
+
 // collect moves what a node produced into the network and the state machine.
 func (c *cluster) collect(id NodeID) {
 	c.t.Helper()
-	c.queue = append(c.queue, c.nodes[id].Messages()...)
+	node := c.nodes[id]
+	c.queue = append(c.queue, node.Messages()...)
 
-	entries, err := c.nodes[id].Committed()
+	// A snapshot from the leader replaces the whole state machine.
+	if s := node.TakeRestore(); s != nil {
+		var entries []Entry
+		if err := json.Unmarshal(s.Data, &entries); err != nil {
+			c.t.Fatalf("node %d: bad snapshot data: %v", id, err)
+		}
+		if uint64(len(entries)) != s.Index {
+			c.t.Fatalf("node %d: snapshot at index %d holds %d entries", id, s.Index, len(entries))
+		}
+		for _, e := range entries {
+			c.record(id, e)
+		}
+		c.applied[id] = entries
+		c.snapIdx[id] = s.Index
+	}
+
+	entries, err := node.Committed()
 	if err != nil {
 		c.t.Fatalf("node %d Committed: %v", id, err)
 	}
@@ -218,15 +298,19 @@ func (c *cluster) collect(id NodeID) {
 			c.t.Fatalf("node %d applied index %d after %d entries: not in order", id, e.Index, len(have))
 		}
 		c.applied[id] = append(have, e)
+		c.record(id, e)
+	}
 
-		if first, ok := c.committed[e.Index]; ok {
-			if first.Term != e.Term || first.Type != e.Type || !bytes.Equal(first.Data, e.Data) {
-				c.t.Fatalf("state machine safety violated at index %d: node %d applied (term %d, %q), another node applied (term %d, %q)",
-					e.Index, id, e.Term, e.Data, first.Term, first.Data)
-			}
-		} else {
-			c.committed[e.Index] = e
+	if c.snapEvery > 0 && uint64(len(c.applied[id])) >= c.snapIdx[id]+c.snapEvery {
+		idx := uint64(len(c.applied[id]))
+		data, err := json.Marshal(c.applied[id])
+		if err != nil {
+			c.t.Fatal(err)
 		}
+		if err := node.Compact(idx, data); err != nil {
+			c.t.Fatalf("node %d Compact(%d): %v", id, idx, err)
+		}
+		c.snapIdx[id] = idx
 	}
 }
 
@@ -257,6 +341,7 @@ func (c *cluster) deliver() {
 		if c.down[m.To] || c.blocked[[2]NodeID{m.From, m.To}] {
 			continue
 		}
+		c.delivered[m.Type]++
 		if err := c.nodes[m.To].Step(m); err != nil {
 			c.t.Fatalf("node %d Step(%v from %d): %v", m.To, m.Type, m.From, err)
 		}
@@ -307,23 +392,26 @@ func (c *cluster) checkSafety() {
 	}
 }
 
-// checkLogMatching enforces the log matching property for every pair of logs.
+// checkLogMatching enforces the log matching property for every pair of logs,
+// over the part of the log that both still hold (compacted entries are gone).
 func (c *cluster) checkLogMatching() {
 	c.t.Helper()
 	for i, a := range c.ids {
 		for _, b := range c.ids[i+1:] {
-			la, lb := c.logs[a].entries, c.logs[b].entries
+			la, lb := c.logs[a], c.logs[b]
+			lo := max(la.baseIndex, lb.baseIndex) + 1
+			hi := min(la.LastIndex(), lb.LastIndex())
 			// Find the highest index at which both logs have the same term...
-			for k := min(len(la), len(lb)); k >= 1; k-- {
-				if la[k-1].Term != lb[k-1].Term {
+			for k := hi; k >= lo; k-- {
+				if la.entries[k-la.baseIndex-1].Term != lb.entries[k-lb.baseIndex-1].Term {
 					continue
 				}
-				// ...and everything up to it must be identical.
-				for j := 1; j <= k; j++ {
-					x, y := la[j-1], lb[j-1]
+				// ...and everything from lo up to it must be identical.
+				for j := lo; j <= k; j++ {
+					x, y := la.entries[j-la.baseIndex-1], lb.entries[j-lb.baseIndex-1]
 					if x.Term != y.Term || x.Type != y.Type || !bytes.Equal(x.Data, y.Data) {
 						c.t.Fatalf("log matching violated: nodes %d and %d agree on index %d (term %d) but differ at index %d",
-							a, b, k, la[k-1].Term, j)
+							a, b, k, x.Term, j)
 					}
 				}
 				break
