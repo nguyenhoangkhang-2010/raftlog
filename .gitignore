@@ -1,0 +1,27 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Runtime data (broker log segments, raft state)
+/data/
+*.log
+*.wal
+*.snap
+
+# Go
+/vendor/
+coverage.txt
+coverage.html
+
+# Env / secrets
+.env
+.env.*
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

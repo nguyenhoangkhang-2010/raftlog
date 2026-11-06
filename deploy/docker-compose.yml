@@ -1,0 +1,33 @@
+# 3-node raftlog cluster + Prometheus + Grafana.
+# TODO: the raftlogd flags below are placeholders until the server is implemented.
+services:
+  node1:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: ["--id=1", "--listen=:9001", "--peers=node1:9001,node2:9002,node3:9003", "--data=/data"]
+    ports: ["9001:9001", "2112:2112"]
+    volumes: ["node1-data:/data"]
+  node2:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: ["--id=2", "--listen=:9002", "--peers=node1:9001,node2:9002,node3:9003", "--data=/data"]
+    ports: ["9002:9002", "2113:2112"]
+    volumes: ["node2-data:/data"]
+  node3:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: ["--id=3", "--listen=:9003", "--peers=node1:9001,node2:9002,node3:9003", "--data=/data"]
+    ports: ["9003:9003", "2114:2112"]
+    volumes: ["node3-data:/data"]
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes: ["./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:latest
+    ports: ["3000:3000"]
+    volumes: ["./grafana:/var/lib/grafana/dashboards"]
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
