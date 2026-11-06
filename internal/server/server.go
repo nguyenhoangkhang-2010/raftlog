@@ -21,7 +21,6 @@ type Options struct {
 }
 
 // Server implements the Broker gRPC service on top of a broker.Broker.
-// CommitOffset is not implemented yet and answers codes.Unimplemented.
 type Server struct {
 	pb.UnimplementedBrokerServer
 	broker *broker.Broker
@@ -97,6 +96,28 @@ func (s *Server) Fetch(_ context.Context, req *pb.FetchRequest) (*pb.FetchRespon
 	return &pb.FetchResponse{Messages: out}, nil
 }
 
+// CommitOffset records the position of a consumer group in a partition.
+func (s *Server) CommitOffset(_ context.Context, req *pb.CommitOffsetRequest) (*pb.CommitOffsetResponse, error) {
+	if err := s.broker.CommitOffset(req.GetGroup(), req.GetTopic(), int(req.GetPartition()), req.GetOffset()); err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.CommitOffsetResponse{}, nil
+}
+
+// FetchOffset returns the committed offset of a consumer group and its lag.
+func (s *Server) FetchOffset(_ context.Context, req *pb.FetchOffsetRequest) (*pb.FetchOffsetResponse, error) {
+	info, err := s.broker.GroupOffset(req.GetGroup(), req.GetTopic(), int(req.GetPartition()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.FetchOffsetResponse{
+		Committed: info.Committed,
+		Offset:    info.Offset,
+		EndOffset: info.End,
+		Lag:       info.Lag(),
+	}, nil
+}
+
 // toStatus maps broker and storage errors to gRPC status codes.
 func toStatus(err error) error {
 	switch {
@@ -108,9 +129,10 @@ func toStatus(err error) error {
 		errors.Is(err, broker.ErrInvalidPartitions),
 		errors.Is(err, broker.ErrInvalidPartition),
 		errors.Is(err, broker.ErrEmptyBatch),
+		errors.Is(err, broker.ErrInvalidGroup),
 		errors.Is(err, storage.ErrRecordTooLarge):
 		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, storage.ErrOffsetOutOfRange):
+	case errors.Is(err, storage.ErrOffsetOutOfRange), errors.Is(err, broker.ErrOffsetBeyondEnd):
 		return status.Error(codes.OutOfRange, err.Error())
 	case errors.Is(err, broker.ErrClosed), errors.Is(err, storage.ErrClosed):
 		return status.Error(codes.Unavailable, err.Error())

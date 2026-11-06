@@ -74,6 +74,8 @@ type Broker struct {
 	opts   Options
 	topics map[string]*topic
 	closed bool
+
+	offsets *offsetStore
 }
 
 // Open opens the broker data under dir, loading every topic found there.
@@ -105,6 +107,13 @@ func Open(dir string, opts Options) (*Broker, error) {
 		}
 		b.topics[t.name] = t
 	}
+
+	offsets, err := openOffsetStore(dir, opts.Storage)
+	if err != nil {
+		_ = b.Close()
+		return nil, err
+	}
+	b.offsets = offsets
 	return b, nil
 }
 
@@ -305,6 +314,9 @@ func (b *Broker) Close() error {
 	var errs []error
 	for _, t := range b.topics {
 		errs = append(errs, t.close())
+	}
+	if b.offsets != nil {
+		errs = append(errs, b.offsets.close())
 	}
 	return errors.Join(errs...)
 }

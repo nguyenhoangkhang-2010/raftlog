@@ -23,7 +23,7 @@ Consumer ◄── read by offset
 ## Features (roadmap)
 - [x] Append-only log storage with segments and sparse index
 - [x] gRPC API: `CreateTopic`, `Produce`, `Fetch` (`CommitOffset` comes with consumer groups)
-- [ ] Topics, partitions, consumer groups
+- [x] Topics, partitions, committed offsets per consumer group (no dynamic membership or rebalance yet)
 - [ ] Raft: leader election, log replication, persistence, snapshots
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
