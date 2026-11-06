@@ -28,7 +28,7 @@ Consumer ◄── read by offset
 - [x] Raft log replication: durable log (WAL), AppendEntries with consistency check, commit index, batching, catch-up of lagging followers
 - [x] Raft snapshots: log compaction, InstallSnapshot for followers that fell behind, recovery from a snapshot at startup
 - [x] Broker data replicated through the Raft log: topics, produce and consumer offsets survive the loss of a node; clients follow the leader
-- [ ] Chaos tests with a linearizability checker
+- [x] Chaos tests: real processes killed and partitioned while clients write; the history is checked for lost, duplicated or misordered writes and dirty reads (`test/chaos`)
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
 - [ ] Prometheus metrics and Grafana dashboard
