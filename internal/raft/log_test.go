@@ -142,7 +142,7 @@ func testLogStore(t *testing.T, open func(t *testing.T) LogStore) {
 }
 
 func TestMemoryLog(t *testing.T) {
-	testLogStore(t, func(t *testing.T) LogStore { return NewMemoryLog() })
+	testLogStore(t, func(*testing.T) LogStore { return NewMemoryLog() })
 }
 
 func TestFileLogBehavesLikeAnyLogStore(t *testing.T) {
