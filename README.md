@@ -24,7 +24,8 @@ Consumer ◄── read by offset
 - [x] Append-only log storage with segments and sparse index
 - [x] gRPC API: `CreateTopic`, `Produce`, `Fetch` (`CommitOffset` comes with consumer groups)
 - [x] Topics, partitions, committed offsets per consumer group (no dynamic membership or rebalance yet)
-- [ ] Raft: leader election, log replication, persistence, snapshots
+- [x] Raft leader election: terms, randomized timeouts, durable vote, heartbeats, step-down
+- [ ] Raft log replication, commit index, snapshots
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
 - [ ] Prometheus metrics and Grafana dashboard

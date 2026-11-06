@@ -10,6 +10,7 @@ import (
 
 	pb "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/broker"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/raft"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/storage"
 )
 
@@ -18,6 +19,14 @@ type Options struct {
 	// MaxFetchMessages caps the number of messages one Fetch may return.
 	// It must be at least 1.
 	MaxFetchMessages int
+	// Raft reports the Raft state of this node. Optional: nil means the node
+	// runs standalone.
+	Raft RaftStatus
+}
+
+// RaftStatus is implemented by raft.Runner.
+type RaftStatus interface {
+	Status() raft.Status
 }
 
 // Server implements the Broker gRPC service on top of a broker.Broker.
@@ -115,6 +124,21 @@ func (s *Server) FetchOffset(_ context.Context, req *pb.FetchOffsetRequest) (*pb
 		Offset:    info.Offset,
 		EndOffset: info.End,
 		Lag:       info.Lag(),
+	}, nil
+}
+
+// NodeStatus reports the Raft role of this node.
+func (s *Server) NodeStatus(context.Context, *pb.NodeStatusRequest) (*pb.NodeStatusResponse, error) {
+	if s.opts.Raft == nil {
+		return &pb.NodeStatusResponse{RaftEnabled: false}, nil
+	}
+	st := s.opts.Raft.Status()
+	return &pb.NodeStatusResponse{
+		RaftEnabled: true,
+		NodeId:      uint64(st.ID),
+		Role:        st.Role.String(),
+		Term:        st.Term,
+		LeaderId:    uint64(st.Leader),
 	}, nil
 }
 

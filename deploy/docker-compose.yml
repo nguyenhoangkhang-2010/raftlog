@@ -1,19 +1,51 @@
-# One raftlogd node. A 3-node Raft cluster comes in a later branch.
-# Every value below can be overridden from the shell or a .env file, e.g.
-#   RAFTLOG_PORT=9093 docker compose -f deploy/docker-compose.yml up --build
-# The node itself is configured through RAFTLOG_* environment variables
-# (see internal/config).
+# A 3-node raftlog cluster. The nodes elect a leader among themselves
+# (log replication comes in a later branch, so produced data is not replicated yet).
+#
+# Every value can be overridden from the shell or a .env file, e.g.
+#   RAFTLOG_PORT_1=19091 docker compose -f deploy/docker-compose.yml up --build
+# Each node is configured through RAFTLOG_* environment variables
+# (see internal/config). Inside the compose network the nodes reach each other
+# by service name on port 9092.
+#
+# Try it:  raftlogctl -addr localhost:9091 status     (repeat for 9092, 9093)
+#          docker compose -f deploy/docker-compose.yml stop <the leader's service>
+x-node: &node
+  build: { context: .., dockerfile: deploy/Dockerfile }
+  environment: &node-env
+    RAFTLOG_LISTEN_ADDR: ":9092"
+    RAFTLOG_DATA_DIR: "/data"
+    RAFTLOG_PEERS: "1=node1:9092,2=node2:9092,3=node3:9092"
+    RAFTLOG_ELECTION_TICKS: "${RAFTLOG_ELECTION_TICKS:-10}"
+    RAFTLOG_HEARTBEAT_TICKS: "${RAFTLOG_HEARTBEAT_TICKS:-1}"
+    RAFTLOG_TICK_INTERVAL: "${RAFTLOG_TICK_INTERVAL:-100ms}"
+    RAFTLOG_SEGMENT_MAX_BYTES: "${RAFTLOG_SEGMENT_MAX_BYTES:-0}"
+    RAFTLOG_INDEX_INTERVAL_BYTES: "${RAFTLOG_INDEX_INTERVAL_BYTES:-0}"
+    RAFTLOG_SYNC_ON_APPEND: "${RAFTLOG_SYNC_ON_APPEND:-false}"
+
 services:
-  raftlogd:
-    build: { context: .., dockerfile: deploy/Dockerfile }
+  node1:
+    <<: *node
     environment:
-      RAFTLOG_LISTEN_ADDR: ":9092"
-      RAFTLOG_DATA_DIR: "/data"
-      RAFTLOG_SEGMENT_MAX_BYTES: "${RAFTLOG_SEGMENT_MAX_BYTES:-0}"
-      RAFTLOG_INDEX_INTERVAL_BYTES: "${RAFTLOG_INDEX_INTERVAL_BYTES:-0}"
-      RAFTLOG_SYNC_ON_APPEND: "${RAFTLOG_SYNC_ON_APPEND:-false}"
-    ports: ["${RAFTLOG_PORT:-9092}:9092"]
-    volumes: ["raftlog-data:/data"]
+      <<: *node-env
+      RAFTLOG_NODE_ID: "1"
+    ports: ["${RAFTLOG_PORT_1:-9091}:9092"]
+    volumes: ["node1-data:/data"]
+  node2:
+    <<: *node
+    environment:
+      <<: *node-env
+      RAFTLOG_NODE_ID: "2"
+    ports: ["${RAFTLOG_PORT_2:-9092}:9092"]
+    volumes: ["node2-data:/data"]
+  node3:
+    <<: *node
+    environment:
+      <<: *node-env
+      RAFTLOG_NODE_ID: "3"
+    ports: ["${RAFTLOG_PORT_3:-9093}:9092"]
+    volumes: ["node3-data:/data"]
 
 volumes:
-  raftlog-data:
+  node1-data:
+  node2-data:
+  node3-data:
