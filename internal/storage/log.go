@@ -23,6 +23,10 @@ type Options struct {
 	// SegmentMaxBytes is the size at which a new segment is started.
 	// Defaults to 64 MiB.
 	SegmentMaxBytes int64
+	// IndexIntervalBytes is how many bytes of log data pass between two
+	// entries of the sparse offset index. A smaller value makes reads faster
+	// and the index bigger. Defaults to 4096.
+	IndexIntervalBytes int64
 	// SyncOnAppend calls fsync after every Append. It is the durable setting
 	// and the slow one; batching and group commit come later.
 	SyncOnAppend bool
@@ -46,6 +50,9 @@ func Open(dir string, opts Options) (*Log, error) {
 	if opts.SegmentMaxBytes <= 0 {
 		opts.SegmentMaxBytes = defaultSegmentMaxBytes
 	}
+	if opts.IndexIntervalBytes <= 0 {
+		opts.IndexIntervalBytes = defaultIndexIntervalBytes
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
 	}
@@ -61,7 +68,7 @@ func Open(dir string, opts Options) (*Log, error) {
 	}
 	for i, base := range bases {
 		isActive := i == len(bases)-1
-		seg, err := openSegment(dir, base, isActive)
+		seg, err := openSegment(dir, base, isActive, opts.IndexIntervalBytes)
 		if err != nil {
 			_ = l.closeSegments()
 			return nil, err
@@ -140,7 +147,7 @@ func (l *Log) roll() (*segment, error) {
 	if err := old.sync(); err != nil {
 		return nil, fmt.Errorf("sync before roll: %w", err)
 	}
-	next, err := openSegment(l.dir, old.nextOffset, true)
+	next, err := openSegment(l.dir, old.nextOffset, true, l.opts.IndexIntervalBytes)
 	if err != nil {
 		return nil, err
 	}
