@@ -65,7 +65,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 		if err != nil {
 			return err
 		}
-		defer closeTransport()
+		defer func() { _ = closeTransport() }() // shutting down: nothing useful to do with a close error
 		srvOpts.Raft = runner
 	}
 
