@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1"
+	"github.com/nguyenhoangkhang-2010/raftlog/client"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/server"
 )
 
@@ -479,6 +480,104 @@ func TestANodeThatFellBehindIsRebuiltFromASnapshot(t *testing.T) {
 			t.Fatalf("late node: status %+v, offset %+v, err %v; want a snapshot and the committed offset 7", st, off, err)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestTheClientLibraryRidesThroughALeaderFailover(t *testing.T) {
+	// A program that uses the client library does nothing special about failures:
+	// it keeps calling Produce. The library follows the leader and waits out the
+	// election.
+	c := newTestCluster(t, 3)
+	c.startAll()
+	leader := c.waitForLeader()
+
+	addrs := make([]string, len(c.nodes))
+	for i, n := range c.nodes {
+		addrs[i] = n.addr
+	}
+	cl, err := client.New(addrs, client.WithRetryPause(20*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+
+	call := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 30*time.Second)
+	}
+	ctx, cancel := call()
+	if err := cl.CreateTopic(ctx, "events", 1); err != nil && !strings.Contains(err.Error(), "already exists") {
+		t.Fatal(err)
+	}
+	cancel()
+
+	var sent []string
+	produce := func(from, to int) {
+		for i := from; i < to; i++ {
+			v := fmt.Sprintf("m-%03d", i)
+			ctx, cancel := call()
+			_, err := cl.Produce(ctx, "events", []client.Message{{Key: []byte("k"), Value: []byte(v)}}, client.ToPartition(0))
+			cancel()
+			if err != nil {
+				t.Fatalf("Produce(%s): %v", v, err)
+			}
+			sent = append(sent, v)
+		}
+	}
+
+	produce(0, 20)
+	c.stop(leader) // the leader dies; the next Produce calls must still succeed
+	produce(20, 40)
+
+	// Read everything back through the client, from whichever nodes answer.
+	var got []string
+	for offset := uint64(0); ; {
+		ctx, cancel := call()
+		recs, err := cl.Fetch(ctx, "events", 0, offset, 1000)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recs) == 0 {
+			break
+		}
+		for _, r := range recs {
+			got = append(got, string(r.Value))
+		}
+		offset = recs[len(recs)-1].Offset + 1
+	}
+
+	// Delivery is at-least-once: a write that was applied just as the leader died
+	// may have been repeated by the library. So every message must be there and
+	// in order, but a repeat is allowed.
+	next := 0
+	for _, v := range got {
+		if next < len(sent) && v == sent[next] {
+			next++
+		}
+	}
+	if next != len(sent) {
+		t.Fatalf("the log does not contain the %d acknowledged messages in order: it holds %d messages, matched %d", len(sent), len(got), next)
+	}
+	if len(got) != len(sent) {
+		t.Logf("%d message(s) were stored twice because a retry followed an ambiguous failure (allowed: at-least-once)", len(got)-len(sent))
+	}
+
+	// The survivors agree on a leader, which is not the node that was stopped.
+	roles := map[string]int{}
+	for _, n := range c.nodes {
+		if n == leader {
+			continue
+		}
+		ctx, cancel := call()
+		st, err := cl.NodeStatus(ctx, n.addr)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		roles[st.Role]++
+	}
+	if roles["leader"] != 1 || roles["follower"] != 1 {
+		t.Fatalf("roles among the survivors = %v, want one leader and one follower", roles)
 	}
 }
 

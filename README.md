@@ -54,6 +54,23 @@ raftlogctl -addr 127.0.0.1:9091 status     # role, term, leader, commit and snap
 ```
 Stop the leader and keep producing: the writes continue on the new leader.
 
+## Use it from Go
+The `client` package is the same leader-following client that `raftlogctl` uses.
+Give it every node's address; it finds the leader, follows leader changes and waits
+out an election (bounded by the context you pass):
+```go
+c, err := client.New([]string{"127.0.0.1:9091", "127.0.0.1:9092", "127.0.0.1:9093"})
+if err != nil { /* ... */ }
+defer c.Close()
+
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+_, err = c.Produce(ctx, "orders", []client.Message{{Key: []byte("user-1"), Value: []byte("hello")}})
+if errors.Is(err, client.ErrNotFound) { /* the topic does not exist */ }
+```
+Delivery is at-least-once: a request that failed after the leader stored it may be
+stored again when you retry, so consumers should tolerate repeats (see `client/doc.go`).
+
 ## Known limitations
 - One Raft group for the whole cluster: every write goes through a single leader.
 - A snapshot is a copy of all data held in memory and sent in one message
@@ -76,6 +93,7 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 |---|---|
 | `cmd/raftlogd` | Broker server |
 | `cmd/raftlogctl` | CLI client |
+| `client` | Go client library: finds the leader, follows failover |
 | `internal/storage` | Segments, index, crash recovery |
 | `internal/raft` | Raft consensus implementation |
 | `internal/broker` | Topics, partitions, consumer groups |
