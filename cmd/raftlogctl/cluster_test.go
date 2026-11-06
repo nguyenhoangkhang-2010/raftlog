@@ -87,11 +87,11 @@ func TestAWriteFollowsTheLeaderHintOfAFollower(t *testing.T) {
 	follower, backend := startRefusing(t, &raft.NotLeaderError{Leader: 2}, leader)
 
 	// Only the follower's address is given; it names the leader.
-	code, out, e := ctl(t, follower, "", "-retry-pause", "1ms", "create-topic", "events")
+	code, _, e := ctl(t, follower, "", "-retry-pause", "1ms", "create-topic", "events")
 	if code != 0 {
 		t.Fatalf("create-topic: code %d, stderr %q", code, e)
 	}
-	code, out, e = ctl(t, follower, "", "-retry-pause", "1ms", "produce", "-value", "hello", "events")
+	code, out, e := ctl(t, follower, "", "-retry-pause", "1ms", "produce", "-value", "hello", "events")
 	if code != 0 || !strings.Contains(out, "base_offset=0") {
 		t.Fatalf("produce: code %d, stdout %q, stderr %q", code, out, e)
 	}
