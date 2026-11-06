@@ -10,6 +10,7 @@ service Broker {
   rpc Produce(ProduceRequest) returns (ProduceResponse);
   rpc Fetch(FetchRequest) returns (FetchResponse);
   rpc CommitOffset(CommitOffsetRequest) returns (CommitOffsetResponse);
+  rpc FetchOffset(FetchOffsetRequest) returns (FetchOffsetResponse);
 }
 
 message Message {
@@ -29,6 +30,9 @@ message CreateTopicResponse {}
 message ProduceRequest {
   string topic = 1;
   repeated Message messages = 2;
+  // If unset, the broker picks the partition from the key of the first message.
+  // All messages in one request go to the same partition.
+  optional uint32 partition = 3;
 }
 message ProduceResponse {
   uint32 partition = 1;
@@ -52,6 +56,23 @@ message CommitOffsetRequest {
   uint64 offset = 4;
 }
 message CommitOffsetResponse {}
+
+message FetchOffsetRequest {
+  string group = 1;
+  string topic = 2;
+  uint32 partition = 3;
+}
+message FetchOffsetResponse {
+  // False if the group has not committed an offset for this partition yet;
+  // offset is then 0 and the consumer should start from the beginning.
+  bool committed = 1;
+  // The committed offset: the next offset the group will consume.
+  uint64 offset = 2;
+  // The offset the next produced message will get.
+  uint64 end_offset = 3;
+  // end_offset - offset, i.e. how many messages the group has not consumed.
+  uint64 lag = 4;
+}
 
 // TODO(phase 3): internal Raft RPCs (RequestVote, AppendEntries, InstallSnapshot)
 // live in api/raftlog/v1/raft.proto.
