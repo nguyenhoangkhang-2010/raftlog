@@ -18,6 +18,18 @@ jobs:
       - name: Test (race detector)
         run: make test
 
+  # Real processes, killed and cut off from each other while clients write. It
+  # runs apart from the unit tests because it takes a couple of minutes.
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Chaos tests
+        run: make chaos
+
   lint:
     runs-on: ubuntu-latest
     steps:
