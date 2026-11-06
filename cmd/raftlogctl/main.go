@@ -264,7 +264,8 @@ func cmdStatus(ctx context.Context, c pb.BrokerClient, args []string, stdout, st
 		fmt.Fprintln(stdout, "raft=disabled (standalone node)")
 		return 0
 	}
-	fmt.Fprintf(stdout, "node=%d role=%s term=%d leader=%d\n", resp.NodeId, resp.Role, resp.Term, resp.LeaderId)
+	fmt.Fprintf(stdout, "node=%d role=%s term=%d leader=%d commit=%d last=%d\n",
+		resp.NodeId, resp.Role, resp.Term, resp.LeaderId, resp.CommitIndex, resp.LastIndex)
 	return 0
 }
 

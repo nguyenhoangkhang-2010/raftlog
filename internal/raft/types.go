@@ -1,6 +1,9 @@
 package raft
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // NodeID identifies a member of the cluster. Zero is reserved to mean "none".
 type NodeID uint64
@@ -30,16 +33,34 @@ func (r Role) String() string {
 	}
 }
 
+// EntryType tells the state machine what to do with a log entry.
+type EntryType int
+
+const (
+	// EntryNormal carries a command proposed by a client.
+	EntryNormal EntryType = iota
+	// EntryNoop is appended by a new leader. Committing it also commits every
+	// entry from earlier terms before it, and it carries no command.
+	EntryNoop
+)
+
+// Entry is one element of the replicated log. Indexes start at 1.
+type Entry struct {
+	Index uint64
+	Term  uint64
+	Type  EntryType
+	Data  []byte
+}
+
 // MessageType is the kind of a Message.
 type MessageType int
 
 const (
 	MsgRequestVote MessageType = iota + 1
 	MsgRequestVoteResp
-	// MsgHeartbeat is an AppendEntries RPC without entries. Log replication
-	// will extend it in a later branch.
-	MsgHeartbeat
-	MsgHeartbeatResp
+	// MsgAppend is the AppendEntries RPC. Without entries it is a heartbeat.
+	MsgAppend
+	MsgAppendResp
 )
 
 func (t MessageType) String() string {
@@ -48,10 +69,10 @@ func (t MessageType) String() string {
 		return "RequestVote"
 	case MsgRequestVoteResp:
 		return "RequestVoteResp"
-	case MsgHeartbeat:
-		return "Heartbeat"
-	case MsgHeartbeatResp:
-		return "HeartbeatResp"
+	case MsgAppend:
+		return "Append"
+	case MsgAppendResp:
+		return "AppendResp"
 	default:
 		return fmt.Sprintf("MessageType(%d)", int(t))
 	}
@@ -73,8 +94,21 @@ type Message struct {
 
 	// RequestVoteResp: whether the vote was granted.
 	Granted bool
-	// HeartbeatResp: false if the heartbeat came from a stale leader.
-	Success bool
+
+	// Append: the entry that immediately precedes Entries in the leader's log,
+	// the entries to store, and the leader's commit index.
+	PrevLogIndex uint64
+	PrevLogTerm  uint64
+	Entries      []Entry
+	LeaderCommit uint64
+
+	// AppendResp: Success says whether the follower's log matched at
+	// PrevLogIndex. On success MatchIndex is the last index now known to match
+	// the leader's log; on failure HintIndex is the last index the leader can
+	// assume matches, which lets it back up faster than one entry at a time.
+	Success    bool
+	MatchIndex uint64
+	HintIndex  uint64
 }
 
 // HardState is the part of the state that Raft requires to survive a restart.
@@ -92,13 +126,6 @@ type Storage interface {
 	Save(HardState) error
 }
 
-// LogView exposes the last entry of the replicated log, which voting needs
-// ("is the candidate's log at least as up to date as mine?"). Until log
-// replication exists, the log is empty and both values are zero.
-type LogView interface {
-	LastIndexTerm() (index, term uint64)
-}
-
 // Status is a snapshot of a node.
 type Status struct {
 	ID       NodeID
@@ -106,4 +133,25 @@ type Status struct {
 	Term     uint64
 	Leader   NodeID // None if unknown
 	VotedFor NodeID
+	// CommitIndex is the highest log index known to be committed.
+	CommitIndex uint64
+	// LastIndex is the index of the last entry in the node's log.
+	LastIndex uint64
 }
+
+// ErrNotLeader is returned when a proposal reaches a node that is not the leader.
+var ErrNotLeader = errors.New("raft: not the leader")
+
+// NotLeaderError is a proposal rejected by a node that is not the leader. Leader
+// is the node it believes is the leader, or None if it does not know.
+type NotLeaderError struct{ Leader NodeID }
+
+func (e *NotLeaderError) Error() string {
+	if e.Leader == None {
+		return "raft: not the leader (leader unknown)"
+	}
+	return fmt.Sprintf("raft: not the leader (leader is node %d)", e.Leader)
+}
+
+// Unwrap lets errors.Is(err, ErrNotLeader) work.
+func (e *NotLeaderError) Unwrap() error { return ErrNotLeader }

@@ -111,11 +111,16 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 }
 
 // newRaftRunner builds the Raft runner for this node from the configuration.
-// The returned function closes the connections to the other nodes.
+// The returned function closes the connections to the other nodes and the Raft
+// log; call it only after the runner has stopped.
 func newRaftRunner(cfg config.Config, logger *slog.Logger) (*raft.Runner, func() error, error) {
 	store, err := raft.NewFileStorage(filepath.Join(cfg.DataDir, "raft", "state.json"))
 	if err != nil {
 		return nil, nil, err
+	}
+	raftLog, err := raft.OpenFileLog(filepath.Join(cfg.DataDir, "raft", "log.wal"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("open raft log: %w", err)
 	}
 
 	addrs := make(map[raft.NodeID]string, len(cfg.Peers))
@@ -133,11 +138,13 @@ func newRaftRunner(cfg config.Config, logger *slog.Logger) (*raft.Runner, func()
 		ElectionTicks:  cfg.ElectionTicks,
 		HeartbeatTicks: cfg.HeartbeatTicks,
 		Storage:        store,
+		Log:            raftLog,
 		Logger:         logger,
 	}, tr, cfg.TickInterval)
 	if err != nil {
 		_ = tr.Close()
+		_ = raftLog.Close()
 		return nil, nil, fmt.Errorf("start raft: %w", err)
 	}
-	return runner, tr.Close, nil
+	return runner, func() error { return errors.Join(tr.Close(), raftLog.Close()) }, nil
 }
