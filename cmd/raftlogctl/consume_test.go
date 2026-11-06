@@ -66,6 +66,17 @@ func TestConsumeContinuesWhereItStopped(t *testing.T) {
 	}
 }
 
+func TestStatusOfAStandaloneNode(t *testing.T) {
+	addr := startBroker(t)
+	code, out, e := ctl(t, addr, "", "status")
+	if code != 0 || !strings.Contains(out, "raft=disabled") {
+		t.Fatalf("status: code %d, stdout %q, stderr %q", code, out, e)
+	}
+	if code, _, _ := ctl(t, addr, "", "status", "extra"); code != 2 {
+		t.Fatalf("status with an argument: exit code %d, want 2", code)
+	}
+}
+
 func TestCommitCommandCanRewind(t *testing.T) {
 	addr := startBroker(t)
 	ctl(t, addr, "", "create-topic", "events")

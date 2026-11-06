@@ -7,15 +7,19 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"syscall"
 
 	"google.golang.org/grpc"
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/broker"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/config"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/raft"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/server"
 )
 
@@ -42,6 +46,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 	if err != nil {
 		return err
 	}
+	logger := slog.New(slog.NewTextHandler(out, nil))
 
 	b, err := broker.Open(cfg.DataDir, broker.Options{
 		Storage:       cfg.StorageOptions(),
@@ -52,7 +57,19 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 	}
 	defer b.Close()
 
-	srv, err := server.New(b, server.Options{MaxFetchMessages: cfg.MaxFetchMessages})
+	srvOpts := server.Options{MaxFetchMessages: cfg.MaxFetchMessages}
+	var runner *raft.Runner
+	if cfg.NodeID != 0 {
+		var closeTransport func() error
+		runner, closeTransport, err = newRaftRunner(cfg, logger)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = closeTransport() }() // shutting down: nothing useful to do with a close error
+		srvOpts.Raft = runner
+	}
+
+	srv, err := server.New(b, srvOpts)
 	if err != nil {
 		return err
 	}
@@ -62,18 +79,65 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 	}
 	gs := grpc.NewServer()
 	server.Register(gs, srv)
+	if runner != nil {
+		raft.RegisterGRPC(gs, runner)
+	}
 
-	fmt.Fprintf(out, "raftlogd %s listening on %s, data in %s\n", version, lis.Addr(), cfg.DataDir)
+	mode := "standalone"
+	if runner != nil {
+		mode = fmt.Sprintf("raft node %d of %s", cfg.NodeID, config.FormatPeers(cfg.Peers))
+	}
+	fmt.Fprintf(out, "raftlogd %s listening on %s, data in %s, %s\n", version, lis.Addr(), cfg.DataDir, mode)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- gs.Serve(lis) }()
+	if runner != nil {
+		// Start only once we can receive messages from the other nodes.
+		runner.Start()
+		defer runner.Stop()
+	}
 
 	select {
 	case <-ctx.Done():
 		fmt.Fprintln(out, "raftlogd: shutting down")
+		if runner != nil {
+			runner.Stop()
+		}
 		gs.GracefulStop()
 		return <-serveErr
 	case err := <-serveErr:
 		return err
 	}
+}
+
+// newRaftRunner builds the Raft runner for this node from the configuration.
+// The returned function closes the connections to the other nodes.
+func newRaftRunner(cfg config.Config, logger *slog.Logger) (*raft.Runner, func() error, error) {
+	store, err := raft.NewFileStorage(filepath.Join(cfg.DataDir, "raft", "state.json"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	addrs := make(map[raft.NodeID]string, len(cfg.Peers))
+	cluster := make([]raft.NodeID, 0, len(cfg.Peers))
+	for id, addr := range cfg.Peers {
+		addrs[raft.NodeID(id)] = addr
+		cluster = append(cluster, raft.NodeID(id))
+	}
+	sort.Slice(cluster, func(i, j int) bool { return cluster[i] < cluster[j] })
+
+	tr := raft.NewGRPCTransport(addrs)
+	runner, err := raft.NewRunner(raft.Config{
+		ID:             raft.NodeID(cfg.NodeID),
+		Cluster:        cluster,
+		ElectionTicks:  cfg.ElectionTicks,
+		HeartbeatTicks: cfg.HeartbeatTicks,
+		Storage:        store,
+		Logger:         logger,
+	}, tr, cfg.TickInterval)
+	if err != nil {
+		_ = tr.Close()
+		return nil, nil, fmt.Errorf("start raft: %w", err)
+	}
+	return runner, tr.Close, nil
 }

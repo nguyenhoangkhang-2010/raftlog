@@ -24,3 +24,29 @@ offset (fixed RNG seed). Command: `go test -run '^$' -bench BenchmarkRead -bench
 Machine: Intel Core i7-12700H, 40 GB RAM, Windows 11, Go 1.27.3. The file is small
 enough that reads are mostly served from the OS page cache. Single run, so treat the ratios as an order of
 magnitude, not a precise figure.
+
+### Raft: time to elect a leader
+
+**Simulation** (`TestElectionTimeAcrossSeeds`): 5 nodes, election timeout 10-19 ticks,
+instant message delivery, 300 random seeds. Time is counted in ticks, so the result
+does not depend on the machine. Run with
+`go test -run TestElectionTimeAcrossSeeds -v ./internal/raft/`.
+
+| Ticks until exactly one leader is followed by all nodes | Value |
+|---|---|
+| min | 10 |
+| median | 11 |
+| p99 | 16 |
+| max | 24 |
+
+**Real processes** (3 `raftlogd` processes on one machine, defaults: 100 ms tick, election
+timeout 1.0-2.0 s, heartbeat every tick). One run each, so only an order of magnitude:
+
+| Event | Time |
+|---|---|
+| Cluster started to leader visible through `raftlogctl status` | 1.52 s |
+| Leader process killed to new leader visible | 1.13 s |
+
+Machine: Intel Core i7-12700H, Windows 11, Go 1.27.3, loopback network.
+The election timeout is the main lever: a failover cannot be faster than the shortest
+timeout, and lowering it makes spurious elections more likely on a slow network.

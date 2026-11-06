@@ -6,6 +6,7 @@
 //
 // Commands:
 //
+//	status
 //	create-topic [-partitions N] <topic>
 //	produce      [-key K] [-value V | -lines] [-partition P] <topic>
 //	fetch        [-partition P] [-offset O] [-max N] <topic>
@@ -104,6 +105,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		code = cmdProduce(ctx, client, rest, stdin, stdout, stderr)
 	case "fetch":
 		code = cmdFetch(ctx, client, rest, stdout, stderr)
+	case "status":
+		code = cmdStatus(ctx, client, rest, stdout, stderr)
 	case "commit":
 		code = cmdCommit(ctx, client, rest, stderr)
 	case "offsets":
@@ -122,6 +125,7 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: raftlogctl [-addr host:port] [-timeout 10s] <command> [flags] <args>
 
 commands:
+  status
   create-topic [-partitions N] <topic>
   produce      [-key K] [-value V | -lines] [-partition P] <topic>
   fetch        [-partition P] [-offset O] [-max N] <topic>
@@ -235,6 +239,32 @@ func cmdProduce(ctx context.Context, c pb.BrokerClient, args []string, stdin io.
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "partition=%d base_offset=%d count=%d\n", resp.Partition, resp.BaseOffset, len(msgs))
+	return 0
+}
+
+// cmdStatus prints the Raft state of the node that -addr points to. To see the
+// whole cluster, run it once per node.
+func cmdStatus(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	fs := newFlags("status", stderr)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "raftlogctl status: takes no arguments")
+		return 2
+	}
+	resp, err := c.NodeStatus(ctx, &pb.NodeStatusRequest{})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if !resp.RaftEnabled {
+		fmt.Fprintln(stdout, "raft=disabled (standalone node)")
+		return 0
+	}
+	fmt.Fprintf(stdout, "node=%d role=%s term=%d leader=%d\n", resp.NodeId, resp.Role, resp.Term, resp.LeaderId)
 	return 0
 }
 

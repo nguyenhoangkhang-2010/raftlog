@@ -2,6 +2,7 @@ package config
 
 import (
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,10 @@ func TestEnvOverridesDefaults(t *testing.T) {
 		MaxPartitions:      16,
 		MaxFetchMessages:   50,
 	}
-	if cfg != want {
+	// The Raft settings were not given, so they keep their defaults.
+	want.ElectionTicks, want.HeartbeatTicks, want.TickInterval = defaultElectionTicks, defaultHeartbeatTicks, defaultTickInterval
+	want.Peers = map[uint64]string{}
+	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
 }

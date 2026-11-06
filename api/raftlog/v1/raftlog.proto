@@ -11,6 +11,8 @@ service Broker {
   rpc Fetch(FetchRequest) returns (FetchResponse);
   rpc CommitOffset(CommitOffsetRequest) returns (CommitOffsetResponse);
   rpc FetchOffset(FetchOffsetRequest) returns (FetchOffsetResponse);
+  // NodeStatus reports the Raft state of the node that answers.
+  rpc NodeStatus(NodeStatusRequest) returns (NodeStatusResponse);
 }
 
 message Message {
@@ -56,6 +58,18 @@ message CommitOffsetRequest {
   uint64 offset = 4;
 }
 message CommitOffsetResponse {}
+
+message NodeStatusRequest {}
+message NodeStatusResponse {
+  // False when the node runs standalone (no node ID configured).
+  bool raft_enabled = 1;
+  uint64 node_id = 2;
+  // "follower", "candidate" or "leader".
+  string role = 3;
+  uint64 term = 4;
+  // The node this node believes is the leader; 0 if it does not know.
+  uint64 leader_id = 5;
+}
 
 message FetchOffsetRequest {
   string group = 1;
