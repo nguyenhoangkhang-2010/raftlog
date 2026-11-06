@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -21,32 +22,78 @@ const (
 	waitForState = 15 * time.Second
 )
 
+// kvMachine is a small state machine: the ordered list of commands applied. It
+// supports snapshots, so a lagging node can be brought up to date with one.
+type kvMachine struct {
+	mu   sync.Mutex
+	cmds []string
+}
+
+func (m *kvMachine) Apply(e Entry) {
+	m.mu.Lock()
+	m.cmds = append(m.cmds, string(e.Data))
+	m.mu.Unlock()
+}
+
+func (m *kvMachine) Snapshot() ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return json.Marshal(m.cmds)
+}
+
+func (m *kvMachine) Restore(data []byte) error {
+	var cmds []string
+	if err := json.Unmarshal(data, &cmds); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.cmds = cmds
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *kvMachine) commands() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.cmds...)
+}
+
 type realNode struct {
 	id     NodeID
 	runner *Runner
 	gs     *grpc.Server
+	lis    net.Listener
 	tr     *GRPCTransport
 	log    *FileLog
+	sm     *kvMachine
+}
 
-	mu      sync.Mutex
-	applied []string // the commands this node's state machine has applied
+// start begins serving and running the node. startRealCluster does it for every
+// node except those it was told to keep back.
+func (n *realNode) start() {
+	go func() { _ = n.gs.Serve(n.lis) }()
+	n.runner.Start()
 }
 
 func (n *realNode) kill() {
 	n.runner.Stop()
 	n.gs.Stop()
+	_ = n.lis.Close()
 	_ = n.tr.Close()
 	_ = n.log.Close()
 }
 
-func (n *realNode) appliedData() []string {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return append([]string(nil), n.applied...)
-}
+func (n *realNode) appliedData() []string { return n.sm.commands() }
 
 // startRealCluster starts size nodes that talk to each other over gRPC.
 func startRealCluster(t *testing.T, size int) []*realNode {
+	return startRealClusterWith(t, size, 0, 0, nil)
+}
+
+// startRealClusterWith is startRealCluster with snapshots: every node snapshots
+// after every `every` applied entries and keeps `trailing` entries below the
+// snapshot. Nodes listed in hold are created but not started.
+func startRealClusterWith(t *testing.T, size int, every, trailing uint64, hold map[NodeID]bool) []*realNode {
 	t.Helper()
 
 	// Listen first, so every node knows every address before it starts.
@@ -72,29 +119,31 @@ func startRealCluster(t *testing.T, size int) []*realNode {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tr := NewGRPCTransport(addrs)
-		node := &realNode{id: id, tr: tr, log: fileLog}
-		r, err := NewRunner(Config{
-			ID:             id,
-			Cluster:        clusterIDs(size),
-			ElectionTicks:  testElectionTicks,
-			HeartbeatTicks: testHeartbeatTicks,
-			Storage:        store,
-			Log:            fileLog,
-		}, tr, realTick, WithApplier(func(e Entry) {
-			node.mu.Lock()
-			node.applied = append(node.applied, string(e.Data))
-			node.mu.Unlock()
-		}))
+		snapshots, err := NewFileSnapshotStore(filepath.Join(t.TempDir(), "snapshot.bin"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		gs := grpc.NewServer()
-		RegisterGRPC(gs, r)
-		go func(l net.Listener) { _ = gs.Serve(l) }(lis[i])
-		r.Start()
-		node.runner, node.gs = r, gs
+		tr := NewGRPCTransport(addrs)
+		node := &realNode{id: id, tr: tr, log: fileLog, lis: lis[i], sm: &kvMachine{}}
+		r, err := NewRunner(Config{
+			ID:               id,
+			Cluster:          clusterIDs(size),
+			ElectionTicks:    testElectionTicks,
+			HeartbeatTicks:   testHeartbeatTicks,
+			Storage:          store,
+			Log:              fileLog,
+			Snapshots:        snapshots,
+			SnapshotTrailing: trailing,
+		}, tr, realTick, WithStateMachine(node.sm), WithSnapshotEvery(every))
+		if err != nil {
+			t.Fatal(err)
+		}
+		node.runner, node.gs = r, grpc.NewServer()
+		RegisterGRPC(node.gs, r)
 		nodes = append(nodes, node)
+		if !hold[id] {
+			node.start()
+		}
 	}
 	t.Cleanup(func() {
 		for _, n := range nodes {
@@ -242,6 +291,57 @@ func TestRealClusterReplicatesCommandsAndSurvivesTheLeaderDying(t *testing.T) {
 		waitFor(t, fmt.Sprintf("node %d to apply both batches", n.id), func() bool {
 			return reflect.DeepEqual(n.appliedData(), want)
 		})
+	}
+}
+
+func TestRealClusterBringsALateNodeUpToDateWithASnapshot(t *testing.T) {
+	// Node 3 is created but not started, so nodes 1 and 2 are a majority and
+	// carry on without it. Every 10 applied entries they snapshot and cut their
+	// logs, so when node 3 finally starts, the entries it is missing are gone.
+	nodes := startRealClusterWith(t, 3, 10, 0, map[NodeID]bool{3: true})
+	first := waitForLeader(t, nodes, map[NodeID]bool{3: true})
+	leader := nodeByID(nodes, first.ID)
+
+	commands := make([]string, 60)
+	for i := range commands {
+		commands[i] = fmt.Sprintf("cmd-%03d", i)
+	}
+	proposeAll(t, leader.runner, commands)
+	waitFor(t, "the leader to snapshot its state", func() bool { return leader.runner.Status().SnapshotIndex > 0 })
+
+	late := nodeByID(nodes, 3)
+	late.start()
+
+	waitFor(t, "the late node to apply every command", func() bool {
+		return reflect.DeepEqual(late.appliedData(), commands)
+	})
+	if got := late.runner.Status().SnapshotIndex; got == 0 {
+		t.Fatal("the late node caught up without receiving a snapshot")
+	}
+	for _, n := range nodes {
+		waitFor(t, fmt.Sprintf("node %d to hold every command", n.id), func() bool {
+			return reflect.DeepEqual(n.appliedData(), commands)
+		})
+	}
+
+	// And it takes part normally afterwards: a command still reaches all three.
+	proposeAll(t, leader.runner, []string{"after"})
+	want := append(append([]string(nil), commands...), "after")
+	for _, n := range nodes {
+		waitFor(t, fmt.Sprintf("node %d to apply the last command", n.id), func() bool {
+			return reflect.DeepEqual(n.appliedData(), want)
+		})
+	}
+}
+
+func TestRunnerRefusesSnapshotsWithoutAStateMachine(t *testing.T) {
+	cfg := testConfig(1, clusterIDs(3), &memStorage{}, 1)
+	if _, err := NewRunner(cfg, nopTransport{}, realTick, WithSnapshotEvery(10)); err == nil {
+		t.Fatal("WithSnapshotEvery was accepted without a state machine")
+	}
+	cfg = testConfig(1, clusterIDs(3), &memStorage{}, 1)
+	if _, err := NewRunner(cfg, nopTransport{}, realTick, WithApplier(func(Entry) {}), WithSnapshotEvery(10)); err == nil {
+		t.Fatal("a plain applier cannot snapshot, but WithSnapshotEvery was accepted")
 	}
 }
 

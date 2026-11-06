@@ -19,6 +19,8 @@ var typeToPB = map[MessageType]pb.RaftMessageType{
 	MsgRequestVoteResp: pb.RaftMessageType_RAFT_MESSAGE_TYPE_REQUEST_VOTE_RESP,
 	MsgAppend:          pb.RaftMessageType_RAFT_MESSAGE_TYPE_APPEND_ENTRIES,
 	MsgAppendResp:      pb.RaftMessageType_RAFT_MESSAGE_TYPE_APPEND_ENTRIES_RESP,
+	MsgSnapshot:        pb.RaftMessageType_RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT,
+	MsgSnapshotResp:    pb.RaftMessageType_RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT_RESP,
 }
 
 var entryTypeToPB = map[EntryType]pb.LogEntryType{
@@ -55,7 +57,12 @@ func messageToPB(m Message) (*pb.RaftMessage, error) {
 		}
 		entries[i] = &pb.LogEntry{Index: e.Index, Term: e.Term, Type: et, Data: e.Data}
 	}
+	var snap *pb.SnapshotData
+	if m.Snapshot != nil {
+		snap = &pb.SnapshotData{Index: m.Snapshot.Index, Term: m.Snapshot.Term, Data: m.Snapshot.Data}
+	}
 	return &pb.RaftMessage{
+		Snapshot:     snap,
 		Type:         t,
 		From:         uint64(m.From),
 		To:           uint64(m.To),
@@ -86,7 +93,12 @@ func messageFromPB(p *pb.RaftMessage) (Message, error) {
 		}
 		entries = append(entries, Entry{Index: e.GetIndex(), Term: e.GetTerm(), Type: et, Data: e.GetData()})
 	}
+	var snap *Snapshot
+	if s := p.GetSnapshot(); s != nil {
+		snap = &Snapshot{Index: s.GetIndex(), Term: s.GetTerm(), Data: s.GetData()}
+	}
 	return Message{
+		Snapshot:     snap,
 		Type:         t,
 		From:         NodeID(p.GetFrom()),
 		To:           NodeID(p.GetTo()),
@@ -109,20 +121,44 @@ func messageFromPB(p *pb.RaftMessage) (Message, error) {
 //
 // Limitation: the connections are not encrypted or authenticated yet.
 type GRPCTransport struct {
-	addrs map[NodeID]string
+	addrs           map[NodeID]string
+	maxMessageBytes int
 
 	mu     sync.Mutex
 	conns  map[NodeID]*grpc.ClientConn
 	closed bool
 }
 
+// TransportOption customizes a GRPCTransport.
+type TransportOption func(*GRPCTransport)
+
+// WithMaxMessageBytes sets the largest message the transport sends or accepts.
+// A snapshot travels in a single message, so this limits the size of the state
+// that can be handed to a lagging follower. The servers on the other side need
+// the same limit (see ServerOptions). Zero keeps gRPC's default of 4 MiB.
+func WithMaxMessageBytes(n int) TransportOption {
+	return func(t *GRPCTransport) { t.maxMessageBytes = n }
+}
+
+// ServerOptions returns the gRPC server options that match WithMaxMessageBytes.
+func ServerOptions(maxMessageBytes int) []grpc.ServerOption {
+	if maxMessageBytes <= 0 {
+		return nil
+	}
+	return []grpc.ServerOption{grpc.MaxRecvMsgSize(maxMessageBytes), grpc.MaxSendMsgSize(maxMessageBytes)}
+}
+
 // NewGRPCTransport returns a transport that reaches each node at addrs[id].
-func NewGRPCTransport(addrs map[NodeID]string) *GRPCTransport {
+func NewGRPCTransport(addrs map[NodeID]string, opts ...TransportOption) *GRPCTransport {
 	copied := make(map[NodeID]string, len(addrs))
 	for id, a := range addrs {
 		copied[id] = a
 	}
-	return &GRPCTransport{addrs: copied, conns: make(map[NodeID]*grpc.ClientConn)}
+	t := &GRPCTransport{addrs: copied, conns: make(map[NodeID]*grpc.ClientConn)}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
 }
 
 func (t *GRPCTransport) conn(id NodeID) (*grpc.ClientConn, error) {
@@ -138,7 +174,12 @@ func (t *GRPCTransport) conn(id NodeID) (*grpc.ClientConn, error) {
 	if !ok {
 		return nil, fmt.Errorf("raft: no address for node %d", id)
 	}
-	c, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	if t.maxMessageBytes > 0 {
+		dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(
+			grpc.MaxCallSendMsgSize(t.maxMessageBytes), grpc.MaxCallRecvMsgSize(t.maxMessageBytes)))
+	}
+	c, err := grpc.NewClient(addr, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("raft: connect to node %d at %s: %w", id, addr, err)
 	}

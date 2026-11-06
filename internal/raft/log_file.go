@@ -18,16 +18,24 @@ import (
 //	[bodyLen u32][crc32 u32][body]
 //	body = index u64 | term u64 | type u8 | data
 //
-// All entries are also kept in memory, so reads never touch the disk. That is
-// fine until snapshots exist; the snapshot branch will let the log shrink.
+// After a compaction the file starts with one special record (type
+// entryTypeBase) whose index and term are the base of the log, followed by the
+// entries that were kept.
+//
+// All entries are also kept in memory, so reads never touch the disk.
 //
 // Every Append and TruncateSuffix is fsynced before it returns, because a
-// follower must not acknowledge an entry it could lose in a crash.
+// follower must not acknowledge an entry it could lose in a crash. CompactTo
+// writes a complete new file and swaps it in with an atomic rename, so a crash
+// leaves either the old log or the new one.
 type FileLog struct {
-	f       *os.File
-	entries []Entry
-	offsets []int64 // offsets[i] is where the record of entry i+1 starts
-	size    int64   // bytes of valid data in the file
+	path      string
+	f         *os.File
+	baseIndex uint64
+	baseTerm  uint64
+	entries   []Entry // entries[i] has index baseIndex+1+i
+	offsets   []int64 // offsets[i] is where the record of entries[i] starts
+	size      int64   // bytes of valid data in the file
 }
 
 const (
@@ -35,6 +43,9 @@ const (
 	fileLogBodyFixed  = 8 + 8 + 1
 	// maxEntryBytes is a sanity limit on one record body.
 	maxEntryBytes = 256 << 20
+
+	// entryTypeBase marks the record that holds the base of a compacted log.
+	entryTypeBase EntryType = 255
 )
 
 var fileLogCRC = crc32.MakeTable(crc32.Castagnoli)
@@ -53,11 +64,15 @@ func OpenFileLog(path string) (*FileLog, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create raft log dir: %w", err)
 	}
+	// A leftover temporary file is a compaction that did not finish. The real
+	// file is still complete, so the leftover is simply discarded.
+	_ = os.Remove(path + ".tmp")
+
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open raft log: %w", err)
 	}
-	l := &FileLog{f: f}
+	l := &FileLog{path: path, f: f}
 	if err := l.load(); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -91,8 +106,17 @@ func (l *FileLog) load() error {
 		if err != nil {
 			return fmt.Errorf("raft log: corrupt record at byte %d: %w", pos, err)
 		}
-		if e.Index != uint64(len(l.entries))+1 {
-			return fmt.Errorf("raft log: record at byte %d has index %d, expected %d", pos, e.Index, len(l.entries)+1)
+
+		if e.Type == entryTypeBase {
+			if pos != 0 {
+				return fmt.Errorf("raft log: base record at byte %d, but it must come first", pos)
+			}
+			l.baseIndex, l.baseTerm = e.Index, e.Term
+			pos += n
+			continue
+		}
+		if want := l.baseIndex + uint64(len(l.entries)) + 1; e.Index != want {
+			return fmt.Errorf("raft log: record at byte %d has index %d, expected %d", pos, e.Index, want)
 		}
 		l.entries = append(l.entries, e)
 		l.offsets = append(l.offsets, pos)
@@ -148,18 +172,26 @@ func readLogRecord(r io.Reader) (e Entry, n int64, err error) {
 	return e, n, nil
 }
 
+// Base implements LogStore.
+func (l *FileLog) Base() (uint64, uint64) { return l.baseIndex, l.baseTerm }
+
+// FirstIndex implements LogStore.
+func (l *FileLog) FirstIndex() uint64 { return l.baseIndex + 1 }
+
 // LastIndex implements LogStore.
-func (l *FileLog) LastIndex() uint64 { return uint64(len(l.entries)) }
+func (l *FileLog) LastIndex() uint64 { return l.baseIndex + uint64(len(l.entries)) }
 
 // Term implements LogStore.
 func (l *FileLog) Term(index uint64) (uint64, error) {
-	if index == 0 {
-		return 0, nil
-	}
-	if index > l.LastIndex() {
+	switch {
+	case index == l.baseIndex:
+		return l.baseTerm, nil
+	case index < l.baseIndex:
+		return 0, ErrCompacted
+	case index > l.LastIndex():
 		return 0, ErrIndexOutOfRange
 	}
-	return l.entries[index-1].Term, nil
+	return l.entries[index-l.baseIndex-1].Term, nil
 }
 
 // Entries implements LogStore.
@@ -167,7 +199,13 @@ func (l *FileLog) Entries(lo, hi uint64) ([]Entry, error) {
 	if lo < 1 || lo > hi || hi > l.LastIndex()+1 {
 		return nil, ErrIndexOutOfRange
 	}
-	return append([]Entry(nil), l.entries[lo-1:hi-1]...), nil
+	if lo < hi && lo <= l.baseIndex {
+		return nil, ErrCompacted
+	}
+	if lo == hi {
+		return nil, nil
+	}
+	return append([]Entry(nil), l.entries[lo-l.baseIndex-1:hi-l.baseIndex-1]...), nil
 }
 
 // Append implements LogStore.
@@ -213,20 +251,93 @@ func (l *FileLog) TruncateSuffix(from uint64) error {
 	if from < 1 {
 		return ErrIndexOutOfRange
 	}
+	if from <= l.baseIndex {
+		return ErrCompacted
+	}
 	if from > l.LastIndex() {
 		return nil
 	}
-	cut := l.offsets[from-1]
+	keep := from - l.baseIndex - 1 // entries that stay
+	cut := l.offsets[keep]
 	if err := l.f.Truncate(cut); err != nil {
 		return fmt.Errorf("truncate raft log: %w", err)
 	}
 	if err := l.f.Sync(); err != nil {
 		return fmt.Errorf("sync raft log: %w", err)
 	}
-	l.entries = l.entries[:from-1]
-	l.offsets = l.offsets[:from-1]
+	l.entries = l.entries[:keep]
+	l.offsets = l.offsets[:keep]
 	l.size = cut
 	return nil
+}
+
+// CompactTo implements LogStore. It writes a new file that holds the base
+// record and the entries that are kept, then replaces the old file with it.
+func (l *FileLog) CompactTo(index, term uint64) error {
+	if index <= l.baseIndex {
+		return nil
+	}
+	var kept []Entry
+	if index <= l.LastIndex() {
+		if have, _ := l.Term(index); have == term {
+			kept = l.entries[index-l.baseIndex:]
+		}
+	}
+
+	buf := encodeLogRecord(Entry{Index: index, Term: term, Type: entryTypeBase})
+	offsets := make([]int64, len(kept))
+	pos := int64(len(buf))
+	for i, e := range kept {
+		offsets[i] = pos
+		rec := encodeLogRecord(e)
+		buf = append(buf, rec...)
+		pos += int64(len(rec))
+	}
+
+	tmp := l.path + ".tmp"
+	if err := writeFileSynced(tmp, buf); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write compacted raft log: %w", err)
+	}
+
+	// The open handle must be closed before the file can be replaced on Windows.
+	if err := l.f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close raft log: %w", err)
+	}
+	renameErr := os.Rename(tmp, l.path)
+	f, openErr := os.OpenFile(l.path, os.O_RDWR, 0o644)
+	if openErr != nil {
+		return fmt.Errorf("reopen raft log after compaction: %w", openErr)
+	}
+	l.f = f
+	if renameErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("replace raft log: %w", renameErr)
+	}
+
+	l.entries = append([]Entry(nil), kept...)
+	l.offsets = offsets
+	l.baseIndex, l.baseTerm = index, term
+	l.size = pos
+	return nil
+}
+
+// writeFileSynced writes data to a new file and makes it durable.
+func writeFileSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // Close implements LogStore.

@@ -28,16 +28,41 @@ type Transport interface {
 	Send(ctx context.Context, m Message) error
 }
 
+// StateMachine is the application that the replicated log feeds. All three
+// methods are called from one goroutine, one at a time, in log order.
+type StateMachine interface {
+	// Apply executes one committed command (no-op entries are not passed).
+	Apply(Entry)
+	// Snapshot returns the complete state after the last entry passed to Apply.
+	Snapshot() ([]byte, error)
+	// Restore replaces the whole state with a snapshot taken by Snapshot, on
+	// this node or on another one.
+	Restore([]byte) error
+}
+
 // RunnerOption customizes a Runner.
 type RunnerOption func(*Runner)
 
-// WithApplier sets the function that applies committed commands to the state
-// machine. It is called from a single goroutine, in log order, once per entry
-// that carries a command (no-op entries are skipped). After a restart the log
-// is replayed from index 1, so a state machine with its own durable state must
-// ignore entries it has already applied.
+// WithApplier sets a function that applies committed commands to a state
+// machine that does not support snapshots. It is called from a single
+// goroutine, in log order, once per entry that carries a command (no-op entries
+// are skipped). After a restart the log is replayed from index 1, so a state
+// machine with its own durable state must ignore entries it has already applied.
 func WithApplier(apply func(Entry)) RunnerOption {
 	return func(r *Runner) { r.applier = apply }
+}
+
+// WithStateMachine sets the state machine that the log feeds. Unlike
+// WithApplier it supports snapshots, so the log can be compacted.
+func WithStateMachine(sm StateMachine) RunnerOption {
+	return func(r *Runner) { r.sm = sm }
+}
+
+// WithSnapshotEvery makes the runner snapshot the state machine, and cut the
+// log, after every n applied entries. It needs WithStateMachine. Zero, the
+// default, disables snapshots on this node (it can still receive them).
+func WithSnapshotEvery(n uint64) RunnerOption {
+	return func(r *Runner) { r.snapshotEvery = n }
 }
 
 // peerQueueSize bounds the messages waiting for one slow or dead peer. When it
@@ -51,6 +76,13 @@ type waiter struct {
 	done chan error
 }
 
+// applyItem is one unit of work for the apply goroutine: either a snapshot the
+// state machine must load, or a committed entry to apply.
+type applyItem struct {
+	restore *Snapshot
+	entry   Entry
+}
+
 // Runner drives a Node with a real clock and a real Transport.
 //
 // A goroutine calls Tick every tick interval, incoming messages arrive through
@@ -60,14 +92,18 @@ type waiter struct {
 // the protocol either.
 type Runner struct {
 	mu   sync.Mutex // guards everything below up to "stop"
-	cond *sync.Cond // signalled when applyQueue gets entries or the runner halts
+	cond *sync.Cond // signalled when applyQueue gets items or the runner halts
 	node *Node
 
-	applyQueue []Entry
+	applyQueue []applyItem
 	waiters    map[uint64]*waiter // by log index
 	halted     bool
 
-	applier     func(Entry)
+	applier       func(Entry)
+	sm            StateMachine
+	snapshotEvery uint64
+	snapIndex     uint64 // index of the latest snapshot; used by the apply goroutine
+
 	tr          Transport
 	tick        time.Duration
 	sendTimeout time.Duration
@@ -111,9 +147,18 @@ func NewRunner(cfg Config, tr Transport, tickInterval time.Duration, opts ...Run
 	for _, opt := range opts {
 		opt(r)
 	}
+	if r.snapshotEvery > 0 && r.sm == nil {
+		return nil, errors.New("raft: WithSnapshotEvery needs WithStateMachine")
+	}
 	for _, p := range node.peers {
 		r.queues[p] = make(chan Message, peerQueueSize)
 	}
+
+	// A snapshot found at startup is the first thing the state machine loads.
+	r.snapIndex = node.snapshot.Index
+	r.mu.Lock()
+	r.flushLocked()
+	r.mu.Unlock()
 	return r, nil
 }
 
@@ -200,18 +245,26 @@ func (r *Runner) Propose(ctx context.Context, data []byte) (uint64, error) {
 	}
 }
 
-// flushLocked collects what the node produced after a step: messages to send
-// and newly committed entries to apply. The caller holds r.mu; entries are
-// queued under the lock so that they are applied in log order.
+// flushLocked collects what the node produced after a step: messages to send,
+// and a snapshot to load and newly committed entries to apply. The caller holds
+// r.mu; the work is queued under the lock so that it is applied in order.
 func (r *Runner) flushLocked() []Message {
 	msgs := r.node.Messages()
 
+	// A snapshot always comes first: it replaces the state that the entries
+	// after it build on.
+	if s := r.node.TakeRestore(); s != nil {
+		r.applyQueue = append(r.applyQueue, applyItem{restore: s})
+		r.cond.Signal()
+	}
 	entries, err := r.node.Committed()
 	if err != nil {
 		r.logger.Error("raft: cannot read committed entries", "err", err)
 	}
+	for _, e := range entries {
+		r.applyQueue = append(r.applyQueue, applyItem{entry: e})
+	}
 	if len(entries) > 0 {
-		r.applyQueue = append(r.applyQueue, entries...)
 		r.cond.Signal()
 	}
 
@@ -250,7 +303,7 @@ func (r *Runner) loop() {
 	}
 }
 
-// applyLoop applies committed entries, one at a time, in log order.
+// applyLoop feeds the state machine, one item at a time, in log order.
 func (r *Runner) applyLoop() {
 	defer r.wg.Done()
 	for {
@@ -266,9 +319,21 @@ func (r *Runner) applyLoop() {
 		r.applyQueue = nil
 		r.mu.Unlock()
 
-		for _, e := range batch {
-			if e.Type == EntryNormal && r.applier != nil {
-				r.applier(e)
+		for _, it := range batch {
+			if it.restore != nil {
+				if !r.restore(it.restore) {
+					return
+				}
+				continue
+			}
+			e := it.entry
+			if e.Type == EntryNormal {
+				switch {
+				case r.sm != nil:
+					r.sm.Apply(e)
+				case r.applier != nil:
+					r.applier(e)
+				}
 			}
 			r.mu.Lock()
 			if w, ok := r.waiters[e.Index]; ok {
@@ -280,7 +345,48 @@ func (r *Runner) applyLoop() {
 				}
 			}
 			r.mu.Unlock()
+
+			r.maybeSnapshot(e.Index)
 		}
+	}
+}
+
+// restore loads a snapshot into the state machine. It reports false if that
+// failed: the state machine is then out of step with the log, and carrying on
+// would silently produce wrong results, so the apply loop stops.
+func (r *Runner) restore(s *Snapshot) bool {
+	r.snapIndex = s.Index
+	if r.sm == nil {
+		r.logger.Error("raft: received a snapshot but there is no state machine to load it into", "index", s.Index)
+		return true
+	}
+	if err := r.sm.Restore(s.Data); err != nil {
+		r.logger.Error("raft: the state machine failed to load a snapshot; no more entries will be applied", "index", s.Index, "err", err)
+		return false
+	}
+	return true
+}
+
+// maybeSnapshot snapshots the state machine once enough entries were applied
+// since the previous snapshot, and lets the node cut its log.
+func (r *Runner) maybeSnapshot(applied uint64) {
+	if r.sm == nil || r.snapshotEvery == 0 || applied < r.snapIndex+r.snapshotEvery {
+		return
+	}
+	// Whatever happens next, wait another snapshotEvery entries before trying
+	// again, so a persistent failure does not retry on every entry.
+	r.snapIndex = applied
+
+	data, err := r.sm.Snapshot()
+	if err != nil {
+		r.logger.Error("raft: the state machine failed to take a snapshot", "index", applied, "err", err)
+		return
+	}
+	r.mu.Lock()
+	err = r.node.Compact(applied, data)
+	r.mu.Unlock()
+	if err != nil {
+		r.logger.Error("raft: cannot compact the log", "index", applied, "err", err)
 	}
 }
 

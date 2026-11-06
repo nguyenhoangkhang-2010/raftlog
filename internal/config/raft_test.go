@@ -105,6 +105,8 @@ func TestInvalidRaftSettings(t *testing.T) {
 		{"election not above heartbeat", append(append([]string{}, good...), "-election-ticks", "1", "-heartbeat-ticks", "1"), nil, "election ticks"},
 		{"zero heartbeat", append(append([]string{}, good...), "-heartbeat-ticks", "0"), nil, "heartbeat ticks"},
 		{"zero tick interval", append(append([]string{}, good...), "-tick-interval", "0s"), nil, "tick interval"},
+		{"zero max message bytes", append(append([]string{}, good...), "-max-message-bytes", "0"), nil, "max message bytes"},
+		{"bad max message bytes env", nil, map[string]string{EnvMaxMessageBytes: "big"}, EnvMaxMessageBytes},
 		{"bad node id env", nil, map[string]string{EnvNodeID: "abc"}, EnvNodeID},
 		{"bad tick env", nil, map[string]string{EnvTickInterval: "soon"}, EnvTickInterval},
 		{"bad ticks env", nil, map[string]string{EnvElectionTicks: "x", EnvHeartbeatTicks: "y"}, EnvElectionTicks},

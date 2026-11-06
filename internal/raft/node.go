@@ -34,6 +34,13 @@ type Config struct {
 	// Log persists the replicated log. Optional: nil means an in-memory log
 	// that is lost on restart.
 	Log LogStore
+	// Snapshots persists the latest snapshot. Optional: nil means an in-memory
+	// store that is lost on restart.
+	Snapshots SnapshotStore
+	// SnapshotTrailing is how many entries below a snapshot stay in the log.
+	// A follower that is only slightly behind can then be served from the log
+	// instead of receiving the whole snapshot.
+	SnapshotTrailing uint64
 	// MaxBatchEntries and MaxBatchBytes limit how much one Append message
 	// carries. Zero means the default. A single entry larger than MaxBatchBytes
 	// is still sent on its own.
@@ -84,14 +91,17 @@ func (c *Config) validate() error {
 	return errors.Join(errs...)
 }
 
-// Node is the Raft state machine: leader election and log replication.
+// Node is the Raft state machine: leader election, log replication and
+// snapshots.
 //
-// It does no I/O besides its Storage and LogStore and never looks at a clock.
-// The caller drives it: Tick() advances logical time, Step() delivers a
-// received message, Propose() submits a command on the leader, Messages()
-// returns what the node wants to send, and Committed() returns the entries
-// that are ready to be applied to the state machine. A Node is not safe for
-// concurrent use; Runner wraps it with a lock for real deployments.
+// It does no I/O besides its Storage, LogStore and SnapshotStore and never
+// looks at a clock. The caller drives it: Tick() advances logical time, Step()
+// delivers a received message, Propose() submits a command on the leader,
+// Messages() returns what the node wants to send, and Committed() returns the
+// entries that are ready to be applied to the state machine. TakeRestore()
+// returns a snapshot the state machine must load before it applies anything
+// else, and Compact() folds applied entries into a snapshot. A Node is not safe
+// for concurrent use; Runner wraps it with a lock for real deployments.
 type Node struct {
 	id                            NodeID
 	peers                         []NodeID // every other member, sorted
@@ -99,8 +109,10 @@ type Node struct {
 	electionTicks, heartbeatTicks int
 	maxBatchEntries               int
 	maxBatchBytes                 int
+	snapshotTrailing              uint64
 	storage                       Storage
 	log                           LogStore
+	snaps                         SnapshotStore
 	rnd                           *rand.Rand
 	logger                        *slog.Logger
 
@@ -109,15 +121,24 @@ type Node struct {
 	leader NodeID
 	votes  map[NodeID]bool // candidate only: who answered, and whether they granted
 
-	// Volatile state of the log (section 5.3). After a restart both start at 0
-	// and are rebuilt from the leader's messages.
+	// Volatile state of the log (section 5.3). Without a snapshot both start at
+	// 0 after a restart and are rebuilt from the leader's messages; with one
+	// they start at the snapshot's index.
 	commitIndex uint64 // highest index known to be committed
-	lastApplied uint64 // highest index already returned by Committed()
+	lastApplied uint64 // highest index already handed to the state machine
+
+	// The latest snapshot, kept in memory so it can be sent to followers. Index
+	// 0 means there is none. restore is a snapshot the state machine has not
+	// loaded yet (see TakeRestore).
+	snapshot Snapshot
+	restore  *Snapshot
 
 	// Leader only: for each follower, the next index to send and the highest
-	// index known to be replicated on it.
-	nextIndex  map[NodeID]uint64
-	matchIndex map[NodeID]uint64
+	// index known to be replicated on it. snapshotPause counts the ticks during
+	// which a snapshot that was just sent is given time to arrive.
+	nextIndex     map[NodeID]uint64
+	matchIndex    map[NodeID]uint64
+	snapshotPause map[NodeID]int
 
 	electionElapsed   int
 	randomizedTimeout int
@@ -126,8 +147,8 @@ type Node struct {
 	outbox []Message
 }
 
-// New creates a node and restores its persistent state from cfg.Storage and
-// cfg.Log.
+// New creates a node and restores its persistent state from cfg.Storage,
+// cfg.Snapshots and cfg.Log.
 func New(cfg Config) (*Node, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -139,29 +160,25 @@ func New(cfg Config) (*Node, error) {
 	if cfg.Log == nil {
 		cfg.Log = NewMemoryLog()
 	}
-	// A log entry from a term newer than the node's own means the term file was
-	// lost or the log came from somewhere else. Starting would break safety.
-	lastTerm, err := cfg.Log.Term(cfg.Log.LastIndex())
-	if err != nil {
-		return nil, fmt.Errorf("raft: read last log entry: %w", err)
-	}
-	if lastTerm > hs.Term {
-		return nil, fmt.Errorf("raft: log ends in term %d but the saved term is only %d", lastTerm, hs.Term)
+	if cfg.Snapshots == nil {
+		cfg.Snapshots = NewMemorySnapshotStore()
 	}
 
 	n := &Node{
-		id:              cfg.ID,
-		quorum:          len(cfg.Cluster)/2 + 1,
-		electionTicks:   cfg.ElectionTicks,
-		heartbeatTicks:  cfg.HeartbeatTicks,
-		maxBatchEntries: cfg.MaxBatchEntries,
-		maxBatchBytes:   cfg.MaxBatchBytes,
-		storage:         cfg.Storage,
-		log:             cfg.Log,
-		rnd:             cfg.Rand,
-		logger:          cfg.Logger,
-		hs:              hs,
-		role:            Follower,
+		id:               cfg.ID,
+		quorum:           len(cfg.Cluster)/2 + 1,
+		electionTicks:    cfg.ElectionTicks,
+		heartbeatTicks:   cfg.HeartbeatTicks,
+		maxBatchEntries:  cfg.MaxBatchEntries,
+		maxBatchBytes:    cfg.MaxBatchBytes,
+		snapshotTrailing: cfg.SnapshotTrailing,
+		storage:          cfg.Storage,
+		log:              cfg.Log,
+		snaps:            cfg.Snapshots,
+		rnd:              cfg.Rand,
+		logger:           cfg.Logger,
+		hs:               hs,
+		role:             Follower,
 	}
 	if n.maxBatchEntries == 0 {
 		n.maxBatchEntries = defaultMaxBatchEntries
@@ -181,20 +198,74 @@ func New(cfg Config) (*Node, error) {
 	if n.logger == nil {
 		n.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+
+	if err := n.recoverSnapshot(); err != nil {
+		return nil, err
+	}
+
+	// A log entry from a term newer than the node's own means the term file was
+	// lost or the log came from somewhere else. Starting would break safety.
+	lastTerm, err := n.log.Term(n.log.LastIndex())
+	if err != nil {
+		return nil, fmt.Errorf("raft: read last log entry: %w", err)
+	}
+	if lastTerm > hs.Term {
+		return nil, fmt.Errorf("raft: log ends in term %d but the saved term is only %d", lastTerm, hs.Term)
+	}
 	n.resetElectionTimer()
 	return n, nil
+}
+
+// recoverSnapshot loads the snapshot and makes the log agree with it. The
+// state machine starts from the snapshot, so everything up to its index counts
+// as committed and applied.
+func (n *Node) recoverSnapshot() error {
+	snap, ok, err := n.snaps.Load()
+	if err != nil {
+		return fmt.Errorf("raft: load snapshot: %w", err)
+	}
+	baseIndex, _ := n.log.Base()
+	if !ok {
+		if baseIndex > 0 {
+			return fmt.Errorf("raft: the log was compacted up to index %d but there is no snapshot", baseIndex)
+		}
+		return nil
+	}
+
+	switch {
+	case snap.Index > n.log.LastIndex():
+		// The snapshot was saved, but the log was not yet cut down to it (a crash
+		// in between, or a snapshot received from the leader). The snapshot is
+		// ahead of everything the log holds, so it replaces the log.
+		if err := n.log.CompactTo(snap.Index, snap.Term); err != nil {
+			return fmt.Errorf("raft: align the log with the snapshot: %w", err)
+		}
+	case baseIndex > snap.Index:
+		return fmt.Errorf("raft: the log was compacted up to index %d, past the snapshot at index %d", baseIndex, snap.Index)
+	default:
+		if term, err := n.log.Term(snap.Index); err != nil || term != snap.Term {
+			return fmt.Errorf("raft: the snapshot (index %d, term %d) disagrees with the log", snap.Index, snap.Term)
+		}
+	}
+
+	n.snapshot = snap
+	n.commitIndex, n.lastApplied = snap.Index, snap.Index
+	restore := copySnapshot(snap)
+	n.restore = &restore
+	return nil
 }
 
 // Status returns a snapshot of the node.
 func (n *Node) Status() Status {
 	return Status{
-		ID:          n.id,
-		Role:        n.role,
-		Term:        n.hs.Term,
-		Leader:      n.leader,
-		VotedFor:    n.hs.VotedFor,
-		CommitIndex: n.commitIndex,
-		LastIndex:   n.log.LastIndex(),
+		ID:            n.id,
+		Role:          n.role,
+		Term:          n.hs.Term,
+		Leader:        n.leader,
+		VotedFor:      n.hs.VotedFor,
+		CommitIndex:   n.commitIndex,
+		LastIndex:     n.log.LastIndex(),
+		SnapshotIndex: n.snapshot.Index,
 	}
 }
 
@@ -205,10 +276,22 @@ func (n *Node) Messages() []Message {
 	return out
 }
 
+// TakeRestore returns a snapshot that the state machine must load, or nil. It
+// happens at startup if a snapshot exists, and when a leader sends this node a
+// snapshot because the entries it was missing no longer exist. The state
+// machine must load it before applying any entry that Committed() returns
+// afterwards, and it replaces all state it had.
+func (n *Node) TakeRestore() *Snapshot {
+	s := n.restore
+	n.restore = nil
+	return s
+}
+
 // Committed returns the entries that became committed since the last call, in
 // log order, and marks them as handed over. The caller applies them to the
-// state machine. After a restart the node starts again from index 1, so a state
-// machine that outlives the process must skip entries it already applied.
+// state machine. Without a snapshot, a restarted node starts again from
+// index 1, so a state machine that outlives the process must skip entries it
+// already applied.
 func (n *Node) Committed() ([]Entry, error) {
 	if n.commitIndex <= n.lastApplied {
 		return nil, nil
@@ -219,6 +302,50 @@ func (n *Node) Committed() ([]Entry, error) {
 	}
 	n.lastApplied = n.commitIndex
 	return entries, nil
+}
+
+// Compact folds the applied entries up to index into a snapshot. data is the
+// state machine's state after applying entry index, and index must already
+// have been handed out by Committed().
+//
+// The snapshot is saved first and the log is cut down afterwards, so a crash
+// in between loses nothing. The log keeps SnapshotTrailing entries below
+// index. Compact does nothing if a snapshot at or beyond index exists.
+func (n *Node) Compact(index uint64, data []byte) error {
+	if index <= n.snapshot.Index {
+		return nil
+	}
+	if index > n.lastApplied {
+		return fmt.Errorf("raft: cannot snapshot index %d: only %d entries were handed to the state machine", index, n.lastApplied)
+	}
+	term, err := n.log.Term(index)
+	if err != nil {
+		return fmt.Errorf("raft: snapshot index %d: %w", index, err)
+	}
+
+	snap := Snapshot{Index: index, Term: term, Data: append([]byte(nil), data...)}
+	if err := n.snaps.Save(snap); err != nil {
+		return fmt.Errorf("raft: save snapshot: %w", err)
+	}
+	n.snapshot = snap
+
+	// Keep a tail of the log so that a follower that is just a little behind
+	// can still be served from it.
+	if index <= n.snapshotTrailing {
+		return nil
+	}
+	cut := index - n.snapshotTrailing
+	if baseIndex, _ := n.log.Base(); cut <= baseIndex {
+		return nil
+	}
+	cutTerm, err := n.log.Term(cut)
+	if err != nil {
+		return fmt.Errorf("raft: compact the log: %w", err)
+	}
+	if err := n.log.CompactTo(cut, cutTerm); err != nil {
+		return fmt.Errorf("raft: compact the log: %w", err)
+	}
+	return nil
 }
 
 // Propose appends a command to the log. Only the leader accepts it; any other
@@ -245,6 +372,11 @@ func (n *Node) Propose(data []byte) (index, term uint64, err error) {
 // stays as it was and sends nothing that depends on the failed update.
 func (n *Node) Tick() error {
 	if n.role == Leader {
+		for p, left := range n.snapshotPause {
+			if left > 0 {
+				n.snapshotPause[p] = left - 1
+			}
+		}
 		n.heartbeatElapsed++
 		if n.heartbeatElapsed >= n.heartbeatTicks {
 			n.heartbeatElapsed = 0
@@ -269,7 +401,7 @@ func (n *Node) Step(m Message) error {
 	case m.Term > n.hs.Term:
 		// A newer term exists: this node is out of date, whatever its role.
 		var leader NodeID
-		if m.Type == MsgAppend {
+		if m.Type == MsgAppend || m.Type == MsgSnapshot {
 			leader = m.From
 		}
 		if err := n.becomeFollower(m.Term, leader); err != nil {
@@ -282,6 +414,8 @@ func (n *Node) Step(m Message) error {
 			n.send(Message{Type: MsgRequestVoteResp, To: m.From, Granted: false})
 		case MsgAppend:
 			n.send(Message{Type: MsgAppendResp, To: m.From, Success: false})
+		case MsgSnapshot:
+			n.send(Message{Type: MsgSnapshotResp, To: m.From, Success: false})
 		}
 		return nil
 	}
@@ -294,7 +428,9 @@ func (n *Node) Step(m Message) error {
 		return n.handleRequestVoteResp(m)
 	case MsgAppend:
 		return n.handleAppend(m)
-	case MsgAppendResp:
+	case MsgSnapshot:
+		return n.handleSnapshot(m)
+	case MsgAppendResp, MsgSnapshotResp:
 		n.handleAppendResp(m)
 	}
 	return nil
@@ -357,7 +493,7 @@ func (n *Node) becomeFollower(term uint64, leader NodeID) error {
 	n.role = Follower
 	n.leader = leader
 	n.votes = nil
-	n.nextIndex, n.matchIndex = nil, nil
+	n.nextIndex, n.matchIndex, n.snapshotPause = nil, nil, nil
 	n.resetElectionTimer()
 	return nil
 }
@@ -409,6 +545,7 @@ func (n *Node) becomeLeader() error {
 	n.heartbeatElapsed = 0
 	n.nextIndex = make(map[NodeID]uint64, len(n.peers))
 	n.matchIndex = make(map[NodeID]uint64, len(n.peers))
+	n.snapshotPause = make(map[NodeID]int, len(n.peers))
 	for _, p := range n.peers {
 		n.nextIndex[p] = noop.Index // optimistic: assume followers are up to date
 		n.matchIndex[p] = 0
@@ -430,6 +567,11 @@ func (n *Node) broadcastAppend() {
 
 func (n *Node) sendAppend(to NodeID) {
 	next := n.nextIndex[to]
+	if next < n.log.FirstIndex() {
+		// The entries this follower needs were folded into a snapshot.
+		n.sendSnapshot(to)
+		return
+	}
 	prev := next - 1
 	prevTerm, err := n.log.Term(prev)
 	if err != nil {
@@ -455,6 +597,21 @@ func (n *Node) sendAppend(to NodeID) {
 		Entries:      entries,
 		LeaderCommit: n.commitIndex,
 	})
+}
+
+// sendSnapshot sends the latest snapshot to a follower that is too far behind
+// for the log. A snapshot can be large and take a while to install, so after
+// sending one the leader waits an election timeout before sending it again and
+// meanwhile sends plain heartbeats that keep the follower from campaigning.
+func (n *Node) sendSnapshot(to NodeID) {
+	baseIndex, baseTerm := n.log.Base()
+	if n.snapshot.Index == 0 || n.snapshotPause[to] > 0 {
+		n.send(Message{Type: MsgAppend, To: to, PrevLogIndex: baseIndex, PrevLogTerm: baseTerm, LeaderCommit: n.commitIndex})
+		return
+	}
+	n.snapshotPause[to] = n.electionTicks
+	snap := n.snapshot // the data is never modified, so it can be shared
+	n.send(Message{Type: MsgSnapshot, To: to, Snapshot: &snap})
 }
 
 // limitBytes keeps the longest prefix of entries whose data fits in limit bytes.
@@ -530,13 +687,13 @@ func (n *Node) handleRequestVoteResp(m Message) error {
 	return nil
 }
 
-// handleAppend is the follower side of AppendEntries (Figure 2).
-func (n *Node) handleAppend(m Message) error {
+// acceptLeader records that m comes from the leader of the current term.
+// It reports false if this node is itself the leader, which cannot happen
+// while every node votes at most once per term.
+func (n *Node) acceptLeader(m Message) bool {
 	if n.role == Leader {
-		// Two leaders in one term would break election safety; it cannot happen
-		// while every node votes at most once per term.
-		n.logger.Error("received an append from another leader in my term", "node", n.id, "term", n.hs.Term, "from", m.From)
-		return nil
+		n.logger.Error("received a message from another leader in my term", "node", n.id, "term", n.hs.Term, "from", m.From, "type", m.Type.String())
+		return false
 	}
 	if n.role == Candidate {
 		// A leader was elected in this term: stop campaigning.
@@ -546,6 +703,14 @@ func (n *Node) handleAppend(m Message) error {
 	}
 	n.leader = m.From
 	n.resetElectionTimer()
+	return true
+}
+
+// handleAppend is the follower side of AppendEntries (Figure 2).
+func (n *Node) handleAppend(m Message) error {
+	if !n.acceptLeader(m) {
+		return nil
+	}
 
 	for i, e := range m.Entries {
 		if e.Index != m.PrevLogIndex+1+uint64(i) {
@@ -553,22 +718,74 @@ func (n *Node) handleAppend(m Message) error {
 			return nil
 		}
 	}
+	lastNew := m.PrevLogIndex + uint64(len(m.Entries))
+
+	// If the leader starts below our snapshot, the first entries are committed
+	// here already (a snapshot only ever covers committed entries). Skip them
+	// and check consistency at the snapshot boundary instead.
+	prevIndex, prevTerm, entries := m.PrevLogIndex, m.PrevLogTerm, m.Entries
+	if baseIndex, baseTerm := n.log.Base(); prevIndex < baseIndex {
+		skip := baseIndex - prevIndex
+		if skip >= uint64(len(entries)) {
+			entries = nil
+		} else {
+			entries = entries[skip:]
+		}
+		prevIndex, prevTerm = baseIndex, baseTerm
+	}
 
 	// Consistency check: our log must contain the entry just before the new ones.
-	if hint, ok := n.matchesPrev(m.PrevLogIndex, m.PrevLogTerm); !ok {
+	if hint, ok := n.matchesPrev(prevIndex, prevTerm); !ok {
 		n.send(Message{Type: MsgAppendResp, To: m.From, Success: false, HintIndex: hint})
 		return nil
 	}
 
-	if err := n.storeEntries(m.Entries); err != nil {
+	if err := n.storeEntries(entries); err != nil {
 		return err
 	}
 
-	lastNew := m.PrevLogIndex + uint64(len(m.Entries))
 	if newCommit := min(m.LeaderCommit, lastNew); newCommit > n.commitIndex {
 		n.commitIndex = newCommit
 	}
 	n.send(Message{Type: MsgAppendResp, To: m.From, Success: true, MatchIndex: lastNew})
+	return nil
+}
+
+// handleSnapshot is the follower side of InstallSnapshot.
+func (n *Node) handleSnapshot(m Message) error {
+	if !n.acceptLeader(m) {
+		return nil
+	}
+	s := m.Snapshot
+	if s == nil || s.Index == 0 {
+		n.logger.Warn("dropping a snapshot message without a snapshot", "node", n.id, "from", m.From)
+		return nil
+	}
+
+	if s.Index <= n.commitIndex {
+		// Everything the snapshot covers is committed here already, and committed
+		// entries are the same on every node, so the logs match up to s.Index.
+		n.send(Message{Type: MsgSnapshotResp, To: m.From, Success: true, MatchIndex: s.Index})
+		return nil
+	}
+
+	// Save the snapshot first. If the log were cut first and the node crashed,
+	// the entries would exist nowhere.
+	snap := copySnapshot(*s)
+	if err := n.snaps.Save(snap); err != nil {
+		return fmt.Errorf("raft: save received snapshot: %w", err)
+	}
+	// Keep the entries after the snapshot if our log agrees with it, otherwise
+	// drop the whole log (section 7, step 6 and 7).
+	if err := n.log.CompactTo(snap.Index, snap.Term); err != nil {
+		return fmt.Errorf("raft: apply received snapshot to the log: %w", err)
+	}
+	n.snapshot = snap
+	n.commitIndex, n.lastApplied = snap.Index, snap.Index
+	restore := copySnapshot(snap)
+	n.restore = &restore
+
+	n.send(Message{Type: MsgSnapshotResp, To: m.From, Success: true, MatchIndex: snap.Index})
 	return nil
 }
 
@@ -623,10 +840,14 @@ func (n *Node) storeEntries(entries []Entry) error {
 	return nil
 }
 
-// handleAppendResp is the leader side of AppendEntries replies.
+// handleAppendResp is the leader side of AppendEntries and InstallSnapshot
+// replies.
 func (n *Node) handleAppendResp(m Message) {
 	if n.role != Leader {
 		return
+	}
+	if m.Type == MsgSnapshotResp {
+		n.snapshotPause[m.From] = 0 // answered: no need to wait any longer
 	}
 	if m.Success {
 		if m.MatchIndex > n.matchIndex[m.From] {
@@ -645,8 +866,14 @@ func (n *Node) handleAppendResp(m Message) {
 		return
 	}
 
-	// The follower's log does not match at PrevLogIndex: back up and retry.
 	cur := n.nextIndex[m.From]
+	if cur < n.log.FirstIndex() {
+		// This follower is served from the snapshot; a reject to a heartbeat
+		// tells the leader nothing new.
+		return
+	}
+
+	// The follower's log does not match at PrevLogIndex: back up and retry.
 	next := m.HintIndex + 1
 	if next >= cur {
 		next = cur - 1 // always move back, or a lying hint could loop forever

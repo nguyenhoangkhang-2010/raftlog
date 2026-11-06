@@ -19,6 +19,9 @@ enum RaftMessageType {
   // AppendEntries; with no entries it is a heartbeat.
   RAFT_MESSAGE_TYPE_APPEND_ENTRIES = 3;
   RAFT_MESSAGE_TYPE_APPEND_ENTRIES_RESP = 4;
+  // InstallSnapshot: the leader no longer has the entries a follower needs.
+  RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT = 5;
+  RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT_RESP = 6;
 }
 
 enum LogEntryType {
@@ -33,6 +36,13 @@ message LogEntry {
   uint64 term = 2;
   LogEntryType type = 3;
   bytes data = 4;
+}
+
+// The state of the state machine after applying every entry up to `index`.
+message SnapshotData {
+  uint64 index = 1;
+  uint64 term = 2;
+  bytes data = 3;
 }
 
 message RaftMessage {
@@ -61,6 +71,10 @@ message RaftMessage {
   // log, on failure the last index the leader may assume to match.
   uint64 match_index = 13;
   uint64 hint_index = 14;
+
+  // InstallSnapshot: the complete snapshot. The response reuses `success` and
+  // `match_index`.
+  SnapshotData snapshot = 15;
 }
 
 message SendResponse {}

@@ -29,6 +29,7 @@ const (
 	EnvElectionTicks      = "RAFTLOG_ELECTION_TICKS"
 	EnvHeartbeatTicks     = "RAFTLOG_HEARTBEAT_TICKS"
 	EnvTickInterval       = "RAFTLOG_TICK_INTERVAL"
+	EnvMaxMessageBytes    = "RAFTLOG_MAX_MESSAGE_BYTES"
 )
 
 // Built-in defaults, used only when neither a flag nor a variable is given.
@@ -43,6 +44,11 @@ const (
 	defaultTickInterval   = 100 * time.Millisecond
 	defaultHeartbeatTicks = 1
 	defaultElectionTicks  = 10
+
+	// defaultMaxMessageBytes caps one node-to-node message. A snapshot travels
+	// in a single message, so this is also the largest state that can be sent
+	// to a follower that fell behind the log.
+	defaultMaxMessageBytes = 64 << 20
 )
 
 // Config is the configuration of one raftlogd node.
@@ -72,6 +78,8 @@ type Config struct {
 	ElectionTicks  int
 	HeartbeatTicks int
 	TickInterval   time.Duration
+	// MaxMessageBytes is the largest node-to-node message (see raft.WithMaxMessageBytes).
+	MaxMessageBytes int
 }
 
 // ParsePeers parses a peer list of the form "1=host:port,2=host:port".
@@ -129,6 +137,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		ElectionTicks:    defaultElectionTicks,
 		HeartbeatTicks:   defaultHeartbeatTicks,
 		TickInterval:     defaultTickInterval,
+		MaxMessageBytes:  defaultMaxMessageBytes,
 	}
 	var peersFlag string
 
@@ -196,6 +205,13 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		}
 		cfg.HeartbeatTicks = n
 	}
+	if v := getenv(EnvMaxMessageBytes); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvMaxMessageBytes, err))
+		}
+		cfg.MaxMessageBytes = n
+	}
 	if v := getenv(EnvTickInterval); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -221,6 +237,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.IntVar(&cfg.ElectionTicks, "election-ticks", cfg.ElectionTicks, "base election timeout in ticks ["+EnvElectionTicks+"]")
 	fs.IntVar(&cfg.HeartbeatTicks, "heartbeat-ticks", cfg.HeartbeatTicks, "heartbeat period in ticks ["+EnvHeartbeatTicks+"]")
 	fs.DurationVar(&cfg.TickInterval, "tick-interval", cfg.TickInterval, "length of one Raft tick ["+EnvTickInterval+"]")
+	fs.IntVar(&cfg.MaxMessageBytes, "max-message-bytes", cfg.MaxMessageBytes, "largest node-to-node message, which bounds the size of a snapshot ["+EnvMaxMessageBytes+"]")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -267,6 +284,9 @@ func (c Config) Validate() error {
 	} else {
 		if _, ok := c.Peers[c.NodeID]; !ok {
 			errs = append(errs, fmt.Errorf("peers must include this node (id %d)", c.NodeID))
+		}
+		if c.MaxMessageBytes < 1 {
+			errs = append(errs, errors.New("max message bytes must be at least 1"))
 		}
 		if c.TickInterval <= 0 {
 			errs = append(errs, errors.New("tick interval must be positive"))

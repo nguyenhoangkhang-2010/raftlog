@@ -77,7 +77,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.ListenAddr, err)
 	}
-	gs := grpc.NewServer()
+	var serverOpts []grpc.ServerOption
+	if runner != nil {
+		// Raft messages, snapshots included, can be larger than gRPC's default.
+		serverOpts = raft.ServerOptions(cfg.MaxMessageBytes)
+	}
+	gs := grpc.NewServer(serverOpts...)
 	server.Register(gs, srv)
 	if runner != nil {
 		raft.RegisterGRPC(gs, runner)
@@ -122,6 +127,11 @@ func newRaftRunner(cfg config.Config, logger *slog.Logger) (*raft.Runner, func()
 	if err != nil {
 		return nil, nil, fmt.Errorf("open raft log: %w", err)
 	}
+	snapshots, err := raft.NewFileSnapshotStore(filepath.Join(cfg.DataDir, "raft", "snapshot.bin"))
+	if err != nil {
+		_ = raftLog.Close()
+		return nil, nil, err
+	}
 
 	addrs := make(map[raft.NodeID]string, len(cfg.Peers))
 	cluster := make([]raft.NodeID, 0, len(cfg.Peers))
@@ -131,7 +141,7 @@ func newRaftRunner(cfg config.Config, logger *slog.Logger) (*raft.Runner, func()
 	}
 	sort.Slice(cluster, func(i, j int) bool { return cluster[i] < cluster[j] })
 
-	tr := raft.NewGRPCTransport(addrs)
+	tr := raft.NewGRPCTransport(addrs, raft.WithMaxMessageBytes(cfg.MaxMessageBytes))
 	runner, err := raft.NewRunner(raft.Config{
 		ID:             raft.NodeID(cfg.NodeID),
 		Cluster:        cluster,
@@ -139,6 +149,7 @@ func newRaftRunner(cfg config.Config, logger *slog.Logger) (*raft.Runner, func()
 		HeartbeatTicks: cfg.HeartbeatTicks,
 		Storage:        store,
 		Log:            raftLog,
+		Snapshots:      snapshots,
 		Logger:         logger,
 	}, tr, cfg.TickInterval)
 	if err != nil {
