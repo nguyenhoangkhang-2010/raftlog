@@ -19,8 +19,8 @@ import (
 // Trailer keys that tell a client where the leader is. They accompany a
 // FailedPrecondition error from a node that is not the leader.
 const (
-	LeaderIDKey   = "raftlog-leader-id"
-	LeaderAddrKey = "raftlog-leader-addr"
+	LeaderIDKey   = pb.LeaderIDKey
+	LeaderAddrKey = pb.LeaderAddrKey
 )
 
 // Backend is what the gRPC handlers need from the broker. A standalone node

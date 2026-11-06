@@ -40,6 +40,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1"
+	"github.com/nguyenhoangkhang-2010/raftlog/client"
 )
 
 // version is set at build time via -ldflags.
@@ -94,8 +95,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, "raftlogctl: need at least one -addr and a -retries that is not negative")
 		return 2
 	}
-	client := newClusterClient(addrs, *retries, *pause)
-	defer client.Close()
+	cluster, err := client.NewRouter(addrs, client.WithMaxAttempts(*retries), client.WithRetryPause(*pause))
+	if err != nil {
+		fmt.Fprintln(stderr, "raftlogctl:", err)
+		return 2
+	}
+	defer cluster.Close()
 
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
@@ -103,19 +108,19 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	var code int
 	switch cmd {
 	case "create-topic":
-		code = cmdCreateTopic(ctx, client, rest, stderr)
+		code = cmdCreateTopic(ctx, cluster, rest, stderr)
 	case "produce":
-		code = cmdProduce(ctx, client, rest, stdin, stdout, stderr)
+		code = cmdProduce(ctx, cluster, rest, stdin, stdout, stderr)
 	case "fetch":
-		code = cmdFetch(ctx, client, rest, stdout, stderr)
+		code = cmdFetch(ctx, cluster, rest, stdout, stderr)
 	case "status":
-		code = cmdStatus(ctx, client, rest, stdout, stderr)
+		code = cmdStatus(ctx, cluster, rest, stdout, stderr)
 	case "commit":
-		code = cmdCommit(ctx, client, rest, stderr)
+		code = cmdCommit(ctx, cluster, rest, stderr)
 	case "offsets":
-		code = cmdOffsets(ctx, client, rest, stdout, stderr)
+		code = cmdOffsets(ctx, cluster, rest, stdout, stderr)
 	case "consume":
-		code = cmdConsume(ctx, client, rest, stdout, stderr)
+		code = cmdConsume(ctx, cluster, rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "raftlogctl: unknown command %q\n", cmd)
 		usage(stderr)
