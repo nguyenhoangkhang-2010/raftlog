@@ -9,6 +9,13 @@
 //	create-topic [-partitions N] <topic>
 //	produce      [-key K] [-value V | -lines] [-partition P] <topic>
 //	fetch        [-partition P] [-offset O] [-max N] <topic>
+//	commit       -group G [-partition P] -offset O <topic>
+//	offsets      -group G [-partition P] <topic>
+//	consume      -group G [-partition P] [-max N] <topic>
+//
+// consume reads from the group's committed offset (or from 0 if none), prints
+// the messages, then commits the offset after the last one it printed, so
+// running it again continues where it stopped (at-least-once delivery).
 //
 // produce reads the value from stdin when -value is not given. With -lines,
 // every line of stdin is sent as one message.
@@ -97,6 +104,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		code = cmdProduce(ctx, client, rest, stdin, stdout, stderr)
 	case "fetch":
 		code = cmdFetch(ctx, client, rest, stdout, stderr)
+	case "commit":
+		code = cmdCommit(ctx, client, rest, stderr)
+	case "offsets":
+		code = cmdOffsets(ctx, client, rest, stdout, stderr)
+	case "consume":
+		code = cmdConsume(ctx, client, rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "raftlogctl: unknown command %q\n", cmd)
 		usage(stderr)
@@ -112,6 +125,9 @@ commands:
   create-topic [-partitions N] <topic>
   produce      [-key K] [-value V | -lines] [-partition P] <topic>
   fetch        [-partition P] [-offset O] [-max N] <topic>
+  commit       -group G [-partition P] -offset O <topic>
+  offsets      -group G [-partition P] <topic>
+  consume      -group G [-partition P] [-max N] <topic>
 `)
 }
 
@@ -219,6 +235,109 @@ func cmdProduce(ctx context.Context, c pb.BrokerClient, args []string, stdin io.
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "partition=%d base_offset=%d count=%d\n", resp.Partition, resp.BaseOffset, len(msgs))
+	return 0
+}
+
+// requireGroup checks that -group was given.
+func requireGroup(name, group string, stderr io.Writer) bool {
+	if group == "" {
+		fmt.Fprintf(stderr, "raftlogctl %s: -group is required\n", name)
+		return false
+	}
+	return true
+}
+
+func cmdCommit(ctx context.Context, c pb.BrokerClient, args []string, stderr io.Writer) int {
+	fs := newFlags("commit", stderr)
+	group := fs.String("group", "", "consumer group name (required)")
+	partition := fs.Uint("partition", 0, "partition")
+	offset := fs.Uint64("offset", 0, "next offset the group will read (required)")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+	offsetSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "offset" {
+			offsetSet = true
+		}
+	})
+	if !requireGroup("commit", *group, stderr) {
+		return 2
+	}
+	if !offsetSet {
+		fmt.Fprintln(stderr, "raftlogctl commit: -offset is required")
+		return 2
+	}
+	if _, err := c.CommitOffset(ctx, &pb.CommitOffsetRequest{
+		Group: *group, Topic: topic, Partition: uint32(*partition), Offset: *offset,
+	}); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
+}
+
+func cmdOffsets(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	fs := newFlags("offsets", stderr)
+	group := fs.String("group", "", "consumer group name (required)")
+	partition := fs.Uint("partition", 0, "partition")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+	if !requireGroup("offsets", *group, stderr) {
+		return 2
+	}
+	resp, err := c.FetchOffset(ctx, &pb.FetchOffsetRequest{Group: *group, Topic: topic, Partition: uint32(*partition)})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "group=%s topic=%s partition=%d committed=%t offset=%d end=%d lag=%d\n",
+		*group, topic, *partition, resp.Committed, resp.Offset, resp.EndOffset, resp.Lag)
+	return 0
+}
+
+func cmdConsume(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	fs := newFlags("consume", stderr)
+	group := fs.String("group", "", "consumer group name (required)")
+	partition := fs.Uint("partition", 0, "partition to read")
+	limit := fs.Uint("max", 10, "maximum number of messages")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+	if !requireGroup("consume", *group, stderr) {
+		return 2
+	}
+
+	pos, err := c.FetchOffset(ctx, &pb.FetchOffsetRequest{Group: *group, Topic: topic, Partition: uint32(*partition)})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	resp, err := c.Fetch(ctx, &pb.FetchRequest{
+		Topic:       topic,
+		Partition:   uint32(*partition),
+		Offset:      pos.Offset,
+		MaxMessages: uint32(*limit),
+	})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(resp.Messages) == 0 {
+		return 0
+	}
+	for _, m := range resp.Messages {
+		fmt.Fprintf(stdout, "%d\t%d\t%s\t%s\n", m.Offset, m.TimestampMs, strconv.Quote(string(m.Key)), strconv.Quote(string(m.Value)))
+	}
+
+	// Commit only after the messages were printed: a crash in between means the
+	// next run prints them again (at-least-once), never that they are skipped.
+	next := resp.Messages[len(resp.Messages)-1].Offset + 1
+	if _, err := c.CommitOffset(ctx, &pb.CommitOffsetRequest{
+		Group: *group, Topic: topic, Partition: uint32(*partition), Offset: next,
+	}); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
 

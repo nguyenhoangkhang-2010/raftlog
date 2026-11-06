@@ -190,6 +190,45 @@ func TestErrorCodes(t *testing.T) {
 	_, err = c.Fetch(ctx(t), &pb.FetchRequest{Topic: "nope", MaxMessages: 1})
 	wantCode(t, err, codes.NotFound)
 
-	_, err = c.CommitOffset(ctx(t), &pb.CommitOffsetRequest{Group: "g", Topic: "events"})
-	wantCode(t, err, codes.Unimplemented)
+}
+
+func TestConsumerGroupOffsetsOverGRPC(t *testing.T) {
+	c := startServer(t)
+	if _, err := c.CreateTopic(ctx(t), &pb.CreateTopicRequest{Topic: "events", Partitions: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var batch []*pb.Message
+	for i := 0; i < 4; i++ {
+		batch = append(batch, &pb.Message{Value: []byte(fmt.Sprint(i))})
+	}
+	if _, err := c.Produce(ctx(t), &pb.ProduceRequest{Topic: "events", Messages: batch}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.FetchOffset(ctx(t), &pb.FetchOffsetRequest{Group: "g1", Topic: "events"})
+	if err != nil || got.Committed || got.Offset != 0 || got.EndOffset != 4 || got.Lag != 4 {
+		t.Fatalf("before commit: %+v, err %v", got, err)
+	}
+
+	if _, err := c.CommitOffset(ctx(t), &pb.CommitOffsetRequest{Group: "g1", Topic: "events", Offset: 3}); err != nil {
+		t.Fatalf("CommitOffset: %v", err)
+	}
+	got, err = c.FetchOffset(ctx(t), &pb.FetchOffsetRequest{Group: "g1", Topic: "events"})
+	if err != nil || !got.Committed || got.Offset != 3 || got.EndOffset != 4 || got.Lag != 1 {
+		t.Fatalf("after commit: %+v, err %v", got, err)
+	}
+
+	// Error codes.
+	_, err = c.CommitOffset(ctx(t), &pb.CommitOffsetRequest{Group: "g1", Topic: "events", Offset: 5})
+	wantCode(t, err, codes.OutOfRange)
+	_, err = c.CommitOffset(ctx(t), &pb.CommitOffsetRequest{Group: "bad group", Topic: "events"})
+	wantCode(t, err, codes.InvalidArgument)
+	_, err = c.CommitOffset(ctx(t), &pb.CommitOffsetRequest{Group: "g1", Topic: "nope"})
+	wantCode(t, err, codes.NotFound)
+	_, err = c.CommitOffset(ctx(t), &pb.CommitOffsetRequest{Group: "g1", Topic: "events", Partition: 3})
+	wantCode(t, err, codes.InvalidArgument)
+	_, err = c.FetchOffset(ctx(t), &pb.FetchOffsetRequest{Group: "", Topic: "events"})
+	wantCode(t, err, codes.InvalidArgument)
+	_, err = c.FetchOffset(ctx(t), &pb.FetchOffsetRequest{Group: "g1", Topic: "nope"})
+	wantCode(t, err, codes.NotFound)
 }
