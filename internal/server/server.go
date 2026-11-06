@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1"
@@ -13,6 +15,53 @@ import (
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/raft"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/storage"
 )
+
+// Trailer keys that tell a client where the leader is. They accompany a
+// FailedPrecondition error from a node that is not the leader.
+const (
+	LeaderIDKey   = "raftlog-leader-id"
+	LeaderAddrKey = "raftlog-leader-addr"
+)
+
+// Backend is what the gRPC handlers need from the broker. A standalone node
+// uses Local; a node of a Raft cluster uses *broker.Replicated, which sends
+// every change through the replicated log.
+type Backend interface {
+	CreateTopic(ctx context.Context, name string, partitions int) error
+	// Produce returns the partition used and the offset of the first message.
+	Produce(ctx context.Context, topic string, partition int, msgs []storage.Message) (int, uint64, error)
+	CommitOffset(ctx context.Context, group, topic string, partition int, offset uint64) error
+	Fetch(topic string, partition int, offset uint64, limit int) ([]storage.Message, error)
+	GroupOffset(group, topic string, partition int) (broker.OffsetInfo, error)
+}
+
+var _ Backend = (*broker.Replicated)(nil)
+
+// Local returns a Backend that applies everything directly to b, for a node
+// that is not part of a cluster.
+func Local(b *broker.Broker) Backend { return local{b} }
+
+type local struct{ b *broker.Broker }
+
+func (l local) CreateTopic(_ context.Context, name string, partitions int) error {
+	return l.b.CreateTopic(name, partitions)
+}
+
+func (l local) Produce(_ context.Context, topic string, partition int, msgs []storage.Message) (int, uint64, error) {
+	return l.b.Produce(topic, partition, msgs)
+}
+
+func (l local) CommitOffset(_ context.Context, group, topic string, partition int, offset uint64) error {
+	return l.b.CommitOffset(group, topic, partition, offset)
+}
+
+func (l local) Fetch(topic string, partition int, offset uint64, limit int) ([]storage.Message, error) {
+	return l.b.Fetch(topic, partition, offset, limit)
+}
+
+func (l local) GroupOffset(group, topic string, partition int) (broker.OffsetInfo, error) {
+	return l.b.GroupOffset(group, topic, partition)
+}
 
 // Options configures the gRPC handlers.
 type Options struct {
@@ -22,6 +71,9 @@ type Options struct {
 	// Raft reports the Raft state of this node. Optional: nil means the node
 	// runs standalone.
 	Raft RaftStatus
+	// LeaderAddr turns a node ID into the address clients can reach it at, so a
+	// node that is not the leader can tell clients where to go. Optional.
+	LeaderAddr func(raft.NodeID) string
 }
 
 // RaftStatus is implemented by raft.Runner.
@@ -29,19 +81,19 @@ type RaftStatus interface {
 	Status() raft.Status
 }
 
-// Server implements the Broker gRPC service on top of a broker.Broker.
+// Server implements the Broker gRPC service on top of a Backend.
 type Server struct {
 	pb.UnimplementedBrokerServer
-	broker *broker.Broker
-	opts   Options
+	backend Backend
+	opts    Options
 }
 
 // New returns a Server backed by b.
-func New(b *broker.Broker, opts Options) (*Server, error) {
+func New(b Backend, opts Options) (*Server, error) {
 	if opts.MaxFetchMessages < 1 {
 		return nil, errors.New("server: MaxFetchMessages must be at least 1")
 	}
-	return &Server{broker: b, opts: opts}, nil
+	return &Server{backend: b, opts: opts}, nil
 }
 
 // Register adds the service to a gRPC server.
@@ -50,15 +102,15 @@ func Register(g *grpc.Server, s *Server) {
 }
 
 // CreateTopic creates a topic.
-func (s *Server) CreateTopic(_ context.Context, req *pb.CreateTopicRequest) (*pb.CreateTopicResponse, error) {
-	if err := s.broker.CreateTopic(req.GetTopic(), int(req.GetPartitions())); err != nil {
-		return nil, toStatus(err)
+func (s *Server) CreateTopic(ctx context.Context, req *pb.CreateTopicRequest) (*pb.CreateTopicResponse, error) {
+	if err := s.backend.CreateTopic(ctx, req.GetTopic(), int(req.GetPartitions())); err != nil {
+		return nil, s.fail(ctx, err)
 	}
 	return &pb.CreateTopicResponse{}, nil
 }
 
 // Produce appends the messages of the request to one partition.
-func (s *Server) Produce(_ context.Context, req *pb.ProduceRequest) (*pb.ProduceResponse, error) {
+func (s *Server) Produce(ctx context.Context, req *pb.ProduceRequest) (*pb.ProduceResponse, error) {
 	msgs := make([]storage.Message, len(req.GetMessages()))
 	for i, m := range req.GetMessages() {
 		msgs[i] = storage.Message{
@@ -72,15 +124,15 @@ func (s *Server) Produce(_ context.Context, req *pb.ProduceRequest) (*pb.Produce
 	if req.Partition != nil {
 		partition = int(req.GetPartition())
 	}
-	part, base, err := s.broker.Produce(req.GetTopic(), partition, msgs)
+	part, base, err := s.backend.Produce(ctx, req.GetTopic(), partition, msgs)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, s.fail(ctx, err)
 	}
 	return &pb.ProduceResponse{Partition: uint32(part), BaseOffset: base}, nil
 }
 
 // Fetch reads messages from one partition, starting at an offset.
-func (s *Server) Fetch(_ context.Context, req *pb.FetchRequest) (*pb.FetchResponse, error) {
+func (s *Server) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResponse, error) {
 	if req.GetMaxMessages() == 0 {
 		return nil, status.Error(codes.InvalidArgument, "max_messages must be greater than 0")
 	}
@@ -89,9 +141,9 @@ func (s *Server) Fetch(_ context.Context, req *pb.FetchRequest) (*pb.FetchRespon
 		limit = n
 	}
 
-	msgs, err := s.broker.Fetch(req.GetTopic(), int(req.GetPartition()), req.GetOffset(), limit)
+	msgs, err := s.backend.Fetch(req.GetTopic(), int(req.GetPartition()), req.GetOffset(), limit)
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, s.fail(ctx, err)
 	}
 	out := make([]*pb.Message, len(msgs))
 	for i, m := range msgs {
@@ -106,18 +158,18 @@ func (s *Server) Fetch(_ context.Context, req *pb.FetchRequest) (*pb.FetchRespon
 }
 
 // CommitOffset records the position of a consumer group in a partition.
-func (s *Server) CommitOffset(_ context.Context, req *pb.CommitOffsetRequest) (*pb.CommitOffsetResponse, error) {
-	if err := s.broker.CommitOffset(req.GetGroup(), req.GetTopic(), int(req.GetPartition()), req.GetOffset()); err != nil {
-		return nil, toStatus(err)
+func (s *Server) CommitOffset(ctx context.Context, req *pb.CommitOffsetRequest) (*pb.CommitOffsetResponse, error) {
+	if err := s.backend.CommitOffset(ctx, req.GetGroup(), req.GetTopic(), int(req.GetPartition()), req.GetOffset()); err != nil {
+		return nil, s.fail(ctx, err)
 	}
 	return &pb.CommitOffsetResponse{}, nil
 }
 
 // FetchOffset returns the committed offset of a consumer group and its lag.
-func (s *Server) FetchOffset(_ context.Context, req *pb.FetchOffsetRequest) (*pb.FetchOffsetResponse, error) {
-	info, err := s.broker.GroupOffset(req.GetGroup(), req.GetTopic(), int(req.GetPartition()))
+func (s *Server) FetchOffset(ctx context.Context, req *pb.FetchOffsetRequest) (*pb.FetchOffsetResponse, error) {
+	info, err := s.backend.GroupOffset(req.GetGroup(), req.GetTopic(), int(req.GetPartition()))
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, s.fail(ctx, err)
 	}
 	return &pb.FetchOffsetResponse{
 		Committed: info.Committed,
@@ -146,9 +198,39 @@ func (s *Server) NodeStatus(context.Context, *pb.NodeStatusRequest) (*pb.NodeSta
 	}, nil
 }
 
-// toStatus maps broker and storage errors to gRPC status codes.
+// fail turns an error into a gRPC status. For a node that is not the leader it
+// also sends the leader's identity and address as trailers, so that the client
+// can retry at the right place.
+func (s *Server) fail(ctx context.Context, err error) error {
+	var notLeader *raft.NotLeaderError
+	if errors.As(err, &notLeader) {
+		md := metadata.MD{}
+		if notLeader.Leader != raft.None {
+			md.Set(LeaderIDKey, strconv.FormatUint(uint64(notLeader.Leader), 10))
+			if s.opts.LeaderAddr != nil {
+				if addr := s.opts.LeaderAddr(notLeader.Leader); addr != "" {
+					md.Set(LeaderAddrKey, addr)
+				}
+			}
+		}
+		_ = grpc.SetTrailer(ctx, md)
+	}
+	return toStatus(err)
+}
+
+// toStatus maps broker, storage and raft errors to gRPC status codes.
 func toStatus(err error) error {
 	switch {
+	case errors.Is(err, raft.ErrNotLeader):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, raft.ErrLeadershipLost), errors.Is(err, raft.ErrEntryReplaced), errors.Is(err, raft.ErrStopped):
+		// The command may or may not have been applied: the client may retry,
+		// and must expect that a retry can duplicate a message.
+		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, err.Error())
 	case errors.Is(err, broker.ErrTopicNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, broker.ErrTopicExists):

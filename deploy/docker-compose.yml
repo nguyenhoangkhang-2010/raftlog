@@ -1,5 +1,5 @@
-# A 3-node raftlog cluster. The nodes elect a leader among themselves
-# (log replication comes in a later branch, so produced data is not replicated yet).
+# A 3-node raftlog cluster. The nodes elect a leader among themselves, and every
+# topic, message and consumer offset is replicated through the Raft log.
 #
 # Every value can be overridden from the shell or a .env file, e.g.
 #   RAFTLOG_PORT_1=19091 docker compose -f deploy/docker-compose.yml up --build
@@ -18,6 +18,8 @@ x-node: &node
     RAFTLOG_ELECTION_TICKS: "${RAFTLOG_ELECTION_TICKS:-10}"
     RAFTLOG_HEARTBEAT_TICKS: "${RAFTLOG_HEARTBEAT_TICKS:-1}"
     RAFTLOG_TICK_INTERVAL: "${RAFTLOG_TICK_INTERVAL:-100ms}"
+    RAFTLOG_SNAPSHOT_EVERY: "${RAFTLOG_SNAPSHOT_EVERY:-10000}"
+    RAFTLOG_SNAPSHOT_TRAILING: "${RAFTLOG_SNAPSHOT_TRAILING:-1000}"
     RAFTLOG_SEGMENT_MAX_BYTES: "${RAFTLOG_SEGMENT_MAX_BYTES:-0}"
     RAFTLOG_INDEX_INTERVAL_BYTES: "${RAFTLOG_INDEX_INTERVAL_BYTES:-0}"
     RAFTLOG_SYNC_ON_APPEND: "${RAFTLOG_SYNC_ON_APPEND:-false}"

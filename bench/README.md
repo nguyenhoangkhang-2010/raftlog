@@ -47,6 +47,13 @@ timeout 1.0-2.0 s, heartbeat every tick). One run each, so only an order of magn
 | Cluster started to leader visible through `raftlogctl status` | 1.52 s |
 | Leader process killed to new leader visible | 1.13 s (a later run on the same machine: 2.1 s) |
 
+### Writes across a leader failure
+Three real `raftlogd` processes on one machine, `raftlogctl` with all three addresses,
+12 acknowledged writes, then the leader killed and 10 more writes issued at once
+(one run): 0 of the 10 failed, they took 1.75 s in total (almost all of it waiting for the
+election), and each node ended with exactly 22 messages. One run only: not a throughput
+or latency figure.
+
 Machine: Intel Core i7-12700H, Windows 11, Go 1.27.3, loopback network.
 The election timeout is the main lever: a failover cannot be faster than the shortest
 timeout, and lowering it makes spurious elections more likely on a slow network.

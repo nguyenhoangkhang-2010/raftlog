@@ -21,7 +21,7 @@ func startBroker(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := server.New(b, server.Options{MaxFetchMessages: 100})
+	srv, err := server.New(server.Local(b), server.Options{MaxFetchMessages: 100})
 	if err != nil {
 		t.Fatal(err)
 	}

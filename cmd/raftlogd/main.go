@@ -57,19 +57,30 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 	}
 	defer b.Close()
 
+	// A standalone node applies requests to the broker directly. A node of a
+	// cluster turns every change into a command in the replicated log; the broker
+	// is then the state machine that applies the committed commands.
+	backend := server.Backend(server.Local(b))
 	srvOpts := server.Options{MaxFetchMessages: cfg.MaxFetchMessages}
 	var runner *raft.Runner
 	if cfg.NodeID != 0 {
+		machine, err := broker.NewMachine(b, filepath.Join(cfg.DataDir, "machine"))
+		if err != nil {
+			return fmt.Errorf("open state machine: %w", err)
+		}
 		var closeTransport func() error
-		runner, closeTransport, err = newRaftRunner(cfg, logger)
+		runner, closeTransport, err = newRaftRunner(cfg, logger, machine)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = closeTransport() }() // shutting down: nothing useful to do with a close error
+		backend = broker.NewReplicated(machine, runner)
 		srvOpts.Raft = runner
+		// Tell clients where the leader is, in the address they use for this node.
+		srvOpts.LeaderAddr = func(id raft.NodeID) string { return cfg.Peers[uint64(id)] }
 	}
 
-	srv, err := server.New(b, srvOpts)
+	srv, err := server.New(backend, srvOpts)
 	if err != nil {
 		return err
 	}
@@ -118,7 +129,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 // newRaftRunner builds the Raft runner for this node from the configuration.
 // The returned function closes the connections to the other nodes and the Raft
 // log; call it only after the runner has stopped.
-func newRaftRunner(cfg config.Config, logger *slog.Logger) (*raft.Runner, func() error, error) {
+func newRaftRunner(cfg config.Config, logger *slog.Logger, machine raft.StateMachine) (*raft.Runner, func() error, error) {
 	store, err := raft.NewFileStorage(filepath.Join(cfg.DataDir, "raft", "state.json"))
 	if err != nil {
 		return nil, nil, err
@@ -151,7 +162,9 @@ func newRaftRunner(cfg config.Config, logger *slog.Logger) (*raft.Runner, func()
 		Log:            raftLog,
 		Snapshots:      snapshots,
 		Logger:         logger,
-	}, tr, cfg.TickInterval)
+
+		SnapshotTrailing: cfg.SnapshotTrailing,
+	}, tr, cfg.TickInterval, raft.WithStateMachine(machine), raft.WithSnapshotEvery(cfg.SnapshotEvery))
 	if err != nil {
 		_ = tr.Close()
 		_ = raftLog.Close()

@@ -90,6 +90,30 @@ func TestRaftSettingsFromEnvAndFlags(t *testing.T) {
 	}
 }
 
+func TestSnapshotSettings(t *testing.T) {
+	cfg, err := Load(
+		[]string{"-snapshot-trailing", "7"},
+		env(map[string]string{EnvSnapshotEvery: "250", EnvSnapshotTrailing: "99"}),
+		io.Discard,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SnapshotEvery != 250 || cfg.SnapshotTrailing != 7 {
+		t.Fatalf("every %d, trailing %d; want 250 from the environment and 7 from the flag", cfg.SnapshotEvery, cfg.SnapshotTrailing)
+	}
+	// Zero means "never", and is allowed.
+	cfg, err = Load([]string{"-snapshot-every", "0"}, env(nil), io.Discard)
+	if err != nil || cfg.SnapshotEvery != 0 {
+		t.Fatalf("snapshot-every 0: %+v, %v", cfg, err)
+	}
+	for _, bad := range []map[string]string{{EnvSnapshotEvery: "-1"}, {EnvSnapshotTrailing: "many"}} {
+		if _, err := Load(nil, env(bad), io.Discard); err == nil {
+			t.Errorf("%v was accepted", bad)
+		}
+	}
+}
+
 func TestInvalidRaftSettings(t *testing.T) {
 	good := []string{"-node-id", "1", "-peers", "1=a:9092,2=b:9092"}
 	cases := []struct {

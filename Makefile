@@ -19,7 +19,7 @@ fmt:
 proto:
 	protoc --go_out=. --go_opt=paths=source_relative \
 	       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-	       api/raftlog/v1/raftlog.proto api/raftlog/v1/raft.proto
+	       api/raftlog/v1/raftlog.proto api/raftlog/v1/raft.proto api/raftlog/v1/command.proto
 
 bench:
 	go test -run '^$$' -bench . -benchmem ./...
