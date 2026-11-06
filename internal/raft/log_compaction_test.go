@@ -332,7 +332,7 @@ func TestFileSnapshotStoreRejectsDamagedFiles(t *testing.T) {
 		"truncated":                  func(d []byte) []byte { return d[:len(d)-3] },
 		"extra bytes at the end":     func(d []byte) []byte { return append(d, 0) },
 		"wrong magic":                func(d []byte) []byte { d[0] = 'X'; return d },
-		"empty":                      func(d []byte) []byte { return nil },
+		"empty":                      func([]byte) []byte { return nil },
 		"length field too large":     func(d []byte) []byte { binary.BigEndian.PutUint64(d[20:28], 1<<40); return d },
 		"only a header, no checksum": func(d []byte) []byte { return d[:snapshotHeaderSize] },
 	}
