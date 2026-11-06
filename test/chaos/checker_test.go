@@ -60,22 +60,22 @@ func TestTheCheckerNoticesEachKindOfBrokenPromise(t *testing.T) {
 		mutate func(h *History, f Final)
 		want   string
 	}{
-		{"an acknowledged write disappeared", func(h *History, f Final) {
+		{"an acknowledged write disappeared", func(_ *History, f Final) {
 			f[0] = []string{"a", "c", "u-stored"} // "b" is gone (and "c" moved)
 		}, KindLostAck},
-		{"an acknowledged write ended at another offset", func(h *History, f Final) {
+		{"an acknowledged write ended at another offset", func(_ *History, f Final) {
 			f[0] = []string{"b", "a", "c", "u-stored"}
 		}, KindMoved},
-		{"a message is stored twice", func(h *History, f Final) {
+		{"a message is stored twice", func(_ *History, f Final) {
 			f[0] = []string{"a", "b", "c", "u-stored", "u-stored"}
 		}, KindDuplicate},
-		{"a message nobody sent appears", func(h *History, f Final) {
+		{"a message nobody sent appears", func(_ *History, f Final) {
 			f[0] = []string{"a", "b", "c", "u-stored", "ghost"}
 		}, KindPhantom},
-		{"a refused write was stored", func(h *History, f Final) {
+		{"a refused write was stored", func(_ *History, f Final) {
 			f[0] = []string{"a", "b", "c", "u-stored", "r"}
 		}, KindRejectedStored},
-		{"a message landed in another partition", func(h *History, f Final) {
+		{"a message landed in another partition", func(_ *History, f Final) {
 			f[1] = []string{"x", "u-lost"}
 		}, KindWrongPartition},
 		{"an append finished before another started but got a higher offset", func(h *History, f Final) {
@@ -83,16 +83,16 @@ func TestTheCheckerNoticesEachKindOfBrokenPromise(t *testing.T) {
 			f[0] = []string{"c", "a", "b", "u-stored"}
 			h.Writes[0].Offset, h.Writes[1].Offset, h.Writes[2].Offset = 1, 2, 0
 		}, KindRealTime},
-		{"a read showed data that is not in the log", func(h *History, f Final) {
+		{"a read showed data that is not in the log", func(h *History, _ Final) {
 			h.Reads = append(h.Reads, Read{Node: 3, Partition: 0, Offset: 3, Values: []string{"rolled-back"}})
 		}, KindDirtyRead},
-		{"a read showed a value at the wrong offset", func(h *History, f Final) {
+		{"a read showed a value at the wrong offset", func(h *History, _ Final) {
 			h.Reads = append(h.Reads, Read{Node: 2, Partition: 0, Offset: 0, Values: []string{"b"}})
 		}, KindDirtyRead},
-		{"a read went past the end of the log", func(h *History, f Final) {
+		{"a read went past the end of the log", func(h *History, _ Final) {
 			h.Reads = append(h.Reads, Read{Node: 2, Partition: 1, Offset: 0, Values: []string{"x", "extra"}})
 		}, KindDirtyRead},
-		{"two writes used the same value", func(h *History, f Final) {
+		{"two writes used the same value", func(h *History, _ Final) {
 			h.Writes = append(h.Writes, other(Unknown, 0, "a", 50, 60))
 		}, KindBadHistory},
 	}
