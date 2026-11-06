@@ -29,10 +29,12 @@ type kvMachine struct {
 	cmds []string
 }
 
-func (m *kvMachine) Apply(e Entry) {
+func (m *kvMachine) Apply(e Entry) any {
 	m.mu.Lock()
 	m.cmds = append(m.cmds, string(e.Data))
+	n := len(m.cmds)
 	m.mu.Unlock()
+	return n // the number of commands applied so far
 }
 
 func (m *kvMachine) Snapshot() ([]byte, error) {
@@ -331,6 +333,23 @@ func TestRealClusterBringsALateNodeUpToDateWithASnapshot(t *testing.T) {
 		waitFor(t, fmt.Sprintf("node %d to apply the last command", n.id), func() bool {
 			return reflect.DeepEqual(n.appliedData(), want)
 		})
+	}
+}
+
+func TestProposeResultReturnsWhatTheStateMachineAnswered(t *testing.T) {
+	nodes := startRealCluster(t, 3)
+	leader := nodeByID(nodes, waitForLeader(t, nodes, nil).ID)
+
+	for want := 1; want <= 3; want++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, got, err := leader.runner.ProposeResult(ctx, []byte(fmt.Sprintf("c%d", want)))
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("result = %v, want %d: the state machine's answer did not reach the caller", got, want)
+		}
 	}
 }
 

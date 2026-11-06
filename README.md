@@ -27,7 +27,8 @@ Consumer ◄── read by offset
 - [x] Raft leader election: terms, randomized timeouts, durable vote, heartbeats, step-down
 - [x] Raft log replication: durable log (WAL), AppendEntries with consistency check, commit index, batching, catch-up of lagging followers
 - [x] Raft snapshots: log compaction, InstallSnapshot for followers that fell behind, recovery from a snapshot at startup
-- [ ] Broker data (produce, offsets) replicated through the Raft log
+- [x] Broker data replicated through the Raft log: topics, produce and consumer offsets survive the loss of a node; clients follow the leader
+- [ ] Chaos tests with a linearizability checker
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
 - [ ] Prometheus metrics and Grafana dashboard
@@ -37,6 +38,29 @@ Consumer ◄── read by offset
 # starts one broker node (the 3-node Raft cluster comes in later phases)
 docker compose -f deploy/docker-compose.yml up
 ```
+
+## Try a cluster
+Start three nodes (each in its own terminal; every node needs the same `-peers`):
+```bash
+raftlogd -node-id 1 -listen 127.0.0.1:9091 -data-dir data1 -peers 1=127.0.0.1:9091,2=127.0.0.1:9092,3=127.0.0.1:9093
+raftlogd -node-id 2 -listen 127.0.0.1:9092 -data-dir data2 -peers 1=127.0.0.1:9091,2=127.0.0.1:9092,3=127.0.0.1:9093
+raftlogd -node-id 3 -listen 127.0.0.1:9093 -data-dir data3 -peers 1=127.0.0.1:9091,2=127.0.0.1:9092,3=127.0.0.1:9093
+```
+Then use all three addresses, so the client follows the leader and survives its loss:
+```bash
+raftlogctl -addr 127.0.0.1:9091,127.0.0.1:9092,127.0.0.1:9093 create-topic -partitions 2 orders
+raftlogctl -addr 127.0.0.1:9091,127.0.0.1:9092,127.0.0.1:9093 produce -key user-1 -value hello orders
+raftlogctl -addr 127.0.0.1:9091 status     # role, term, leader, commit and snapshot index of that node
+```
+Stop the leader and keep producing: the writes continue on the new leader.
+
+## Known limitations
+- One Raft group for the whole cluster: every write goes through a single leader.
+- A snapshot is a copy of all data held in memory and sent in one message
+  (`-max-message-bytes`), so the data set is bounded.
+- Delivery is at-least-once (a retried request can store a message twice); reads can
+  lag on a follower and are not linearizable; node-to-node traffic is not encrypted.
+- See `docs/adr` for the reasoning behind each design decision.
 
 ## Results
 <!-- TODO: benchmark table (throughput, p50/p99 latency, failover time) -->

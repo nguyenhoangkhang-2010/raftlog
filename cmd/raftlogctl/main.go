@@ -2,7 +2,10 @@
 //
 // Usage:
 //
-//	raftlogctl [-addr host:port] [-timeout 10s] <command> [flags] <args>
+//	raftlogctl [-addr host:port[,host:port...]] [-timeout 10s] <command> [flags] <args>
+//
+// With several addresses, requests follow the cluster's leader and skip nodes
+// that are down. status asks only the first address.
 //
 // Commands:
 //
@@ -34,8 +37,6 @@ import (
 	"strconv"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1"
@@ -66,8 +67,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	fs := flag.NewFlagSet("raftlogctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&addr, "addr", addr, "broker address ["+envAddr+"]")
+	fs.StringVar(&addr, "addr", addr, "broker address, or several separated by commas for a cluster ["+envAddr+"]")
 	timeout := fs.Duration("timeout", 10*time.Second, "request timeout")
+	retries := fs.Int("retries", 0, "maximum attempts per request when following the leader or skipping unreachable nodes; 0 = keep trying until -timeout")
+	pause := fs.Duration("retry-pause", 100*time.Millisecond, "wait before retrying when no node can answer yet")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() { usage(stderr) }
 	if err := fs.Parse(args); err != nil {
@@ -86,13 +89,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	cmd, rest := fs.Arg(0), fs.Args()[1:]
 
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		fmt.Fprintln(stderr, "raftlogctl:", err)
-		return 1
+	addrs, err := splitAddrs(addr)
+	if err != nil || *retries < 0 {
+		fmt.Fprintln(stderr, "raftlogctl: need at least one -addr and a -retries that is not negative")
+		return 2
 	}
-	defer conn.Close()
-	client := pb.NewBrokerClient(conn)
+	client := newClusterClient(addrs, *retries, *pause)
+	defer client.Close()
 
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
@@ -122,7 +125,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `usage: raftlogctl [-addr host:port] [-timeout 10s] <command> [flags] <args>
+	fmt.Fprint(w, `usage: raftlogctl [-addr host:port[,host:port...]] [-timeout 10s] <command> [flags] <args>
 
 commands:
   status

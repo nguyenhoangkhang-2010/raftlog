@@ -31,8 +31,12 @@ type Transport interface {
 // StateMachine is the application that the replicated log feeds. All three
 // methods are called from one goroutine, one at a time, in log order.
 type StateMachine interface {
-	// Apply executes one committed command (no-op entries are not passed).
-	Apply(Entry)
+	// Apply executes one committed command (no-op entries are not passed) and
+	// returns its outcome. The outcome reaches the caller of ProposeResult on
+	// the node that proposed the command; on other nodes it is dropped. It
+	// must depend only on the command and on the state built by earlier ones,
+	// or the nodes would drift apart.
+	Apply(Entry) any
 	// Snapshot returns the complete state after the last entry passed to Apply.
 	Snapshot() ([]byte, error)
 	// Restore replaces the whole state with a snapshot taken by Snapshot, on
@@ -70,10 +74,17 @@ func WithSnapshotEvery(n uint64) RunnerOption {
 // an old one.
 const peerQueueSize = 64
 
+// waitResult is how a Propose call ends: the state machine's outcome for the
+// command, or an error.
+type waitResult struct {
+	value any
+	err   error
+}
+
 // waiter is a Propose call waiting for its entry to be applied.
 type waiter struct {
 	term uint64
-	done chan error
+	done chan waitResult
 }
 
 // applyItem is one unit of work for the apply goroutine: either a snapshot the
@@ -219,13 +230,20 @@ func (r *Runner) Receive(m Message) error {
 // ErrStopped) the entry may still commit later; callers that retry must
 // tolerate duplicates.
 func (r *Runner) Propose(ctx context.Context, data []byte) (uint64, error) {
+	index, _, err := r.ProposeResult(ctx, data)
+	return index, err
+}
+
+// ProposeResult is Propose that also returns what the state machine's Apply
+// returned for the command (nil if the state machine is an applier function).
+func (r *Runner) ProposeResult(ctx context.Context, data []byte) (uint64, any, error) {
 	r.mu.Lock()
 	index, term, err := r.node.Propose(data)
 	if err != nil {
 		r.mu.Unlock()
-		return 0, err
+		return 0, nil, err
 	}
-	w := &waiter{term: term, done: make(chan error, 1)}
+	w := &waiter{term: term, done: make(chan waitResult, 1)}
 	r.waiters[index] = w
 	msgs := r.flushLocked()
 	r.mu.Unlock()
@@ -233,15 +251,15 @@ func (r *Runner) Propose(ctx context.Context, data []byte) (uint64, error) {
 	r.dispatch(msgs)
 
 	select {
-	case err := <-w.done:
-		return index, err
+	case res := <-w.done:
+		return index, res.value, res.err
 	case <-ctx.Done():
 		r.mu.Lock()
 		delete(r.waiters, index)
 		r.mu.Unlock()
-		return index, ctx.Err()
+		return index, nil, ctx.Err()
 	case <-r.stop:
-		return index, ErrStopped
+		return index, nil, ErrStopped
 	}
 }
 
@@ -274,7 +292,7 @@ func (r *Runner) flushLocked() []Message {
 	st := r.node.Status()
 	for index, w := range r.waiters {
 		if index > r.node.lastApplied && (st.Role != Leader || st.Term != w.term) {
-			w.done <- ErrLeadershipLost
+			w.done <- waitResult{err: ErrLeadershipLost}
 			delete(r.waiters, index)
 		}
 	}
@@ -327,10 +345,11 @@ func (r *Runner) applyLoop() {
 				continue
 			}
 			e := it.entry
+			var result any
 			if e.Type == EntryNormal {
 				switch {
 				case r.sm != nil:
-					r.sm.Apply(e)
+					result = r.sm.Apply(e)
 				case r.applier != nil:
 					r.applier(e)
 				}
@@ -339,9 +358,9 @@ func (r *Runner) applyLoop() {
 			if w, ok := r.waiters[e.Index]; ok {
 				delete(r.waiters, e.Index)
 				if w.term == e.Term {
-					w.done <- nil
+					w.done <- waitResult{value: result}
 				} else {
-					w.done <- ErrEntryReplaced
+					w.done <- waitResult{err: ErrEntryReplaced}
 				}
 			}
 			r.mu.Unlock()

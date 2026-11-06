@@ -30,6 +30,8 @@ const (
 	EnvHeartbeatTicks     = "RAFTLOG_HEARTBEAT_TICKS"
 	EnvTickInterval       = "RAFTLOG_TICK_INTERVAL"
 	EnvMaxMessageBytes    = "RAFTLOG_MAX_MESSAGE_BYTES"
+	EnvSnapshotEvery      = "RAFTLOG_SNAPSHOT_EVERY"
+	EnvSnapshotTrailing   = "RAFTLOG_SNAPSHOT_TRAILING"
 )
 
 // Built-in defaults, used only when neither a flag nor a variable is given.
@@ -49,6 +51,12 @@ const (
 	// in a single message, so this is also the largest state that can be sent
 	// to a follower that fell behind the log.
 	defaultMaxMessageBytes = 64 << 20
+
+	// Raft snapshots. A snapshot is a copy of all broker data, so it is taken
+	// rarely; the log keeps some entries below it so that a follower that is
+	// only a little behind does not need the whole snapshot.
+	defaultSnapshotEvery    = 10000
+	defaultSnapshotTrailing = 1000
 )
 
 // Config is the configuration of one raftlogd node.
@@ -80,6 +88,11 @@ type Config struct {
 	TickInterval   time.Duration
 	// MaxMessageBytes is the largest node-to-node message (see raft.WithMaxMessageBytes).
 	MaxMessageBytes int
+	// SnapshotEvery is the number of applied log entries between snapshots; 0
+	// turns snapshots off. SnapshotTrailing is how many entries stay in the log
+	// below a snapshot.
+	SnapshotEvery    uint64
+	SnapshotTrailing uint64
 }
 
 // ParsePeers parses a peer list of the form "1=host:port,2=host:port".
@@ -138,6 +151,8 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		HeartbeatTicks:   defaultHeartbeatTicks,
 		TickInterval:     defaultTickInterval,
 		MaxMessageBytes:  defaultMaxMessageBytes,
+		SnapshotEvery:    defaultSnapshotEvery,
+		SnapshotTrailing: defaultSnapshotTrailing,
 	}
 	var peersFlag string
 
@@ -212,6 +227,20 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		}
 		cfg.MaxMessageBytes = n
 	}
+	if v := getenv(EnvSnapshotEvery); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvSnapshotEvery, err))
+		}
+		cfg.SnapshotEvery = n
+	}
+	if v := getenv(EnvSnapshotTrailing); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvSnapshotTrailing, err))
+		}
+		cfg.SnapshotTrailing = n
+	}
 	if v := getenv(EnvTickInterval); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -238,6 +267,8 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.IntVar(&cfg.HeartbeatTicks, "heartbeat-ticks", cfg.HeartbeatTicks, "heartbeat period in ticks ["+EnvHeartbeatTicks+"]")
 	fs.DurationVar(&cfg.TickInterval, "tick-interval", cfg.TickInterval, "length of one Raft tick ["+EnvTickInterval+"]")
 	fs.IntVar(&cfg.MaxMessageBytes, "max-message-bytes", cfg.MaxMessageBytes, "largest node-to-node message, which bounds the size of a snapshot ["+EnvMaxMessageBytes+"]")
+	fs.Uint64Var(&cfg.SnapshotEvery, "snapshot-every", cfg.SnapshotEvery, "applied entries between Raft snapshots, 0 = never ["+EnvSnapshotEvery+"]")
+	fs.Uint64Var(&cfg.SnapshotTrailing, "snapshot-trailing", cfg.SnapshotTrailing, "log entries kept below a snapshot ["+EnvSnapshotTrailing+"]")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}

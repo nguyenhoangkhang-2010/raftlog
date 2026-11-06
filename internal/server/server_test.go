@@ -25,7 +25,7 @@ func startServer(t *testing.T) pb.BrokerClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(b, Options{MaxFetchMessages: testMaxFetch})
+	srv, err := New(Local(b), Options{MaxFetchMessages: testMaxFetch})
 	if err != nil {
 		t.Fatal(err)
 	}
