@@ -103,17 +103,17 @@ func (s *segment) append(rec []byte) error {
 	return nil
 }
 
-// read returns up to max messages with offset >= from.
+// read returns up to limit messages with offset >= from.
 //
 // It scans from the start of the file. That is O(segment size); the sparse
 // index added in a later branch removes the scan.
-func (s *segment) read(from uint64, max int) ([]Message, error) {
-	if max <= 0 || from >= s.nextOffset {
+func (s *segment) read(from uint64, limit int) ([]Message, error) {
+	if limit <= 0 || from >= s.nextOffset {
 		return nil, nil
 	}
 	r := bufio.NewReader(io.NewSectionReader(s.f, 0, s.size))
 	var out []Message
-	for len(out) < max {
+	for len(out) < limit {
 		m, _, err := readRecord(r)
 		if errors.Is(err, io.EOF) {
 			break

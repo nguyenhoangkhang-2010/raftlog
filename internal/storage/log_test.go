@@ -129,7 +129,7 @@ func TestReadWindow(t *testing.T) {
 		}
 	}
 
-	// max larger than what is left returns only what exists.
+	// A limit larger than what is left returns only what exists.
 	msgs, err = l.Read(8, 100)
 	if err != nil || len(msgs) != 2 {
 		t.Fatalf("tail read: %v, %d msgs", err, len(msgs))
@@ -147,7 +147,7 @@ func TestReadBounds(t *testing.T) {
 		t.Fatalf("read past end: err=%v, want ErrOffsetOutOfRange", err)
 	}
 	if msgs, err := l.Read(0, 0); err != nil || len(msgs) != 0 {
-		t.Fatalf("max=0: %v, %d msgs", err, len(msgs))
+		t.Fatalf("limit=0: %v, %d msgs", err, len(msgs))
 	}
 }
 

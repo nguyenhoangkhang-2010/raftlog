@@ -148,10 +148,10 @@ func (l *Log) roll() (*segment, error) {
 	return next, nil
 }
 
-// Read returns up to max messages starting at offset, in order, crossing
+// Read returns up to limit messages starting at offset, in order, crossing
 // segment boundaries if needed. Reading at NextOffset returns no messages;
 // reading beyond it returns ErrOffsetOutOfRange.
-func (l *Log) Read(offset uint64, max int) ([]Message, error) {
+func (l *Log) Read(offset uint64, limit int) ([]Message, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	if l.closed {
@@ -162,7 +162,7 @@ func (l *Log) Read(offset uint64, max int) ([]Message, error) {
 	if offset > end || offset < l.segments[0].baseOffset {
 		return nil, ErrOffsetOutOfRange
 	}
-	if max <= 0 || offset == end {
+	if limit <= 0 || offset == end {
 		return nil, nil
 	}
 
@@ -172,8 +172,8 @@ func (l *Log) Read(offset uint64, max int) ([]Message, error) {
 	}) - 1
 
 	var out []Message
-	for ; i < len(l.segments) && len(out) < max; i++ {
-		msgs, err := l.segments[i].read(offset, max-len(out))
+	for ; i < len(l.segments) && len(out) < limit; i++ {
+		msgs, err := l.segments[i].read(offset, limit-len(out))
 		if err != nil {
 			return out, err
 		}
