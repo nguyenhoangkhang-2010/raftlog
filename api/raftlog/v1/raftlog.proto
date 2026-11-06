@@ -69,6 +69,9 @@ message NodeStatusResponse {
   uint64 term = 4;
   // The node this node believes is the leader; 0 if it does not know.
   uint64 leader_id = 5;
+  // Highest log index known to be committed, and the last index of the log.
+  uint64 commit_index = 6;
+  uint64 last_index = 7;
 }
 
 message FetchOffsetRequest {

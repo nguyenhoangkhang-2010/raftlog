@@ -2,8 +2,12 @@ package raft
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"path/filepath"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,12 +26,23 @@ type realNode struct {
 	runner *Runner
 	gs     *grpc.Server
 	tr     *GRPCTransport
+	log    *FileLog
+
+	mu      sync.Mutex
+	applied []string // the commands this node's state machine has applied
 }
 
 func (n *realNode) kill() {
 	n.runner.Stop()
 	n.gs.Stop()
 	_ = n.tr.Close()
+	_ = n.log.Close()
+}
+
+func (n *realNode) appliedData() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.applied...)
 }
 
 // startRealCluster starts size nodes that talk to each other over gRPC.
@@ -53,14 +68,24 @@ func startRealCluster(t *testing.T, size int) []*realNode {
 		if err != nil {
 			t.Fatal(err)
 		}
+		fileLog, err := OpenFileLog(filepath.Join(t.TempDir(), "log.wal"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		tr := NewGRPCTransport(addrs)
+		node := &realNode{id: id, tr: tr, log: fileLog}
 		r, err := NewRunner(Config{
 			ID:             id,
 			Cluster:        clusterIDs(size),
 			ElectionTicks:  testElectionTicks,
 			HeartbeatTicks: testHeartbeatTicks,
 			Storage:        store,
-		}, tr, realTick)
+			Log:            fileLog,
+		}, tr, realTick, WithApplier(func(e Entry) {
+			node.mu.Lock()
+			node.applied = append(node.applied, string(e.Data))
+			node.mu.Unlock()
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +93,8 @@ func startRealCluster(t *testing.T, size int) []*realNode {
 		RegisterGRPC(gs, r)
 		go func(l net.Listener) { _ = gs.Serve(l) }(lis[i])
 		r.Start()
-		nodes = append(nodes, &realNode{id: id, runner: r, gs: gs, tr: tr})
+		node.runner, node.gs = r, gs
+		nodes = append(nodes, node)
 	}
 	t.Cleanup(func() {
 		for _, n := range nodes {
@@ -141,6 +167,141 @@ func TestRealClusterElectsALeaderAndReplacesItWhenItDies(t *testing.T) {
 	}
 }
 
+// waitFor polls until cond is true or the deadline passes.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(waitForState)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(realTick)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func nodeByID(nodes []*realNode, id NodeID) *realNode {
+	for _, n := range nodes {
+		if n.id == id {
+			return n
+		}
+	}
+	return nil
+}
+
+func proposeAll(t *testing.T, r *Runner, commands []string) {
+	t.Helper()
+	for _, c := range commands {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err := r.Propose(ctx, []byte(c))
+		cancel()
+		if err != nil {
+			t.Fatalf("Propose(%q): %v", c, err)
+		}
+	}
+}
+
+func TestRealClusterReplicatesCommandsAndSurvivesTheLeaderDying(t *testing.T) {
+	nodes := startRealCluster(t, 3)
+	first := waitForLeader(t, nodes, nil)
+	leader := nodeByID(nodes, first.ID)
+
+	// Commands go through the leader and are applied on every node, in order.
+	batch1 := []string{"a", "b", "c", "d", "e"}
+	proposeAll(t, leader.runner, batch1)
+	for _, n := range nodes {
+		waitFor(t, fmt.Sprintf("node %d to apply batch 1", n.id), func() bool {
+			return reflect.DeepEqual(n.appliedData(), batch1)
+		})
+	}
+
+	// Followers refuse and say who the leader is.
+	for _, n := range nodes {
+		if n.id == leader.id {
+			continue
+		}
+		_, err := n.runner.Propose(context.Background(), []byte("nope"))
+		var nl *NotLeaderError
+		if !errors.As(err, &nl) || nl.Leader != leader.id {
+			t.Fatalf("follower %d: err = %v, want NotLeaderError pointing at node %d", n.id, err, leader.id)
+		}
+	}
+
+	// The leader dies. A new one takes over and keeps everything that was acknowledged.
+	leader.kill()
+	second := waitForLeader(t, nodes, map[NodeID]bool{leader.id: true})
+	newLeader := nodeByID(nodes, second.ID)
+
+	batch2 := []string{"f", "g", "h"}
+	proposeAll(t, newLeader.runner, batch2)
+	want := append(append([]string(nil), batch1...), batch2...)
+	for _, n := range nodes {
+		if n.id == leader.id {
+			continue
+		}
+		waitFor(t, fmt.Sprintf("node %d to apply both batches", n.id), func() bool {
+			return reflect.DeepEqual(n.appliedData(), want)
+		})
+	}
+}
+
+func TestProposeGivesUpWhenThereIsNoMajority(t *testing.T) {
+	nodes := startRealCluster(t, 3)
+	first := waitForLeader(t, nodes, nil)
+	leader := nodeByID(nodes, first.ID)
+	for _, n := range nodes {
+		if n.id != leader.id {
+			n.kill()
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := leader.runner.Propose(ctx, []byte("unreachable"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the context deadline: nothing can commit without a majority", err)
+	}
+	if got := leader.appliedData(); len(got) != 0 {
+		t.Fatalf("the leader applied %v alone", got)
+	}
+}
+
+func TestProposeAfterStopReturnsPromptly(t *testing.T) {
+	store, _ := NewFileStorage(filepath.Join(t.TempDir(), "state.json"))
+	var applied []string
+	var mu sync.Mutex
+	r, err := NewRunner(Config{
+		ID: 1, Cluster: []NodeID{1}, ElectionTicks: testElectionTicks, HeartbeatTicks: testHeartbeatTicks, Storage: store,
+	}, nopTransport{}, realTick, WithApplier(func(e Entry) {
+		mu.Lock()
+		applied = append(applied, string(e.Data))
+		mu.Unlock()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Start()
+	waitFor(t, "the single node to lead", func() bool { return r.Status().Role == Leader })
+
+	// A one-node cluster commits on its own, and Propose returns once applied.
+	proposeAll(t, r, []string{"only"})
+	mu.Lock()
+	got := append([]string(nil), applied...)
+	mu.Unlock()
+	if !reflect.DeepEqual(got, []string{"only"}) {
+		t.Fatalf("applied %v, want [only]", got)
+	}
+
+	r.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = r.Propose(ctx, []byte("late"))
+	if err == nil || time.Since(start) > 2*time.Second {
+		t.Fatalf("Propose on a stopped runner: err = %v after %v; want a prompt error", err, time.Since(start))
+	}
+}
+
 func TestRunnerStartAndStopAreIdempotent(t *testing.T) {
 	store, _ := NewFileStorage(filepath.Join(t.TempDir(), "state.json"))
 	r, err := NewRunner(Config{
@@ -196,7 +357,7 @@ func TestSlowPeerDoesNotBlockDispatch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 10*peerQueueSize; i++ {
-			r.dispatch([]Message{{Type: MsgHeartbeat, From: 1, To: 2, Term: 1}})
+			r.dispatch([]Message{{Type: MsgAppend, From: 1, To: 2, Term: 1}})
 		}
 		close(done)
 	}()
@@ -211,13 +372,20 @@ func TestSlowPeerDoesNotBlockDispatch(t *testing.T) {
 }
 
 func TestMessageConversionRoundTrip(t *testing.T) {
-	in := Message{Type: MsgRequestVote, From: 3, To: 5, Term: 9, LastLogIndex: 4, LastLogTerm: 2, Granted: true, Success: true}
+	in := Message{
+		Type: MsgAppend, From: 3, To: 5, Term: 9, LastLogIndex: 4, LastLogTerm: 2, Granted: true, Success: true,
+		PrevLogIndex: 7, PrevLogTerm: 8, LeaderCommit: 6, MatchIndex: 12, HintIndex: 3,
+		Entries: []Entry{
+			{Index: 8, Term: 9, Type: EntryNoop},
+			{Index: 9, Term: 9, Type: EntryNormal, Data: []byte("payload")},
+		},
+	}
 	p, err := messageToPB(in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, err := messageFromPB(p)
-	if err != nil || out != in {
+	if err != nil || !reflect.DeepEqual(out, in) {
 		t.Fatalf("round trip: %+v, err %v; want %+v", out, err, in)
 	}
 	if _, err := messageToPB(Message{Type: 99}); err == nil {

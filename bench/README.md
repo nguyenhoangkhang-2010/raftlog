@@ -45,7 +45,7 @@ timeout 1.0-2.0 s, heartbeat every tick). One run each, so only an order of magn
 | Event | Time |
 |---|---|
 | Cluster started to leader visible through `raftlogctl status` | 1.52 s |
-| Leader process killed to new leader visible | 1.13 s |
+| Leader process killed to new leader visible | 1.13 s (a later run on the same machine: 2.1 s) |
 
 Machine: Intel Core i7-12700H, Windows 11, Go 1.27.3, loopback network.
 The election timeout is the main lever: a failover cannot be faster than the shortest

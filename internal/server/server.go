@@ -139,6 +139,8 @@ func (s *Server) NodeStatus(context.Context, *pb.NodeStatusRequest) (*pb.NodeSta
 		Role:        st.Role.String(),
 		Term:        st.Term,
 		LeaderId:    uint64(st.Leader),
+		CommitIndex: st.CommitIndex,
+		LastIndex:   st.LastIndex,
 	}, nil
 }
 

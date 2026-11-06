@@ -26,7 +26,7 @@ func TestNodeStatusStandalone(t *testing.T) {
 func TestNodeStatusReportsRaftState(t *testing.T) {
 	srv, err := New(nil, Options{
 		MaxFetchMessages: 1,
-		Raft:             fakeRaft{raft.Status{ID: 2, Role: raft.Candidate, Term: 7, Leader: raft.None}},
+		Raft:             fakeRaft{raft.Status{ID: 2, Role: raft.Candidate, Term: 7, Leader: raft.None, CommitIndex: 4, LastIndex: 6}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestNodeStatusReportsRaftState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.RaftEnabled || resp.NodeId != 2 || resp.Role != "candidate" || resp.Term != 7 || resp.LeaderId != 0 {
+	if !resp.RaftEnabled || resp.NodeId != 2 || resp.Role != "candidate" || resp.Term != 7 || resp.LeaderId != 0 || resp.CommitIndex != 4 || resp.LastIndex != 6 {
 		t.Fatalf("resp = %+v", resp)
 	}
 

@@ -15,7 +15,7 @@ func requestVote(from, to NodeID, term, lastIndex, lastTerm uint64) Message {
 }
 
 func heartbeat(from, to NodeID, term uint64) Message {
-	return Message{Type: MsgHeartbeat, From: from, To: to, Term: term}
+	return Message{Type: MsgAppend, From: from, To: to, Term: term}
 }
 
 // only returns the single message in msgs.
@@ -78,15 +78,16 @@ func TestElectionTimeoutIsRandomizedInRange(t *testing.T) {
 }
 
 func TestFollowerCampaignsAfterTimeout(t *testing.T) {
-	n := newTestNode(t, 1, 3, &memStorage{}, fakeLog{index: 7, term: 2})
+	n := newTestNode(t, 1, 3, &memStorage{}, logWithTerms(1, 1, 1, 1, 1, 2, 2))
 	for i := 0; i < 2*testElectionTicks && n.Status().Role == Follower; i++ {
 		if err := n.Tick(); err != nil {
 			t.Fatal(err)
 		}
 	}
 	st := n.Status()
-	if st.Role != Candidate || st.Term != 1 || st.VotedFor != 1 {
-		t.Fatalf("status = %+v, want candidate in term 1 voting for itself", st)
+	// The log ends in term 2, so the node was in term 2 and campaigns in term 3.
+	if st.Role != Candidate || st.Term != 3 || st.VotedFor != 1 {
+		t.Fatalf("status = %+v, want candidate in term 3 voting for itself", st)
 	}
 	msgs := n.Messages()
 	if len(msgs) != 2 {
@@ -94,7 +95,7 @@ func TestFollowerCampaignsAfterTimeout(t *testing.T) {
 	}
 	for i, m := range msgs {
 		want := NodeID(i + 2)
-		if m.Type != MsgRequestVote || m.To != want || m.Term != 1 || m.From != 1 || m.LastLogIndex != 7 || m.LastLogTerm != 2 {
+		if m.Type != MsgRequestVote || m.To != want || m.Term != 3 || m.From != 1 || m.LastLogIndex != 7 || m.LastLogTerm != 2 {
 			t.Fatalf("message %d = %+v", i, m)
 		}
 	}
@@ -129,7 +130,7 @@ func TestCandidateWinsWithMajority(t *testing.T) {
 	}
 	// Winning is announced at once.
 	msgs := n.Messages()
-	if len(msgs) != 4 || msgs[0].Type != MsgHeartbeat {
+	if len(msgs) != 4 || msgs[0].Type != MsgAppend {
 		t.Fatalf("expected a heartbeat to each of 4 peers, got %+v", msgs)
 	}
 }
@@ -210,8 +211,10 @@ func TestVotingChecksTheCandidateLogIsUpToDate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			n := newTestNode(t, 1, 3, &memStorage{}, fakeLog{index: 5, term: 3})
-			_ = n.Step(requestVote(2, 1, 1, c.lastIndex, c.lastTerm))
+			n := newTestNode(t, 1, 3, &memStorage{}, logWithTerms(1, 1, 2, 3, 3))
+			// The voter's log ends in term 3, so it is in term 3 and the request
+			// must come from a later term to be considered at all.
+			_ = n.Step(requestVote(2, 1, 4, c.lastIndex, c.lastTerm))
 			if r := only(t, n.Messages()); r.Granted != c.want {
 				t.Fatalf("granted = %v, want %v", r.Granted, c.want)
 			}
@@ -227,7 +230,7 @@ func TestStaleTermIsRejectedAndTold(t *testing.T) {
 		t.Fatalf("stale RequestVote answer: %+v", r)
 	}
 	_ = n.Step(heartbeat(2, 1, 3))
-	if r := only(t, n.Messages()); r.Type != MsgHeartbeatResp || r.Success || r.Term != 5 {
+	if r := only(t, n.Messages()); r.Type != MsgAppendResp || r.Success || r.Term != 5 {
 		t.Fatalf("stale heartbeat answer: %+v", r)
 	}
 	// A stale reply is simply dropped.
@@ -245,7 +248,7 @@ func TestHeartbeatMakesFollowerAndResetsTimer(t *testing.T) {
 	if err := n.Step(heartbeat(2, 1, 1)); err != nil {
 		t.Fatal(err)
 	}
-	if r := only(t, n.Messages()); r.Type != MsgHeartbeatResp || !r.Success || r.To != 2 {
+	if r := only(t, n.Messages()); r.Type != MsgAppendResp || !r.Success || r.To != 2 {
 		t.Fatalf("heartbeat answer: %+v", r)
 	}
 	st := n.Status()
@@ -289,7 +292,7 @@ func TestLeaderStepsDownOnHigherTermReply(t *testing.T) {
 		other = 2
 	}
 	// A reply from a node that lives in a later term.
-	if err := c.nodes[leader].Step(Message{Type: MsgHeartbeatResp, From: other, To: leader, Term: term + 3}); err != nil {
+	if err := c.nodes[leader].Step(Message{Type: MsgAppendResp, From: other, To: leader, Term: term + 3}); err != nil {
 		t.Fatal(err)
 	}
 	st := c.status(leader)

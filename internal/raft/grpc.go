@@ -17,9 +17,22 @@ import (
 var typeToPB = map[MessageType]pb.RaftMessageType{
 	MsgRequestVote:     pb.RaftMessageType_RAFT_MESSAGE_TYPE_REQUEST_VOTE,
 	MsgRequestVoteResp: pb.RaftMessageType_RAFT_MESSAGE_TYPE_REQUEST_VOTE_RESP,
-	MsgHeartbeat:       pb.RaftMessageType_RAFT_MESSAGE_TYPE_HEARTBEAT,
-	MsgHeartbeatResp:   pb.RaftMessageType_RAFT_MESSAGE_TYPE_HEARTBEAT_RESP,
+	MsgAppend:          pb.RaftMessageType_RAFT_MESSAGE_TYPE_APPEND_ENTRIES,
+	MsgAppendResp:      pb.RaftMessageType_RAFT_MESSAGE_TYPE_APPEND_ENTRIES_RESP,
 }
+
+var entryTypeToPB = map[EntryType]pb.LogEntryType{
+	EntryNormal: pb.LogEntryType_LOG_ENTRY_TYPE_NORMAL,
+	EntryNoop:   pb.LogEntryType_LOG_ENTRY_TYPE_NOOP,
+}
+
+var entryTypeFromPB = func() map[pb.LogEntryType]EntryType {
+	m := make(map[pb.LogEntryType]EntryType, len(entryTypeToPB))
+	for k, v := range entryTypeToPB {
+		m[v] = k
+	}
+	return m
+}()
 
 var typeFromPB = func() map[pb.RaftMessageType]MessageType {
 	m := make(map[pb.RaftMessageType]MessageType, len(typeToPB))
@@ -34,6 +47,14 @@ func messageToPB(m Message) (*pb.RaftMessage, error) {
 	if !ok {
 		return nil, fmt.Errorf("raft: cannot send message of type %v", m.Type)
 	}
+	entries := make([]*pb.LogEntry, len(m.Entries))
+	for i, e := range m.Entries {
+		et, ok := entryTypeToPB[e.Type]
+		if !ok {
+			return nil, fmt.Errorf("raft: cannot send entry %d of type %d", e.Index, e.Type)
+		}
+		entries[i] = &pb.LogEntry{Index: e.Index, Term: e.Term, Type: et, Data: e.Data}
+	}
 	return &pb.RaftMessage{
 		Type:         t,
 		From:         uint64(m.From),
@@ -43,6 +64,12 @@ func messageToPB(m Message) (*pb.RaftMessage, error) {
 		LastLogTerm:  m.LastLogTerm,
 		Granted:      m.Granted,
 		Success:      m.Success,
+		PrevLogIndex: m.PrevLogIndex,
+		PrevLogTerm:  m.PrevLogTerm,
+		Entries:      entries,
+		LeaderCommit: m.LeaderCommit,
+		MatchIndex:   m.MatchIndex,
+		HintIndex:    m.HintIndex,
 	}, nil
 }
 
@@ -50,6 +77,14 @@ func messageFromPB(p *pb.RaftMessage) (Message, error) {
 	t, ok := typeFromPB[p.GetType()]
 	if !ok {
 		return Message{}, fmt.Errorf("unknown message type %v", p.GetType())
+	}
+	var entries []Entry
+	for _, e := range p.GetEntries() {
+		et, ok := entryTypeFromPB[e.GetType()]
+		if !ok {
+			return Message{}, fmt.Errorf("unknown entry type %v", e.GetType())
+		}
+		entries = append(entries, Entry{Index: e.GetIndex(), Term: e.GetTerm(), Type: et, Data: e.GetData()})
 	}
 	return Message{
 		Type:         t,
@@ -60,6 +95,12 @@ func messageFromPB(p *pb.RaftMessage) (Message, error) {
 		LastLogTerm:  p.GetLastLogTerm(),
 		Granted:      p.GetGranted(),
 		Success:      p.GetSuccess(),
+		PrevLogIndex: p.GetPrevLogIndex(),
+		PrevLogTerm:  p.GetPrevLogTerm(),
+		Entries:      entries,
+		LeaderCommit: p.GetLeaderCommit(),
+		MatchIndex:   p.GetMatchIndex(),
+		HintIndex:    p.GetHintIndex(),
 	}, nil
 }
 
