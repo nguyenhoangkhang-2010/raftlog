@@ -21,8 +21,8 @@ Consumer ◄── read by offset
 ```
 
 ## Features (roadmap)
-- [ ] Append-only log storage with segments and sparse index
-- [ ] gRPC API: `CreateTopic`, `Produce`, `Fetch`, `CommitOffset`
+- [x] Append-only log storage with segments and sparse index
+- [x] gRPC API: `CreateTopic`, `Produce`, `Fetch` (`CommitOffset` comes with consumer groups)
 - [ ] Topics, partitions, consumer groups
 - [ ] Raft: leader election, log replication, persistence, snapshots
 - [ ] Failover and follower catch-up
@@ -31,7 +31,7 @@ Consumer ◄── read by offset
 
 ## Quick start
 ```bash
-# TODO: works once phase 1 is done
+# starts one broker node (the 3-node Raft cluster comes in later phases)
 docker compose -f deploy/docker-compose.yml up
 ```
 

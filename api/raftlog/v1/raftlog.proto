@@ -29,6 +29,9 @@ message CreateTopicResponse {}
 message ProduceRequest {
   string topic = 1;
   repeated Message messages = 2;
+  // If unset, the broker picks the partition from the key of the first message.
+  // All messages in one request go to the same partition.
+  optional uint32 partition = 3;
 }
 message ProduceResponse {
   uint32 partition = 1;
