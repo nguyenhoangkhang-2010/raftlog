@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Course registration waiting room</title>
+<style>
+  :root {
+    --bg: #f3f5fb; --bg2: #e8ecf8; --card: #ffffff; --text: #151a2b; --muted: #5d6783; --line: #dfe4f1;
+    --accent: #4b5df0; --accent2: #7b4bf0; --accent-soft: #e9ebff; --on-accent: #ffffff;
+    --ok: #0f9d58; --ok-soft: #e1f5ea; --dot: #c9d0e6; --shadow: 0 1px 2px rgba(20,30,70,.06), 0 8px 30px rgba(20,30,70,.08);
+    --track: #e5e9f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1020; --bg2: #121733; --card: #171c33; --text: #eef0fb; --muted: #98a2c3; --line: #272e4d;
+      --accent: #7f8dff; --accent2: #a77bff; --accent-soft: #232a57; --on-accent: #0b0f26;
+      --ok: #4ade96; --ok-soft: #12352a; --dot: #2f3760; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 40px rgba(0,0,0,.35);
+      --track: #252c4f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; color: var(--text); min-height: 100vh;
+    background: radial-gradient(1200px 500px at 50% -10%, var(--bg2), transparent 70%), var(--bg);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+  .wrap { max-width: 56rem; margin: 0 auto; padding: 0 1rem; }
+
+  /* top bar */
+  .top { display: flex; align-items: center; gap: .75rem; padding: 1.1rem 0; }
+  .logo { width: 2.2rem; height: 2.2rem; border-radius: .7rem; background: linear-gradient(135deg, var(--accent), var(--accent2)); display: grid; place-items: center; box-shadow: 0 4px 14px rgba(75,93,240,.35); }
+  .logo svg { width: 1.2rem; height: 1.2rem; }
+  .brand { font-weight: 700; letter-spacing: -.01em; }
+  .brand small { display: block; font-weight: 500; color: var(--muted); font-size: .78rem; letter-spacing: 0; }
+  .pill { margin-left: auto; display: inline-flex; align-items: center; gap: .45rem; padding: .3rem .7rem; border-radius: 999px; background: var(--card); border: 1px solid var(--line); font-size: .8rem; color: var(--muted); }
+  .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--dot); }
+  .dot.live { background: var(--ok); box-shadow: 0 0 0 0 rgba(15,157,88,.5); animation: ping 2s infinite; }
+  @keyframes ping { 70% { box-shadow: 0 0 0 .5rem rgba(15,157,88,0); } 100% { box-shadow: 0 0 0 0 rgba(15,157,88,0); } }
+
+  /* hero */
+  .hero { text-align: center; padding: 1.5rem 0 1.25rem; }
+  .hero h1 { font-size: clamp(1.7rem, 4.5vw, 2.5rem); line-height: 1.15; letter-spacing: -.025em; margin: 0 0 .6rem; }
+  .hero h1 span { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero p { color: var(--muted); max-width: 34rem; margin: 0 auto; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 1.25rem; padding: 1.25rem; box-shadow: var(--shadow); }
+  .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 .9rem; font-weight: 700; }
+
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin: 1.5rem 0 1rem; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 1rem; padding: .9rem 1rem; text-align: left; box-shadow: var(--shadow); }
+  .tile .k { color: var(--muted); font-size: .78rem; }
+  .tile .v { font-size: 1.7rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .tile .v small { font-size: .85rem; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+  .tile.ok .v { color: var(--ok); }
+  .tile.acc .v { color: var(--accent); }
+
+  /* join form */
+  .join { max-width: 28rem; margin: 1.25rem auto 0; text-align: left; }
+  label { display: block; font-weight: 600; margin-bottom: .4rem; }
+  input[type=text] { width: 100%; padding: .8rem .95rem; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: .8rem; }
+  input[type=text]:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button { font: inherit; font-weight: 700; cursor: pointer; border: 0; border-radius: .8rem; padding: .85rem 1.2rem; color: var(--on-accent); background: linear-gradient(135deg, var(--accent), var(--accent2)); box-shadow: 0 6px 18px rgba(75,93,240,.35); transition: transform .12s ease, box-shadow .12s ease, opacity .12s; }
+  button:hover:not(:disabled) { transform: translateY(-1px); }
+  button:disabled { opacity: .65; cursor: default; }
+  button.block { width: 100%; margin-top: .9rem; font-size: 1.05rem; }
+  button.ghost { background: transparent; color: var(--accent); box-shadow: none; border: 1px solid var(--line); font-weight: 600; padding: .55rem .9rem; }
+  .err { color: #d6336c; min-height: 1.4em; margin-top: .6rem; font-size: .92rem; }
+  .fine { color: var(--muted); font-size: .85rem; margin: .4rem 0 0; }
+
+  /* the line (canvas) */
+  .linebox { margin-top: 1rem; }
+  canvas { display: block; width: 100%; }
+  .legend { display: flex; gap: 1.1rem; flex-wrap: wrap; margin-top: .8rem; color: var(--muted); font-size: .82rem; }
+  .legend i { display: inline-block; width: .7rem; height: .7rem; border-radius: 50%; margin-right: .4rem; vertical-align: -.05rem; }
+  .empty { color: var(--muted); padding: 1.2rem 0; text-align: center; }
+
+  /* joined view */
+  .grid { display: grid; grid-template-columns: 1fr 1.15fr; gap: 1rem; }
+  .ringcard { text-align: center; padding-top: 1.5rem; }
+  .ring { position: relative; width: min(15rem, 70%); aspect-ratio: 1; margin: 0 auto; }
+  .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring .track { stroke: var(--track); }
+  .ring .bar { stroke: url(#g); transition: stroke-dashoffset .7s cubic-bezier(.3,.7,.2,1); }
+  .ring .mid { position: absolute; inset: 0; display: grid; place-content: center; }
+  .ring .n { font-size: clamp(3rem, 12vw, 4.4rem); font-weight: 800; line-height: 1; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+  .ring .n.pop { animation: pop .35s ease; }
+  @keyframes pop { 40% { transform: scale(1.12); } }
+  .ring .cap { color: var(--muted); font-size: .85rem; margin-top: .2rem; }
+  .ahead { margin-top: 1rem; font-weight: 600; }
+  .info { display: flex; flex-direction: column; gap: 1rem; }
+  .info .tiles { margin: 0; grid-template-columns: 1fr 1fr; }
+  .steps { display: flex; justify-content: space-between; position: relative; margin: .4rem .3rem 0; }
+  .steps::before { content: ""; position: absolute; left: 8%; right: 8%; top: .85rem; height: 2px; background: var(--track); }
+  .step { position: relative; text-align: center; font-size: .8rem; color: var(--muted); flex: 1; }
+  .step b { display: grid; place-items: center; width: 1.7rem; height: 1.7rem; margin: 0 auto .35rem; border-radius: 50%; background: var(--card); border: 2px solid var(--track); font-size: .75rem; color: var(--muted); }
+  .step.done b { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .step.now b { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .step.done, .step.now { color: var(--text); }
+  .step.okk.done b { background: var(--ok); border-color: var(--ok); }
+
+  .turn { text-align: center; padding: 2.2rem 1rem; }
+  .turn .check { width: 6rem; height: 6rem; margin: 0 auto 1rem; border-radius: 50%; background: var(--ok-soft); display: grid; place-items: center; animation: rise .6s cubic-bezier(.3,1.4,.4,1); }
+  .turn .check svg { width: 3.2rem; height: 3.2rem; stroke: var(--ok); }
+  .turn .check path { stroke-dasharray: 40; stroke-dashoffset: 40; animation: draw .5s .25s ease forwards; }
+  @keyframes rise { from { transform: scale(.4); opacity: 0; } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .turn h2 { font-size: 1.8rem; letter-spacing: -.02em; text-transform: none; color: var(--text); margin: 0 0 .3rem; }
+  .turn p { color: var(--muted); margin: .2rem auto; max-width: 28rem; }
+
+  .meta { display: flex; gap: .6rem 1.2rem; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: .85rem; margin-top: 1rem; }
+  .meta code { background: var(--accent-soft); color: var(--text); padding: .1rem .4rem; border-radius: .4rem; }
+  footer { color: var(--muted); font-size: .8rem; text-align: center; padding: 2rem 0 2.5rem; }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 40rem) {
+    .grid { grid-template-columns: 1fr; }
+    .tiles { gap: .5rem; }
+    .tile { padding: .7rem .75rem; } .tile .v { font-size: 1.35rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="18" cy="12" r="2.2"/></svg></div>
+    <div class="brand">Course registration<small>Virtual waiting room</small></div>
+    <div class="pill" id="pill"><span class="dot" id="dot"></span><span id="conn">connecting</span></div>
+  </div>
+
+  <!-- before joining -->
+  <section id="intro">
+    <div class="hero">
+      <h1>Wait in line, <span>not on a refresh button</span></h1>
+      <p>Everyone is let in one batch at a time, in the order they arrived. Join once and watch your place move up, live.</p>
+    </div>
+
+    <div class="tiles" aria-label="The line right now">
+      <div class="tile acc"><div class="k">Waiting now</div><div class="v" id="sWaiting">–</div></div>
+      <div class="tile ok"><div class="k">Let in so far</div><div class="v" id="sAdmitted">–</div></div>
+      <div class="tile"><div class="k">Admitting</div><div class="v" id="sRate">–</div></div>
+    </div>
+
+    <div class="card">
+      <h2>The line right now</h2>
+      <div id="introLine"><canvas id="cvIntro" role="img" aria-label="The line"></canvas></div>
+      <div class="empty" id="introEmpty" hidden>No one is in line yet. Be the first.</div>
+      <div class="legend"><span><i style="background:var(--ok)"></i>let in</span><span><i style="background:var(--dot)"></i>waiting</span></div>
+    </div>
+
+    <div class="card join" style="margin-top:1rem">
+      <label for="user">Your name or student ID</label>
+      <input id="user" type="text" maxlength="100" autocomplete="off" placeholder="e.g. 20211234">
+      <button id="joinBtn" class="block" type="button">Join the line</button>
+      <div id="joinErr" class="err" role="alert"></div>
+      <p class="fine">Your place is kept on this device. Come back to this page and you will still be where you were.</p>
+    </div>
+  </section>
+
+  <!-- after joining -->
+  <section id="lineView" hidden>
+    <div id="waitingView">
+      <div class="grid">
+        <div class="card ringcard">
+          <div class="ring" role="progressbar" aria-label="Progress in the line" aria-valuemin="0" aria-valuemax="100" id="ringBox">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4b5df0"/><stop offset="1" stop-color="#a77bff"/></linearGradient></defs>
+              <circle class="track" cx="60" cy="60" r="52" fill="none" stroke-width="9"/>
+              <circle class="bar" id="ringBar" cx="60" cy="60" r="52" fill="none" stroke-width="9" stroke-linecap="round" stroke-dasharray="326.7" stroke-dashoffset="326.7"/>
+            </svg>
+            <div class="mid" aria-live="polite"><div class="n" id="pos">–</div><div class="cap">your position</div></div>
+          </div>
+          <div class="ahead" id="ahead"></div>
+        </div>
+        <div class="info">
+          <div class="tiles">
+            <div class="tile acc"><div class="k">Estimated wait</div><div class="v" id="eta">–</div></div>
+            <div class="tile"><div class="k">Admitting</div><div class="v" id="rate">–</div></div>
+            <div class="tile"><div class="k">Waiting</div><div class="v" id="lWaiting">–</div></div>
+            <div class="tile ok"><div class="k">Let in</div><div class="v" id="lAdmitted">–</div></div>
+          </div>
+          <div class="card">
+            <div class="steps" id="steps">
+              <div class="step done"><b>1</b>Joined</div>
+              <div class="step now" id="stWait"><b>2</b>In line</div>
+              <div class="step okk" id="stTurn"><b>3</b>Your turn</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="turnView" hidden>
+      <div class="card turn" role="status">
+        <div class="check"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+        <h2>It is your turn</h2>
+        <p>You can go on to course registration now.</p>
+        <p class="fine">This demo has no registration system behind it; the point is the line.</p>
+      </div>
+    </div>
+
+    <div class="card linebox">
+      <h2>The line</h2>
+      <canvas id="cvLine" role="img" aria-label="The line"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--ok)"></i>let in</span>
+        <span><i style="background:var(--dot)"></i>waiting</span>
+        <span id="youKey"><i style="background:var(--accent)"></i>you</span>
+      </div>
+    </div>
+
+    <div class="meta">
+      <span>Ticket <code id="ticketId"></code></span>
+      <span id="joinedAt"></span>
+      <button id="leaveBtn" class="ghost" type="button">Start over with a new ticket</button>
+    </div>
+  </section>
+
+  <footer>Your place is stored in a replicated log, so it survives the loss of a server.</footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var KEY = "waitingroom.ticket";
+  var $ = function (id) { return document.getElementById(id); };
+  var ticket = null, source = null, startPos = null, statsTimer = null, last = null, joined = false, raf = 0;
+  var CIRC = 2 * Math.PI * 52;
+
+  function load() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
+  function save(v) { try { if (v) localStorage.setItem(KEY, v); else localStorage.removeItem(KEY); } catch (e) { /* private mode: the ticket lasts until the page closes */ } }
+  function newTicket() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    var b = new Uint8Array(16); crypto.getRandomValues(b);
+    return Array.prototype.map.call(b, function (x) { return ("0" + x.toString(16)).slice(-2); }).join("");
+  }
+  function css(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function fmtWait(s) {
+    if (s < 90) return Math.max(1, Math.round(s)) + "<small> sec</small>";
+    if (s < 5400) return Math.round(s / 60) + "<small> min</small>";
+    return (s / 3600).toFixed(1) + "<small> h</small>";
+  }
+  function fmtRate(r) { return r ? r.toFixed(r < 10 ? 1 : 0) + "<small> / sec</small>" : "<small>measuring…</small>"; }
+  function setConn(live) { $("dot").className = "dot" + (live ? " live" : ""); $("conn").textContent = live ? "live" : "reconnecting"; }
+
+  /* ---- the line, drawn as a grid of dots ---- */
+  function drawLine(cv, s, mine, t) {
+    var dpr = window.devicePixelRatio || 1, w = cv.clientWidth || 600, cell = 26;
+    // The biggest dots that still fit the line in 8 rows; a long line gets small dots.
+    while (cell > 11 && Math.ceil(s.total / Math.max(8, Math.floor(w / cell))) > 8) cell -= 1;
+    var r = cell * 0.31;
+    var cols = Math.max(8, Math.floor(w / cell)), cap = cols * 9;
+    var per = Math.max(1, Math.ceil(s.total / cap));
+    var n = Math.max(1, Math.ceil(s.total / per)), rows = Math.ceil(n / cols), h = rows * cell;
+    cv.style.height = h + "px"; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    var c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, h);
+    var ok = css("--ok"), dot = css("--dot"), acc = css("--accent");
+    var admittedDots = Math.floor(s.admitted / per);
+    var mineDot = mine >= 0 ? Math.floor(mine / per) : -1;
+    var x0 = (w - cols * cell) / 2 + cell / 2;
+    for (var i = 0; i < n; i++) {
+      var x = x0 + (i % cols) * cell, y = Math.floor(i / cols) * cell + cell / 2;
+      c.beginPath(); c.arc(x, y, r, 0, 6.2832);
+      c.fillStyle = i < admittedDots ? ok : dot; c.fill();
+      if (i === mineDot) {
+        var pulse = 0.5 + 0.5 * Math.sin((t || 0) / 350);
+        c.beginPath(); c.arc(x, y, r + 2 + 2 * pulse, 0, 6.2832); c.strokeStyle = acc; c.globalAlpha = 0.35 + 0.35 * (1 - pulse); c.lineWidth = 2; c.stroke(); c.globalAlpha = 1;
+        c.beginPath(); c.arc(x, y, r + 0.6, 0, 6.2832); c.fillStyle = acc; c.fill();
+      }
+    }
+    cv.setAttribute("aria-label", s.total + " people in the line, " + s.admitted + " let in" + (mine >= 0 ? ", you are marked in blue" : ""));
+  }
+  function mineIndex(st) { return st && st.state === "waiting" ? st.admitted + st.position - 1 : -1; }
+
+  var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function frame(t) {
+    raf = 0;
+    if (joined && last && last.state === "waiting") {
+      drawLine($("cvLine"), last, mineIndex(last), t);
+      if (!reduce) raf = requestAnimationFrame(frame);
+    }
+  }
+  function redrawLine() {
+    if (!last) return;
+    drawLine($("cvLine"), last, mineIndex(last), 0);
+    if (!raf && !reduce && last.state === "waiting") raf = requestAnimationFrame(frame);
+  }
+
+  /* ---- before joining ---- */
+  var stats = null;
+  function showStats(s) {
+    stats = s;
+    $("sWaiting").textContent = s.waiting; $("sAdmitted").textContent = s.admitted;
+    $("sRate").innerHTML = fmtRate(s.admit_rate_per_s);
+    var empty = s.total === 0;
+    $("introEmpty").hidden = !empty; $("introLine").hidden = empty;
+    if (!empty) drawLine($("cvIntro"), s, -1, 0);
+    setConn(true);
+  }
+  function pollStats() {
+    fetch("/api/stats").then(function (r) { return r.json(); }).then(showStats).catch(function () { setConn(false); });
+  }
+
+  /* ---- after joining ---- */
+  function render(st) {
+    last = st;
+    $("lWaiting").textContent = st.waiting; $("lAdmitted").textContent = st.admitted;
+    $("rate").innerHTML = fmtRate(st.admit_rate_per_s);
+    if (st.state === "unknown") { join(true); return; }   // the room has not read our join yet, or it was reset
+
+    if (st.joined_at_ms) $("joinedAt").textContent = "Joined at " + new Date(st.joined_at_ms).toLocaleTimeString();
+    var admitted = st.state === "admitted";
+    $("waitingView").hidden = admitted; $("turnView").hidden = !admitted;
+    $("youKey").hidden = admitted;
+    $("stWait").className = "step " + (admitted ? "done" : "now");
+    $("stTurn").className = "step okk" + (admitted ? " done" : "");
+
+    if (!admitted) {
+      var n = $("pos");
+      if (n.textContent !== String(st.position)) { n.textContent = st.position; n.classList.remove("pop"); void n.offsetWidth; n.classList.add("pop"); }
+      $("ahead").textContent = st.ahead === 0 ? "You are next." : st.ahead + (st.ahead === 1 ? " person is" : " people are") + " ahead of you";
+      if (startPos === null || st.position > startPos) startPos = st.position;
+      var frac = startPos > 1 ? (startPos - st.position) / (startPos - 1) : 0;
+      $("ringBar").style.strokeDashoffset = String(CIRC * (1 - frac));
+      $("ringBox").setAttribute("aria-valuenow", Math.round(frac * 100));
+      $("eta").innerHTML = st.eta_seconds ? fmtWait(st.eta_seconds) : "<small>estimating…</small>";
+    }
+    redrawLine();
+    setConn(true);
+  }
+
+  function watch() {
+    if (source) source.close();
+    source = new EventSource("/api/watch?ticket=" + encodeURIComponent(ticket));
+    source.addEventListener("status", function (e) { render(JSON.parse(e.data)); });
+    source.onopen = function () { setConn(true); };
+    source.onerror = function () { setConn(false); };
+  }
+
+  function showLine() {
+    joined = true;
+    $("intro").hidden = true; $("lineView").hidden = false;
+    $("ticketId").textContent = ticket.slice(0, 8);
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  }
+
+  function join(quiet) {
+    var user = $("user").value;
+    if (!ticket) { ticket = newTicket(); save(ticket); }
+    $("joinBtn").disabled = true; $("joinErr").textContent = "";
+    return fetch("/api/join", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket: ticket, user: user }) })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) {
+        $("joinBtn").disabled = false;
+        if (!res.ok) { if (!quiet) $("joinErr").textContent = res.body.error || "Could not join. Try again."; return; }
+        showLine(); render(res.body); watch();
+      })
+      .catch(function () { $("joinBtn").disabled = false; if (!quiet) $("joinErr").textContent = "Could not reach the server. Try again."; });
+  }
+
+  $("joinBtn").addEventListener("click", function () { join(false); });
+  $("user").addEventListener("keydown", function (e) { if (e.key === "Enter") join(false); });
+  $("leaveBtn").addEventListener("click", function () {
+    if (source) source.close();
+    save(null); ticket = null; startPos = null; last = null; joined = false;
+    $("lineView").hidden = true; $("intro").hidden = false;
+    $("ringBar").style.strokeDashoffset = String(CIRC);
+    pollStats(); statsTimer = setInterval(pollStats, 2000);
+  });
+  window.addEventListener("resize", function () { if (joined) redrawLine(); else if (stats && stats.total) drawLine($("cvIntro"), stats, -1, 0); });
+
+  ticket = load();
+  if (ticket) { join(true); } // resume: joining again with the same ticket keeps its place
+  pollStats(); statsTimer = setInterval(pollStats, 2000);
+})();
+</script>
+</body>
+</html>
