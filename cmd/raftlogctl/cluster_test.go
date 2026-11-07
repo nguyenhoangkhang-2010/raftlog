@@ -42,6 +42,8 @@ func (b *refusingBackend) Fetch(string, int, uint64, int) ([]storage.Message, er
 	return nil, b.err
 }
 
+func (b *refusingBackend) Watch(string, int) (<-chan struct{}, error) { return nil, b.err }
+
 func (b *refusingBackend) GroupOffset(string, string, int) (broker.OffsetInfo, error) {
 	b.calls.Add(1)
 	return broker.OffsetInfo{}, b.err
@@ -181,6 +183,8 @@ func (b *flippingBackend) CommitOffset(context.Context, string, string, int, uin
 	return b.refuse()
 }
 func (b *flippingBackend) Fetch(string, int, uint64, int) ([]storage.Message, error) { return nil, nil }
+func (b *flippingBackend) Watch(string, int) (<-chan struct{}, error)                { return nil, nil }
+
 func (b *flippingBackend) GroupOffset(string, string, int) (broker.OffsetInfo, error) {
 	return broker.OffsetInfo{}, nil
 }

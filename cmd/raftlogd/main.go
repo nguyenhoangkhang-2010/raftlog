@@ -61,7 +61,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 	// cluster turns every change into a command in the replicated log; the broker
 	// is then the state machine that applies the committed commands.
 	backend := server.Backend(server.Local(b))
-	srvOpts := server.Options{MaxFetchMessages: cfg.MaxFetchMessages}
+	srvOpts := server.Options{MaxFetchMessages: cfg.MaxFetchMessages, MaxFetchWait: cfg.MaxFetchWait}
 	var runner *raft.Runner
 	if cfg.NodeID != 0 {
 		machine, err := broker.NewMachine(b, filepath.Join(cfg.DataDir, "machine"))
@@ -119,6 +119,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 		if runner != nil {
 			runner.Stop()
 		}
+		srv.Shutdown() // fetches waiting for messages would hold up the stop
 		gs.GracefulStop()
 		return <-serveErr
 	case err := <-serveErr:

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	pb "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1"
@@ -97,6 +98,20 @@ type produceConfig struct {
 // choose one from the key of the first message.
 func ToPartition(p int) ProduceOption { return func(c *produceConfig) { c.partition = &p } }
 
+// FetchOption customizes Fetch.
+type FetchOption func(*fetchConfig)
+
+type fetchConfig struct {
+	wait time.Duration
+}
+
+// WaitUpTo makes a Fetch that finds nothing to read wait up to d for a message
+// to arrive, and return as soon as one does. It returns none if d passes first.
+// The cluster may shorten the wait to its own limit, so a caller must be ready
+// for an early empty answer and ask again. Keep ctx's deadline longer than d, or
+// the call fails with the deadline error instead of returning none.
+func WaitUpTo(d time.Duration) FetchOption { return func(c *fetchConfig) { c.wait = d } }
+
 // CreateTopic creates a topic with the given number of partitions. It fails with
 // ErrAlreadyExists if the topic is there.
 func (c *Client) CreateTopic(ctx context.Context, topic string, partitions int) error {
@@ -153,12 +168,27 @@ func (c *Client) Produce(ctx context.Context, topic string, msgs []Message, opts
 //
 // Any node can answer a Fetch; it shows only data that is committed, but a node
 // that is behind may not show the newest messages yet.
-func (c *Client) Fetch(ctx context.Context, topic string, partition int, offset uint64, limit int) ([]Record, error) {
+//
+// With WaitUpTo, a Fetch at the end of the partition waits for a message to
+// arrive instead of returning none at once.
+func (c *Client) Fetch(ctx context.Context, topic string, partition int, offset uint64, limit int, opts ...FetchOption) ([]Record, error) {
 	if limit < 1 || partition < 0 {
 		return nil, fmt.Errorf("%w: the limit must be positive and the partition not negative", ErrInvalidArgument)
 	}
+	var cfg fetchConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.wait < 0 {
+		return nil, fmt.Errorf("%w: the wait must not be negative", ErrInvalidArgument)
+	}
+	wait := cfg.wait.Milliseconds()
+	if wait > math.MaxUint32 {
+		wait = math.MaxUint32
+	}
 	resp, err := c.r.Fetch(ctx, &pb.FetchRequest{
 		Topic: topic, Partition: uint32(partition), Offset: offset, MaxMessages: uint32(limit),
+		MaxWaitMs: uint32(wait),
 	})
 	if err != nil {
 		return nil, translate(err)

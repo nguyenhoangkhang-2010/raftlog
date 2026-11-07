@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // env returns a getenv function backed by the given variables.
@@ -18,7 +19,7 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.ListenAddr != defaultListenAddr || cfg.DataDir != defaultDataDir ||
-		cfg.MaxPartitions != defaultMaxPartitions || cfg.MaxFetchMessages != defaultMaxFetch || cfg.SyncOnAppend ||
+		cfg.MaxPartitions != defaultMaxPartitions || cfg.MaxFetchMessages != defaultMaxFetch || cfg.MaxFetchWait != defaultMaxFetchWait || cfg.SyncOnAppend ||
 		cfg.SegmentMaxBytes != 0 || cfg.IndexIntervalBytes != 0 {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
@@ -33,6 +34,7 @@ func TestEnvOverridesDefaults(t *testing.T) {
 		EnvSyncOnAppend:       "true",
 		EnvMaxPartitions:      "16",
 		EnvMaxFetchMessages:   "50",
+		EnvMaxFetchWait:       "2s",
 	}), io.Discard)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -45,6 +47,7 @@ func TestEnvOverridesDefaults(t *testing.T) {
 		SyncOnAppend:       true,
 		MaxPartitions:      16,
 		MaxFetchMessages:   50,
+		MaxFetchWait:       2 * time.Second,
 	}
 	// The Raft settings were not given, so they keep their defaults.
 	want.ElectionTicks, want.HeartbeatTicks, want.TickInterval = defaultElectionTicks, defaultHeartbeatTicks, defaultTickInterval
@@ -88,6 +91,8 @@ func TestInvalidInput(t *testing.T) {
 		{"negative index interval", []string{"-index-interval-bytes", "-1"}, nil, "index interval"},
 		{"zero partitions", []string{"-max-partitions", "0"}, nil, "max partitions"},
 		{"zero max fetch", []string{"-max-fetch-messages", "0"}, nil, "max fetch messages"},
+		{"negative fetch wait", []string{"-max-fetch-wait=-1s"}, nil, "max fetch wait"},
+		{"bad env fetch wait", nil, map[string]string{EnvMaxFetchWait: "soon"}, EnvMaxFetchWait},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -99,6 +104,16 @@ func TestInvalidInput(t *testing.T) {
 				t.Fatalf("error %q does not mention %q", err, c.want)
 			}
 		})
+	}
+}
+
+func TestFetchWaitCanBeSwitchedOff(t *testing.T) {
+	cfg, err := Load([]string{"-max-fetch-wait", "0"}, env(nil), io.Discard)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxFetchWait != 0 {
+		t.Fatalf("MaxFetchWait = %v, want 0 (a flag of 0 must not fall back to the default)", cfg.MaxFetchWait)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -472,6 +473,29 @@ func TestRestoreReplacesWhatTheNodeHadBefore(t *testing.T) {
 	}
 	if again, _ := dst.m.Snapshot(); !bytes.Equal(data, again) {
 		t.Fatal("the state differs from the snapshot")
+	}
+}
+
+func TestRestoreWakesReadersWaitingOnTheReplacedState(t *testing.T) {
+	src := populated(t)
+	data, _ := src.m.Snapshot()
+
+	dst := newMachineEnv(t)
+	dst.apply(1, createCmd("b", 1))
+	ch, err := dst.m.Watch("b", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.m.Restore(data); err != nil {
+		t.Fatal(err)
+	}
+	// The partition the reader waited on is gone, replaced by one that holds
+	// data. The reader must look again rather than sleep until its timeout.
+	if !woken(ch, time.Second) {
+		t.Fatal("a reader waiting on the replaced partition was not woken")
+	}
+	if got := dst.values("b", 0); len(got) != 3 {
+		t.Fatalf("after the restore the partition holds %v", got)
 	}
 }
 

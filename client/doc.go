@@ -18,6 +18,11 @@
 //
 //	records, err := c.Fetch(ctx, "orders", res.Partition, res.Offset, 100)
 //
+// To wait for the next message instead of asking over and over, pass
+// client.WaitUpTo; the context must outlive the wait:
+//
+//	records, err := c.Fetch(ctx, "orders", p, next, 100, client.WaitUpTo(20*time.Second))
+//
 // Every request takes a context. Without a deadline a request waits for as long
 // as it takes to find a leader; give each request one.
 //

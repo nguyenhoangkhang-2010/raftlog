@@ -295,6 +295,7 @@ func (m *Machine) produce(index uint64, c *pb.ProduceCommand) Result {
 	if err := p.log.Sync(); err != nil {
 		m.fatal("sync partition", err)
 	}
+	p.signal() // readers waiting for data on this partition
 	return Result{Partition: int(c.GetPartition()), BaseOffset: start}
 }
 
@@ -416,6 +417,13 @@ func (m *Machine) Fetch(name string, partition int, offset uint64, limit int) ([
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.b.Fetch(name, partition, offset, limit)
+}
+
+// Watch is Broker.Watch for the applied data of this node.
+func (m *Machine) Watch(name string, partition int) (<-chan struct{}, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.b.Watch(name, partition)
 }
 
 // GroupOffset returns the position of a consumer group.

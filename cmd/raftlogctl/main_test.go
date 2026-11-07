@@ -21,7 +21,7 @@ func startBroker(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := server.New(server.Local(b), server.Options{MaxFetchMessages: 100})
+	srv, err := server.New(server.Local(b), server.Options{MaxFetchMessages: 100, MaxFetchWait: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +132,66 @@ func TestUsageErrors(t *testing.T) {
 		if code, _, _ := ctl(t, addr, "", args...); code != 2 {
 			t.Errorf("args %v: exit code %d, want 2", args, code)
 		}
+	}
+}
+
+func TestFetchAndConsumeCanWaitForAMessage(t *testing.T) {
+	addr := startBroker(t)
+
+	type outcome struct {
+		code     int
+		out, err string
+	}
+	// Each command gets its own empty topic to wait on.
+	cases := map[string][]string{
+		"fetch":   {"fetch", "-wait", "8s", "fetch"},
+		"consume": {"consume", "-group", "g", "-wait", "8s", "consume"},
+	}
+	for topic, args := range cases {
+		if code, _, e := ctl(t, addr, "", "create-topic", topic); code != 0 {
+			t.Fatalf("create-topic: %q", e)
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			code, out, e := ctl(t, addr, "", args...)
+			done <- outcome{code, out, e}
+		}()
+		select {
+		case o := <-done:
+			t.Fatalf("%v returned before there was a message: %+v", args, o)
+		case <-time.After(200 * time.Millisecond):
+		}
+		if code, _, e := ctl(t, addr, "", "produce", "-value", "late-"+topic, topic); code != 0 {
+			t.Fatalf("produce: %q", e)
+		}
+		select {
+		case o := <-done:
+			if o.code != 0 || !strings.Contains(o.out, `"late-`+topic+`"`) {
+				t.Fatalf("%v: %+v", args, o)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%v kept waiting although a message arrived", args)
+		}
+	}
+
+	// Nothing arrives: the command returns quietly when the wait is over.
+	code, out, e := ctl(t, addr, "", "fetch", "-offset", "1", "-wait", "200ms", "fetch")
+	if code != 0 || out != "" {
+		t.Fatalf("fetch at the end: code %d, stdout %q, stderr %q", code, out, e)
+	}
+}
+
+func TestAWaitThatDoesNotFitInTheTimeoutIsRefused(t *testing.T) {
+	addr := startBroker(t)
+	if code, _, e := ctl(t, addr, "", "create-topic", "events"); code != 0 {
+		t.Fatalf("create-topic: %q", e)
+	}
+	code, _, e := ctl(t, addr, "", "-timeout", "2s", "fetch", "-wait", "5s", "events")
+	if code != 2 || !strings.Contains(e, "-timeout") {
+		t.Fatalf("code %d, stderr %q; want a usage error that names -timeout", code, e)
+	}
+	if code, _, _ := ctl(t, addr, "", "fetch", "-wait", "-1s", "events"); code != 2 {
+		t.Fatalf("a negative wait: code %d, want 2", code)
 	}
 }
 

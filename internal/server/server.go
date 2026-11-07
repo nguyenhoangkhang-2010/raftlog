@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -32,6 +34,9 @@ type Backend interface {
 	Produce(ctx context.Context, topic string, partition int, msgs []storage.Message) (int, uint64, error)
 	CommitOffset(ctx context.Context, group, topic string, partition int, offset uint64) error
 	Fetch(topic string, partition int, offset uint64, limit int) ([]storage.Message, error)
+	// Watch returns a channel closed when the partition may have new data; call
+	// it before Fetch to wait for messages without missing one.
+	Watch(topic string, partition int) (<-chan struct{}, error)
 	GroupOffset(group, topic string, partition int) (broker.OffsetInfo, error)
 }
 
@@ -59,6 +64,10 @@ func (l local) Fetch(topic string, partition int, offset uint64, limit int) ([]s
 	return l.b.Fetch(topic, partition, offset, limit)
 }
 
+func (l local) Watch(topic string, partition int) (<-chan struct{}, error) {
+	return l.b.Watch(topic, partition)
+}
+
 func (l local) GroupOffset(group, topic string, partition int) (broker.OffsetInfo, error) {
 	return l.b.GroupOffset(group, topic, partition)
 }
@@ -68,6 +77,9 @@ type Options struct {
 	// MaxFetchMessages caps the number of messages one Fetch may return.
 	// It must be at least 1.
 	MaxFetchMessages int
+	// MaxFetchWait caps how long one Fetch may wait for new messages (long
+	// poll). 0 turns waiting off: a Fetch then always answers at once.
+	MaxFetchWait time.Duration
 	// Raft reports the Raft state of this node. Optional: nil means the node
 	// runs standalone.
 	Raft RaftStatus
@@ -86,14 +98,24 @@ type Server struct {
 	pb.UnimplementedBrokerServer
 	backend Backend
 	opts    Options
+
+	stopping chan struct{} // closed by Shutdown
+	stopOnce sync.Once
 }
+
+// Shutdown makes every Fetch that is waiting for messages answer at once. Call
+// it before the gRPC server's GracefulStop, which otherwise waits for them.
+func (s *Server) Shutdown() { s.stopOnce.Do(func() { close(s.stopping) }) }
 
 // New returns a Server backed by b.
 func New(b Backend, opts Options) (*Server, error) {
 	if opts.MaxFetchMessages < 1 {
 		return nil, errors.New("server: MaxFetchMessages must be at least 1")
 	}
-	return &Server{backend: b, opts: opts}, nil
+	if opts.MaxFetchWait < 0 {
+		return nil, errors.New("server: MaxFetchWait must not be negative")
+	}
+	return &Server{backend: b, opts: opts, stopping: make(chan struct{})}, nil
 }
 
 // Register adds the service to a gRPC server.
@@ -131,7 +153,8 @@ func (s *Server) Produce(ctx context.Context, req *pb.ProduceRequest) (*pb.Produ
 	return &pb.ProduceResponse{Partition: uint32(part), BaseOffset: base}, nil
 }
 
-// Fetch reads messages from one partition, starting at an offset.
+// Fetch reads messages from one partition, starting at an offset. When there is
+// nothing to read and the request allows it, it waits for a message to arrive.
 func (s *Server) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResponse, error) {
 	if req.GetMaxMessages() == 0 {
 		return nil, status.Error(codes.InvalidArgument, "max_messages must be greater than 0")
@@ -140,11 +163,47 @@ func (s *Server) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResp
 	if n := int(req.GetMaxMessages()); n < limit {
 		limit = n
 	}
-
-	msgs, err := s.backend.Fetch(req.GetTopic(), int(req.GetPartition()), req.GetOffset(), limit)
-	if err != nil {
-		return nil, s.fail(ctx, err)
+	wait := time.Duration(req.GetMaxWaitMs()) * time.Millisecond
+	if wait > s.opts.MaxFetchWait {
+		wait = s.opts.MaxFetchWait
 	}
+
+	var deadline <-chan time.Time
+	var msgs []storage.Message
+	for {
+		// Subscribe before reading: a message that arrives between the read and
+		// the wait would otherwise be missed until the next one.
+		var wake <-chan struct{}
+		if wait > 0 {
+			var err error
+			if wake, err = s.backend.Watch(req.GetTopic(), int(req.GetPartition())); err != nil {
+				return nil, s.fail(ctx, err)
+			}
+		}
+		var err error
+		msgs, err = s.backend.Fetch(req.GetTopic(), int(req.GetPartition()), req.GetOffset(), limit)
+		if err != nil {
+			return nil, s.fail(ctx, err)
+		}
+		if len(msgs) > 0 || wait <= 0 {
+			break
+		}
+		if deadline == nil {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			deadline = timer.C
+		}
+		select {
+		case <-wake:
+			continue
+		case <-deadline:
+		case <-s.stopping:
+		case <-ctx.Done():
+			return nil, s.fail(ctx, ctx.Err())
+		}
+		break
+	}
+
 	out := make([]*pb.Message, len(msgs))
 	for i, m := range msgs {
 		out[i] = &pb.Message{

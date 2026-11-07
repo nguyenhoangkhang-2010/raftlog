@@ -58,6 +58,23 @@ type topicMeta struct {
 type partition struct {
 	mu  sync.Mutex // keeps a produced batch contiguous in the log
 	log *storage.Log
+
+	// wake is closed, and replaced, whenever the partition may have changed:
+	// after an append and when the partition is closed. See Watch.
+	wakeMu sync.Mutex
+	wake   chan struct{}
+}
+
+func newPartition(l *storage.Log) *partition {
+	return &partition{log: l, wake: make(chan struct{})}
+}
+
+// signal wakes everyone who called Watch since the last signal.
+func (p *partition) signal() {
+	p.wakeMu.Lock()
+	close(p.wake)
+	p.wake = make(chan struct{})
+	p.wakeMu.Unlock()
 }
 
 type topic struct {
@@ -147,7 +164,7 @@ func (b *Broker) openPartitions(name string, n int) (*topic, error) {
 			t.close()
 			return nil, fmt.Errorf("open partition %d: %w", i, err)
 		}
-		t.parts = append(t.parts, &partition{log: l})
+		t.parts = append(t.parts, newPartition(l))
 	}
 	return t, nil
 }
@@ -156,6 +173,7 @@ func (t *topic) close() error {
 	var errs []error
 	for _, p := range t.parts {
 		errs = append(errs, p.log.Close())
+		p.signal() // let a waiting Fetch see that the partition is gone
 	}
 	return errors.Join(errs...)
 }
@@ -266,6 +284,10 @@ func (b *Broker) Produce(name string, partition int, msgs []storage.Message) (in
 	p := t.parts[idx]
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Wake waiting readers even if the batch failed midway: the messages that
+	// were written are readable. The signal goes out before p.mu is released,
+	// so a reader that was woken and reads at once sees the whole batch.
+	defer p.signal()
 	var base uint64
 	for i, m := range msgs {
 		off, err := p.log.Append(m)
@@ -289,6 +311,27 @@ func (b *Broker) Fetch(name string, partition int, offset uint64, limit int) ([]
 		return nil, ErrInvalidPartition
 	}
 	return t.parts[partition].log.Read(offset, limit)
+}
+
+// Watch returns a channel that is closed the next time the partition may have
+// new data, or when it is closed or replaced. It is how a reader waits for
+// messages without polling.
+//
+// To avoid missing a message that arrives in between, call Watch first, then
+// Fetch; if the Fetch finds nothing, wait on the channel and start over. A woken
+// reader may find nothing new, so it must check again.
+func (b *Broker) Watch(name string, partition int) (<-chan struct{}, error) {
+	t, err := b.lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	if partition < 0 || partition >= len(t.parts) {
+		return nil, ErrInvalidPartition
+	}
+	p := t.parts[partition]
+	p.wakeMu.Lock()
+	defer p.wakeMu.Unlock()
+	return p.wake, nil
 }
 
 // Topics lists all topics, sorted by name.
