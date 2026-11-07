@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -20,6 +21,9 @@ func serve(t *testing.T, backend server.Backend, opts server.Options) string {
 	t.Helper()
 	if opts.MaxFetchMessages == 0 {
 		opts.MaxFetchMessages = 100
+	}
+	if opts.MaxFetchWait == 0 {
+		opts.MaxFetchWait = time.Minute
 	}
 	srv, err := server.New(backend, opts)
 	if err != nil {
@@ -93,6 +97,8 @@ func (b *refusingBackend) Fetch(string, int, uint64, int) ([]storage.Message, er
 	return nil, b.err
 }
 
+func (b *refusingBackend) Watch(string, int) (<-chan struct{}, error) { return nil, b.err }
+
 func (b *refusingBackend) GroupOffset(string, string, int) (broker.OffsetInfo, error) {
 	b.calls.Add(1)
 	return broker.OffsetInfo{}, b.err
@@ -126,6 +132,8 @@ func (b *flippingBackend) CommitOffset(context.Context, string, string, int, uin
 }
 
 func (b *flippingBackend) Fetch(string, int, uint64, int) ([]storage.Message, error) { return nil, nil }
+
+func (b *flippingBackend) Watch(string, int) (<-chan struct{}, error) { return nil, nil }
 
 func (b *flippingBackend) GroupOffset(string, string, int) (broker.OffsetInfo, error) {
 	return broker.OffsetInfo{}, nil

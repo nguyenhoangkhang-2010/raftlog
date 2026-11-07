@@ -114,6 +114,33 @@ func TestReplicatedBrokerCreatesProducesAndReads(t *testing.T) {
 	}
 }
 
+func TestReplicatedWatchFiresWhenACommittedMessageIsApplied(t *testing.T) {
+	e := newReplicatedEnv(t, 0)
+	ctx, cancel := ctx5()
+	defer cancel()
+	if err := e.s.CreateTopic(ctx, "events", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	ch, err := e.s.Watch("events", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if woken(ch, 30*time.Millisecond) {
+		t.Fatal("Watch fired with nothing produced")
+	}
+	if _, _, err := e.s.Produce(ctx, "events", 0, []storage.Message{msg("k", "v")}); err != nil {
+		t.Fatal(err)
+	}
+	if !woken(ch, time.Second) {
+		t.Fatal("Watch did not fire after a replicated produce")
+	}
+	// When it fires, the message can already be read.
+	if got, err := e.s.Fetch("events", 0, 0, 10); err != nil || len(got) != 1 {
+		t.Fatalf("Fetch after the wake-up = %v, %v", got, err)
+	}
+}
+
 func TestReplicatedBrokerRefusesBadRequestsBeforeReplicatingThem(t *testing.T) {
 	e := newReplicatedEnv(t, 0)
 	ctx, cancel := ctx5()

@@ -12,14 +12,17 @@
 //	status
 //	create-topic [-partitions N] <topic>
 //	produce      [-key K] [-value V | -lines] [-partition P] <topic>
-//	fetch        [-partition P] [-offset O] [-max N] <topic>
+//	fetch        [-partition P] [-offset O] [-max N] [-wait D] <topic>
 //	commit       -group G [-partition P] -offset O <topic>
 //	offsets      -group G [-partition P] <topic>
-//	consume      -group G [-partition P] [-max N] <topic>
+//	consume      -group G [-partition P] [-max N] [-wait D] <topic>
 //
 // consume reads from the group's committed offset (or from 0 if none), prints
 // the messages, then commits the offset after the last one it printed, so
 // running it again continues where it stopped (at-least-once delivery).
+//
+// With -wait, fetch and consume wait up to that long for a message when there is
+// nothing to read yet, and return as soon as one arrives. -timeout must be longer.
 //
 // produce reads the value from stdin when -value is not given. With -lines,
 // every line of stdin is sent as one message.
@@ -32,6 +35,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -136,10 +140,10 @@ commands:
   status
   create-topic [-partitions N] <topic>
   produce      [-key K] [-value V | -lines] [-partition P] <topic>
-  fetch        [-partition P] [-offset O] [-max N] <topic>
+  fetch        [-partition P] [-offset O] [-max N] [-wait D] <topic>
   commit       -group G [-partition P] -offset O <topic>
   offsets      -group G [-partition P] <topic>
-  consume      -group G [-partition P] [-max N] <topic>
+  consume      -group G [-partition P] [-max N] [-wait D] <topic>
 `)
 }
 
@@ -336,16 +340,43 @@ func cmdOffsets(ctx context.Context, c pb.BrokerClient, args []string, stdout, s
 	return 0
 }
 
+// checkWait refuses a -wait that the request deadline would cut short: the
+// command would then fail with a timeout instead of returning "nothing yet".
+func checkWait(ctx context.Context, wait time.Duration, stderr io.Writer) bool {
+	if wait < 0 {
+		fmt.Fprintln(stderr, "raftlogctl: -wait must not be negative")
+		return false
+	}
+	if dl, ok := ctx.Deadline(); ok && wait > 0 && time.Until(dl) <= wait {
+		fmt.Fprintf(stderr, "raftlogctl: -wait %v does not fit in -timeout; raise -timeout above it\n", wait)
+		return false
+	}
+	return true
+}
+
+// waitMillis converts a wait to the milliseconds the API carries, capped at the
+// largest it can express.
+func waitMillis(wait time.Duration) uint32 {
+	if ms := wait.Milliseconds(); ms < math.MaxUint32 {
+		return uint32(ms)
+	}
+	return math.MaxUint32
+}
+
 func cmdConsume(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
 	fs := newFlags("consume", stderr)
 	group := fs.String("group", "", "consumer group name (required)")
 	partition := fs.Uint("partition", 0, "partition to read")
 	limit := fs.Uint("max", 10, "maximum number of messages")
+	wait := fs.Duration("wait", 0, "if there is nothing to read, wait up to this long for a message (must be shorter than -timeout)")
 	topic, code, ok := parse(fs, args, stderr)
 	if !ok {
 		return code
 	}
 	if !requireGroup("consume", *group, stderr) {
+		return 2
+	}
+	if !checkWait(ctx, *wait, stderr) {
 		return 2
 	}
 
@@ -358,6 +389,7 @@ func cmdConsume(ctx context.Context, c pb.BrokerClient, args []string, stdout, s
 		Partition:   uint32(*partition),
 		Offset:      pos.Offset,
 		MaxMessages: uint32(*limit),
+		MaxWaitMs:   waitMillis(*wait),
 	})
 	if err != nil {
 		return fail(stderr, err)
@@ -385,9 +417,13 @@ func cmdFetch(ctx context.Context, c pb.BrokerClient, args []string, stdout, std
 	partition := fs.Uint("partition", 0, "partition to read")
 	offset := fs.Uint64("offset", 0, "first offset to read")
 	limit := fs.Uint("max", 10, "maximum number of messages")
+	wait := fs.Duration("wait", 0, "if there is nothing to read, wait up to this long for a message (must be shorter than -timeout)")
 	topic, code, ok := parse(fs, args, stderr)
 	if !ok {
 		return code
+	}
+	if !checkWait(ctx, *wait, stderr) {
+		return 2
 	}
 
 	resp, err := c.Fetch(ctx, &pb.FetchRequest{
@@ -395,6 +431,7 @@ func cmdFetch(ctx context.Context, c pb.BrokerClient, args []string, stdout, std
 		Partition:   uint32(*partition),
 		Offset:      *offset,
 		MaxMessages: uint32(*limit),
+		MaxWaitMs:   waitMillis(*wait),
 	})
 	if err != nil {
 		return fail(stderr, err)

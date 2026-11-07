@@ -24,6 +24,7 @@ const (
 	EnvSyncOnAppend       = "RAFTLOG_SYNC_ON_APPEND"
 	EnvMaxPartitions      = "RAFTLOG_MAX_PARTITIONS"
 	EnvMaxFetchMessages   = "RAFTLOG_MAX_FETCH_MESSAGES"
+	EnvMaxFetchWait       = "RAFTLOG_MAX_FETCH_WAIT"
 	EnvNodeID             = "RAFTLOG_NODE_ID"
 	EnvPeers              = "RAFTLOG_PEERS"
 	EnvElectionTicks      = "RAFTLOG_ELECTION_TICKS"
@@ -40,6 +41,8 @@ const (
 	defaultDataDir       = "data"
 	defaultMaxPartitions = 1024
 	defaultMaxFetch      = 1000
+	// defaultMaxFetchWait is the longest a Fetch may wait for new messages.
+	defaultMaxFetchWait = 30 * time.Second
 
 	// Raft timing. With these defaults a heartbeat goes out every tick and a
 	// follower waits 1-2 seconds before it starts an election.
@@ -75,6 +78,9 @@ type Config struct {
 	MaxPartitions int
 	// MaxFetchMessages caps how many messages one Fetch request may return.
 	MaxFetchMessages int
+	// MaxFetchWait caps how long a Fetch may wait for new messages (long poll);
+	// 0 turns waiting off.
+	MaxFetchWait time.Duration
 
 	// NodeID is this node's ID in a Raft cluster. 0 means standalone: no Raft.
 	NodeID uint64
@@ -147,6 +153,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		DataDir:          defaultDataDir,
 		MaxPartitions:    defaultMaxPartitions,
 		MaxFetchMessages: defaultMaxFetch,
+		MaxFetchWait:     defaultMaxFetchWait,
 		ElectionTicks:    defaultElectionTicks,
 		HeartbeatTicks:   defaultHeartbeatTicks,
 		TickInterval:     defaultTickInterval,
@@ -197,6 +204,13 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 			errs = append(errs, fmt.Errorf("%s: %w", EnvMaxFetchMessages, err))
 		}
 		cfg.MaxFetchMessages = n
+	}
+	if v := getenv(EnvMaxFetchWait); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvMaxFetchWait, err))
+		}
+		cfg.MaxFetchWait = d
 	}
 	if v := getenv(EnvNodeID); v != "" {
 		n, err := strconv.ParseUint(v, 10, 64)
@@ -261,6 +275,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.BoolVar(&cfg.SyncOnAppend, "sync-on-append", cfg.SyncOnAppend, "fsync after every append ["+EnvSyncOnAppend+"]")
 	fs.IntVar(&cfg.MaxPartitions, "max-partitions", cfg.MaxPartitions, "maximum partitions per topic ["+EnvMaxPartitions+"]")
 	fs.IntVar(&cfg.MaxFetchMessages, "max-fetch-messages", cfg.MaxFetchMessages, "maximum messages returned by one fetch ["+EnvMaxFetchMessages+"]")
+	fs.DurationVar(&cfg.MaxFetchWait, "max-fetch-wait", cfg.MaxFetchWait, "longest a fetch may wait for new messages, 0 = never wait ["+EnvMaxFetchWait+"]")
 	fs.Uint64Var(&cfg.NodeID, "node-id", cfg.NodeID, "Raft node ID, 0 = standalone without Raft ["+EnvNodeID+"]")
 	fs.StringVar(&peersFlag, "peers", peersFlag, "cluster members as id=host:port,id=host:port, including this node ["+EnvPeers+"]")
 	fs.IntVar(&cfg.ElectionTicks, "election-ticks", cfg.ElectionTicks, "base election timeout in ticks ["+EnvElectionTicks+"]")
@@ -307,6 +322,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxFetchMessages < 1 {
 		errs = append(errs, errors.New("max fetch messages must be at least 1"))
+	}
+	if c.MaxFetchWait < 0 {
+		errs = append(errs, errors.New("max fetch wait must not be negative"))
 	}
 	if c.NodeID == 0 {
 		if len(c.Peers) > 0 {

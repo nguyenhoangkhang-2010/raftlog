@@ -581,6 +581,66 @@ func TestTheClientLibraryRidesThroughALeaderFailover(t *testing.T) {
 	}
 }
 
+func TestAWaitingFetchOnAFollowerIsWokenByAReplicatedWrite(t *testing.T) {
+	// The reader is on a follower and the writer on the leader: the message
+	// travels through the Raft log before the follower applies it, and only then
+	// may the waiting Fetch return.
+	c := newTestCluster(t, 3)
+	c.startAll()
+	leader := c.waitForLeader()
+	var follower *testNode
+	for _, n := range c.nodes {
+		if n != leader {
+			follower = n
+			break
+		}
+	}
+	c.createTopic("events", 1)
+
+	reader := dial(t, follower.addr)
+	// Wait until the follower has applied the topic.
+	deadline := time.Now().Add(clusterWait)
+	for {
+		ctx, cancel := rpcCtx()
+		_, err := reader.Fetch(ctx, &pb.FetchRequest{Topic: "events", MaxMessages: 1})
+		cancel()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the follower never learned the topic: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	type result struct {
+		resp *pb.FetchResponse
+		err  error
+	}
+	got := make(chan result, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		resp, err := reader.Fetch(ctx, &pb.FetchRequest{Topic: "events", MaxMessages: 5, MaxWaitMs: 20_000})
+		got <- result{resp, err}
+	}()
+
+	select {
+	case r := <-got:
+		t.Fatalf("returned before anything was written: %+v", r)
+	case <-time.After(300 * time.Millisecond):
+	}
+	c.produce("events", 0, "through-the-log")
+	select {
+	case r := <-got:
+		if r.err != nil || len(r.resp.Messages) != 1 || string(r.resp.Messages[0].Value) != "through-the-log" {
+			t.Fatalf("Fetch = %+v, %v", r.resp, r.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the waiting Fetch was not woken by the write")
+	}
+}
+
 func TestSnapshotsDoNotBreakARestart(t *testing.T) {
 	// Restarting nodes that hold both a snapshot and a log suffix must neither
 	// lose nor duplicate data.

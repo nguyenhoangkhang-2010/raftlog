@@ -134,6 +134,12 @@ func (s *Replicated) Fetch(name string, partition int, offset uint64, limit int)
 	return s.m.Fetch(name, partition, offset, limit)
 }
 
+// Watch returns a channel that is closed when new data may be readable on this
+// node; see Broker.Watch.
+func (s *Replicated) Watch(name string, partition int) (<-chan struct{}, error) {
+	return s.m.Watch(name, partition)
+}
+
 // GroupOffset returns the position of a consumer group as this node knows it.
 func (s *Replicated) GroupOffset(group, name string, partition int) (OffsetInfo, error) {
 	return s.m.GroupOffset(group, name, partition)

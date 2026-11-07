@@ -29,6 +29,7 @@ Consumer ◄── read by offset
 - [x] Raft snapshots: log compaction, InstallSnapshot for followers that fell behind, recovery from a snapshot at startup
 - [x] Broker data replicated through the Raft log: topics, produce and consumer offsets survive the loss of a node; clients follow the leader
 - [x] Chaos tests: real processes killed and partitioned while clients write; the history is checked for lost, duplicated or misordered writes and dirty reads (`test/chaos`)
+- [x] Long-poll `Fetch`: a reader waits for the next message instead of polling (`-wait`, `client.WaitUpTo`, `-max-fetch-wait`)
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
 - [ ] Prometheus metrics and Grafana dashboard
@@ -54,6 +55,13 @@ raftlogctl -addr 127.0.0.1:9091 status     # role, term, leader, commit and snap
 ```
 Stop the leader and keep producing: the writes continue on the new leader.
 
+To follow a topic as it grows, wait for messages instead of polling (the `-timeout`
+of the command must be longer than the `-wait`):
+```bash
+raftlogctl -addr 127.0.0.1:9091,127.0.0.1:9092,127.0.0.1:9093 -timeout 40s consume -group billing -wait 30s orders
+```
+The longest wait a node allows is `-max-fetch-wait` (default 30s, `0` turns waiting off).
+
 ## Use it from Go
 The `client` package is the same leader-following client that `raftlogctl` uses.
 Give it every node's address; it finds the leader, follows leader changes and waits
@@ -68,6 +76,8 @@ defer cancel()
 _, err = c.Produce(ctx, "orders", []client.Message{{Key: []byte("user-1"), Value: []byte("hello")}})
 if errors.Is(err, client.ErrNotFound) { /* the topic does not exist */ }
 ```
+`c.Fetch(ctx, topic, partition, offset, limit, client.WaitUpTo(20*time.Second))` waits
+for the next message instead of returning nothing at once.
 Delivery is at-least-once: a request that failed after the leader stored it may be
 stored again when you retry, so consumers should tolerate repeats (see `client/doc.go`).
 

@@ -46,6 +46,10 @@ message FetchRequest {
   uint32 partition = 2;
   uint64 offset = 3;
   uint32 max_messages = 4;
+  // If there is nothing to read at offset, wait up to this many milliseconds for
+  // a message to arrive before answering with an empty response (long poll).
+  // 0 answers at once. The server may shorten the wait to its own limit.
+  uint32 max_wait_ms = 5;
 }
 message FetchResponse {
   repeated Message messages = 1;

@@ -60,6 +60,67 @@ func TestProduceAndFetchRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFetchCanWaitForAMessage(t *testing.T) {
+	c := newClient(t, []string{startBroker(t)})
+	if err := c.CreateTopic(ctx(t, 10*time.Second), "events", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		recs    []client.Record
+		err     error
+		elapsed time.Duration
+	}
+	got := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		recs, err := c.Fetch(ctx(t, 20*time.Second), "events", 0, 0, 10, client.WaitUpTo(15*time.Second))
+		got <- result{recs, err, time.Since(start)}
+	}()
+
+	select {
+	case r := <-got:
+		t.Fatalf("returned before anything was produced: %+v", r)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if _, err := c.Produce(ctx(t, 10*time.Second), "events", []client.Message{{Value: []byte("late")}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-got:
+		if r.err != nil || len(r.recs) != 1 || string(r.recs[0].Value) != "late" {
+			t.Fatalf("Fetch = %+v", r)
+		}
+		if r.elapsed > 10*time.Second {
+			t.Fatalf("took %v: it waited for the timeout, not for the message", r.elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the waiting Fetch never returned")
+	}
+}
+
+func TestFetchGivesNothingWhenTheWaitIsOver(t *testing.T) {
+	c := newClient(t, []string{startBroker(t)})
+	if err := c.CreateTopic(ctx(t, 10*time.Second), "events", 1); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	recs, err := c.Fetch(ctx(t, 10*time.Second), "events", 0, 0, 10, client.WaitUpTo(200*time.Millisecond))
+	if err != nil || len(recs) != 0 {
+		t.Fatalf("Fetch = %v, %v; want nothing and no error", recs, err)
+	}
+	if time.Since(start) < 150*time.Millisecond {
+		t.Fatalf("returned after %v although it was to wait 200 ms", time.Since(start))
+	}
+}
+
+func TestFetchRefusesANegativeWait(t *testing.T) {
+	c := newClient(t, []string{startBroker(t)})
+	if _, err := c.Fetch(ctx(t, time.Second), "events", 0, 0, 10, client.WaitUpTo(-time.Second)); !errors.Is(err, client.ErrInvalidArgument) {
+		t.Fatalf("err = %v, want ErrInvalidArgument", err)
+	}
+}
+
 func TestBinaryKeysAndValuesSurvive(t *testing.T) {
 	c := newClient(t, []string{startBroker(t)})
 	if err := c.CreateTopic(ctx(t, 10*time.Second), "bin", 1); err != nil {

@@ -32,6 +32,8 @@ func (b failingBackend) CommitOffset(context.Context, string, string, int, uint6
 func (b failingBackend) Fetch(string, int, uint64, int) ([]storage.Message, error) {
 	return nil, b.err
 }
+func (b failingBackend) Watch(string, int) (<-chan struct{}, error) { return nil, b.err }
+
 func (b failingBackend) GroupOffset(string, string, int) (broker.OffsetInfo, error) {
 	return broker.OffsetInfo{}, b.err
 }
