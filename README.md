@@ -30,6 +30,8 @@ Consumer ◄── read by offset
 - [x] Broker data replicated through the Raft log: topics, produce and consumer offsets survive the loss of a node; clients follow the leader
 - [x] Chaos tests: real processes killed and partitioned while clients write; the history is checked for lost, duplicated or misordered writes and dirty reads (`test/chaos`)
 - [x] Long-poll `Fetch`: a reader waits for the next message instead of polling (`-wait`, `client.WaitUpTo`, `-max-fetch-wait`)
+- [x] Client library (`client`) that follows the leader and rides through failover
+- [x] Demo application: a virtual waiting room for course registration, whose whole state is two raftlog topics ([docs/waitingroom.md](docs/waitingroom.md))
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
 - [ ] Prometheus metrics and Grafana dashboard
@@ -81,6 +83,14 @@ for the next message instead of returning nothing at once.
 Delivery is at-least-once: a request that failed after the leader stored it may be
 stored again when you retry, so consumers should tolerate repeats (see `client/doc.go`).
 
+## Demo: a waiting room for course registration
+`cmd/waitingroom` is a web application built only on the public `client` package:
+people join a line, are let in a few at a time, and see their place update live.
+The line lives in two topics, so killing the leader of the cluster does not cost
+anyone their place; `cmd/wrsim` simulates the crowd. See
+[docs/waitingroom.md](docs/waitingroom.md) for how to run it, how it works, what the
+tests prove and what a measured run looked like.
+
 ## Known limitations
 - One Raft group for the whole cluster: every write goes through a single leader.
 - A snapshot is a copy of all data held in memory and sent in one message
@@ -104,6 +114,8 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 | `cmd/raftlogd` | Broker server |
 | `cmd/raftlogctl` | CLI client |
 | `client` | Go client library: finds the leader, follows failover |
+| `cmd/waitingroom`, `internal/waitingroom` | Demo application: virtual waiting room (web page, API, admission controller) |
+| `cmd/wrsim` | Simulates a crowd arriving at the waiting room |
 | `internal/storage` | Segments, index, crash recovery |
 | `internal/raft` | Raft consensus implementation |
 | `internal/broker` | Topics, partitions, consumer groups |
