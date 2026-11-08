@@ -211,3 +211,43 @@ func TestAddressFromEnvironment(t *testing.T) {
 		t.Fatalf("code %d, stderr %q", code, errOut.String())
 	}
 }
+
+func TestTopicsAndGroupsCommands(t *testing.T) {
+	addr := startBroker(t)
+
+	// Nothing yet: no output and no error.
+	for _, cmd := range []string{"topics", "groups"} {
+		if code, out, e := ctl(t, addr, "", cmd); code != 0 || out != "" {
+			t.Fatalf("%s on an empty broker: code %d, stdout %q, stderr %q", cmd, code, out, e)
+		}
+	}
+
+	if code, _, e := ctl(t, addr, "", "create-topic", "-partitions", "2", "events"); code != 0 {
+		t.Fatalf("create-topic: %q", e)
+	}
+	if code, _, e := ctl(t, addr, "", "produce", "-value", "a", "-partition", "1", "events"); code != 0 {
+		t.Fatalf("produce: %q", e)
+	}
+	if code, _, e := ctl(t, addr, "", "produce", "-value", "b", "-partition", "1", "events"); code != 0 {
+		t.Fatalf("produce: %q", e)
+	}
+	code, out, e := ctl(t, addr, "", "topics")
+	if code != 0 || out != "topic=events partitions=2 messages=2 ends=0,2\n" {
+		t.Fatalf("topics: code %d, stdout %q, stderr %q", code, out, e)
+	}
+
+	if code, _, e := ctl(t, addr, "", "commit", "-group", "billing", "-partition", "1", "-offset", "1", "events"); code != 0 {
+		t.Fatalf("commit: %q", e)
+	}
+	code, out, e = ctl(t, addr, "", "groups")
+	if code != 0 || out != "group=billing topic=events partition=1 offset=1 end=2 lag=1\n" {
+		t.Fatalf("groups: code %d, stdout %q, stderr %q", code, out, e)
+	}
+
+	// Both take no arguments.
+	for _, cmd := range []string{"topics", "groups"} {
+		if code, _, _ := ctl(t, addr, "", cmd, "extra"); code != 2 {
+			t.Errorf("%s with an argument: exit code %d, want 2", cmd, code)
+		}
+	}
+}

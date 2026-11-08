@@ -295,3 +295,24 @@ func (r *Router) NodeStatusAt(ctx context.Context, addr string, in *pb.NodeStatu
 	}
 	return pb.NewBrokerClient(conn).NodeStatus(ctx, in, opts...)
 }
+
+// ListTopics implements pb.BrokerClient. Any node can answer, so it is asked like
+// a Fetch: the first node that is up.
+func (r *Router) ListTopics(ctx context.Context, in *pb.ListTopicsRequest, opts ...grpc.CallOption) (*pb.ListTopicsResponse, error) {
+	var out *pb.ListTopicsResponse
+	err := r.do(ctx, func(cl pb.BrokerClient, o ...grpc.CallOption) (err error) {
+		out, err = cl.ListTopics(ctx, in, append(opts, o...)...)
+		return err
+	})
+	return out, err
+}
+
+// ListGroups implements pb.BrokerClient, asked like ListTopics.
+func (r *Router) ListGroups(ctx context.Context, in *pb.ListGroupsRequest, opts ...grpc.CallOption) (*pb.ListGroupsResponse, error) {
+	var out *pb.ListGroupsResponse
+	err := r.do(ctx, func(cl pb.BrokerClient, o ...grpc.CallOption) (err error) {
+		out, err = cl.ListGroups(ctx, in, append(opts, o...)...)
+		return err
+	})
+	return out, err
+}

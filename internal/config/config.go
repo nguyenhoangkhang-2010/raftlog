@@ -25,6 +25,7 @@ const (
 	EnvMaxPartitions      = "RAFTLOG_MAX_PARTITIONS"
 	EnvMaxFetchMessages   = "RAFTLOG_MAX_FETCH_MESSAGES"
 	EnvMaxFetchWait       = "RAFTLOG_MAX_FETCH_WAIT"
+	EnvMetricsListen      = "RAFTLOG_METRICS_LISTEN"
 	EnvNodeID             = "RAFTLOG_NODE_ID"
 	EnvPeers              = "RAFTLOG_PEERS"
 	EnvElectionTicks      = "RAFTLOG_ELECTION_TICKS"
@@ -81,6 +82,9 @@ type Config struct {
 	// MaxFetchWait caps how long a Fetch may wait for new messages (long poll);
 	// 0 turns waiting off.
 	MaxFetchWait time.Duration
+	// MetricsListen is the host:port where the metrics are served over HTTP at
+	// /metrics. Empty means no metrics.
+	MetricsListen string
 
 	// NodeID is this node's ID in a Raft cluster. 0 means standalone: no Raft.
 	NodeID uint64
@@ -212,6 +216,9 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		}
 		cfg.MaxFetchWait = d
 	}
+	if v := getenv(EnvMetricsListen); v != "" {
+		cfg.MetricsListen = v
+	}
 	if v := getenv(EnvNodeID); v != "" {
 		n, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {
@@ -276,6 +283,7 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.IntVar(&cfg.MaxPartitions, "max-partitions", cfg.MaxPartitions, "maximum partitions per topic ["+EnvMaxPartitions+"]")
 	fs.IntVar(&cfg.MaxFetchMessages, "max-fetch-messages", cfg.MaxFetchMessages, "maximum messages returned by one fetch ["+EnvMaxFetchMessages+"]")
 	fs.DurationVar(&cfg.MaxFetchWait, "max-fetch-wait", cfg.MaxFetchWait, "longest a fetch may wait for new messages, 0 = never wait ["+EnvMaxFetchWait+"]")
+	fs.StringVar(&cfg.MetricsListen, "metrics-listen", cfg.MetricsListen, "serve metrics over HTTP at this host:port, empty = no metrics ["+EnvMetricsListen+"]")
 	fs.Uint64Var(&cfg.NodeID, "node-id", cfg.NodeID, "Raft node ID, 0 = standalone without Raft ["+EnvNodeID+"]")
 	fs.StringVar(&peersFlag, "peers", peersFlag, "cluster members as id=host:port,id=host:port, including this node ["+EnvPeers+"]")
 	fs.IntVar(&cfg.ElectionTicks, "election-ticks", cfg.ElectionTicks, "base election timeout in ticks ["+EnvElectionTicks+"]")
@@ -325,6 +333,11 @@ func (c Config) Validate() error {
 	}
 	if c.MaxFetchWait < 0 {
 		errs = append(errs, errors.New("max fetch wait must not be negative"))
+	}
+	if c.MetricsListen != "" {
+		if _, _, err := net.SplitHostPort(c.MetricsListen); err != nil {
+			errs = append(errs, fmt.Errorf("metrics listen address %q: %w", c.MetricsListen, err))
+		}
 	}
 	if c.NodeID == 0 {
 		if len(c.Peers) > 0 {

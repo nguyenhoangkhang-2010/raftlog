@@ -35,7 +35,8 @@ Consumer ◄── read by offset
 - [ ] Kitchen system (orders, stations, till) on raftlog: the domain core is done (`internal/kitchen`), the service, database and screens are next ([docs/kitchen](docs/kitchen/README.md))
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
-- [ ] Prometheus metrics and Grafana dashboard
+- [x] Prometheus metrics (`-metrics-listen`), `raftlogctl topics` and `groups`, and a cluster console that kills nodes, writes under load and verifies that no acknowledged write was lost ([docs/observability.md](docs/observability.md))
+- [ ] Grafana dashboard
 
 ## Quick start
 ```bash
@@ -57,6 +58,16 @@ raftlogctl -addr 127.0.0.1:9091,127.0.0.1:9092,127.0.0.1:9093 produce -key user-
 raftlogctl -addr 127.0.0.1:9091 status     # role, term, leader, commit and snapshot index of that node
 ```
 Stop the leader and keep producing: the writes continue on the new leader.
+
+To watch it happen, or to try it without opening four terminals, run the cluster
+console. It starts three nodes, shows who leads, lets you kill and start them while a
+writer sends messages, and checks at the end that no write the cluster acknowledged has
+gone missing:
+```bash
+make build && ./bin/raftlogconsole -spawn 3     # then open http://127.0.0.1:8090
+```
+See [docs/observability.md](docs/observability.md) for the page, the metrics each node can
+serve for Prometheus (`-metrics-listen`), and `raftlogctl topics` / `groups`.
 
 To follow a topic as it grows, wait for messages instead of polling (the `-timeout`
 of the command must be longer than the `-wait`):
@@ -114,6 +125,8 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 |---|---|
 | `cmd/raftlogd` | Broker server |
 | `cmd/raftlogctl` | CLI client |
+| `cmd/raftlogconsole`, `internal/console` | Cluster console: node cards, Kill/Start, write load, Verify, timeline |
+| `internal/metrics`, `internal/observe` | Prometheus metrics, and what is measured in a node |
 | `client` | Go client library: finds the leader, follows failover |
 | `cmd/waitingroom`, `internal/waitingroom` | Demo application: virtual waiting room (web page, API, admission controller) |
 | `cmd/wrsim` | Simulates a crowd arriving at the waiting room |
@@ -123,7 +136,7 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 | `internal/broker` | Topics, partitions, consumer groups |
 | `internal/server` | gRPC handlers |
 | `api` | Protobuf definitions |
-| `deploy` | Dockerfile, Compose, Prometheus, Grafana |
+| `deploy` | Dockerfile, Compose with Prometheus |
 | `test/chaos` | Fault-injection scenarios |
 | `bench` | Benchmarks and results |
 | `docs` | Design doc and architecture decision records |

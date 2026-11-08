@@ -432,3 +432,17 @@ func (m *Machine) GroupOffset(group, name string, partition int) (OffsetInfo, er
 	defer m.mu.RUnlock()
 	return m.b.GroupOffset(group, name, partition)
 }
+
+// Describe is Broker.Describe for the applied data of this node.
+func (m *Machine) Describe() []TopicDescription {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.b.Describe()
+}
+
+// Groups is Broker.Groups for the applied data of this node.
+func (m *Machine) Groups() []GroupDescription {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.b.Groups()
+}

@@ -144,3 +144,9 @@ func (s *Replicated) Watch(name string, partition int) (<-chan struct{}, error) 
 func (s *Replicated) GroupOffset(group, name string, partition int) (OffsetInfo, error) {
 	return s.m.GroupOffset(group, name, partition)
 }
+
+// Describe lists the topics of this node with the end offset of each partition.
+func (s *Replicated) Describe() []TopicDescription { return s.m.Describe() }
+
+// Groups lists the consumer groups of this node and their positions.
+func (s *Replicated) Groups() []GroupDescription { return s.m.Groups() }

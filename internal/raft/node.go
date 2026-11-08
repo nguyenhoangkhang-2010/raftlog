@@ -144,6 +144,10 @@ type Node struct {
 	randomizedTimeout int
 	heartbeatElapsed  int
 
+	// Counters for observation only; the protocol never reads them.
+	campaigns uint64 // elections this node started
+	wins      uint64 // elections it won
+
 	outbox []Message
 }
 
@@ -267,6 +271,38 @@ func (n *Node) Status() Status {
 		LastIndex:     n.log.LastIndex(),
 		SnapshotIndex: n.snapshot.Index,
 	}
+}
+
+// FollowerProgress is how far a leader knows a follower has got.
+type FollowerProgress struct {
+	ID NodeID
+	// Match is the highest log index known to be stored on the follower.
+	Match uint64
+	// Next is the next index the leader will send it.
+	Next uint64
+}
+
+// Stats are counters and, on a leader, the progress of every follower. They exist
+// to be looked at: nothing in the protocol depends on them.
+type Stats struct {
+	// Applied is the highest index handed to the state machine.
+	Applied uint64
+	// Campaigns counts the elections this node started, Wins those it won.
+	Campaigns, Wins uint64
+	// Followers is empty unless the node is the leader; sorted by node ID.
+	Followers []FollowerProgress
+}
+
+// Stats returns the counters of the node.
+func (n *Node) Stats() Stats {
+	s := Stats{Applied: n.lastApplied, Campaigns: n.campaigns, Wins: n.wins}
+	if n.role == Leader {
+		for _, p := range n.peers {
+			s.Followers = append(s.Followers, FollowerProgress{ID: p, Match: n.matchIndex[p], Next: n.nextIndex[p]})
+		}
+		sort.Slice(s.Followers, func(i, j int) bool { return s.Followers[i].ID < s.Followers[j].ID })
+	}
+	return s
 }
 
 // Messages returns the messages queued for sending and clears the queue.
@@ -504,6 +540,7 @@ func (n *Node) campaign() error {
 		return err
 	}
 	n.role = Candidate
+	n.campaigns++
 	n.leader = None
 	n.votes = map[NodeID]bool{n.id: true}
 	n.resetElectionTimer()
@@ -540,6 +577,7 @@ func (n *Node) becomeLeader() error {
 	}
 
 	n.role = Leader
+	n.wins++
 	n.leader = n.id
 	n.votes = nil
 	n.heartbeatElapsed = 0

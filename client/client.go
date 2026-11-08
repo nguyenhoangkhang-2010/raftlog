@@ -250,3 +250,63 @@ func (c *Client) NodeStatus(ctx context.Context, addr string) (NodeStatus, error
 		SnapshotIndex: resp.GetSnapshotIndex(),
 	}, nil
 }
+
+// TopicInfo describes a topic.
+type TopicInfo struct {
+	Name string
+	// Ends[i] is the offset the next message of partition i will get, which is
+	// also how many messages the partition holds.
+	Ends []uint64
+}
+
+// Partitions returns the number of partitions.
+func (t TopicInfo) Partitions() int { return len(t.Ends) }
+
+// GroupPartition is the position of a consumer group in one partition.
+type GroupPartition struct {
+	Topic     string
+	Partition int
+	Offset    uint64 // the next offset the group will read
+	End       uint64
+	Lag       uint64
+}
+
+// GroupInfo is a consumer group and everywhere it has committed an offset.
+type GroupInfo struct {
+	Name       string
+	Partitions []GroupPartition
+}
+
+// Topics lists the topics, sorted by name, with the end of each partition. It is
+// answered by one node, which may be a little behind the leader.
+func (c *Client) Topics(ctx context.Context) ([]TopicInfo, error) {
+	resp, err := c.r.ListTopics(ctx, &pb.ListTopicsRequest{})
+	if err != nil {
+		return nil, translate(err)
+	}
+	out := make([]TopicInfo, len(resp.GetTopics()))
+	for i, t := range resp.GetTopics() {
+		out[i] = TopicInfo{Name: t.GetName(), Ends: append([]uint64(nil), t.GetEndOffsets()...)}
+	}
+	return out, nil
+}
+
+// Groups lists the consumer groups that have committed an offset, sorted by name,
+// with their position and lag in each partition. It is answered by one node.
+func (c *Client) Groups(ctx context.Context) ([]GroupInfo, error) {
+	resp, err := c.r.ListGroups(ctx, &pb.ListGroupsRequest{})
+	if err != nil {
+		return nil, translate(err)
+	}
+	out := make([]GroupInfo, len(resp.GetGroups()))
+	for i, g := range resp.GetGroups() {
+		gi := GroupInfo{Name: g.GetGroup(), Partitions: make([]GroupPartition, len(g.GetPartitions()))}
+		for j, p := range g.GetPartitions() {
+			gi.Partitions[j] = GroupPartition{
+				Topic: p.GetTopic(), Partition: int(p.GetPartition()), Offset: p.GetOffset(), End: p.GetEndOffset(), Lag: p.GetLag(),
+			}
+		}
+		out[i] = gi
+	}
+	return out, nil
+}
