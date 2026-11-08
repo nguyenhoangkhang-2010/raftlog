@@ -32,6 +32,7 @@ Consumer ◄── read by offset
 - [x] Long-poll `Fetch`: a reader waits for the next message instead of polling (`-wait`, `client.WaitUpTo`, `-max-fetch-wait`)
 - [x] Client library (`client`) that follows the leader and rides through failover
 - [x] Demo application: a virtual waiting room for course registration, whose whole state is two raftlog topics ([docs/waitingroom.md](docs/waitingroom.md))
+- [ ] Kitchen system (orders, stations, till) on raftlog: the domain core is done (`internal/kitchen`), the service, database and screens are next ([docs/kitchen](docs/kitchen/README.md))
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
 - [ ] Prometheus metrics and Grafana dashboard
@@ -116,6 +117,7 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 | `client` | Go client library: finds the leader, follows failover |
 | `cmd/waitingroom`, `internal/waitingroom` | Demo application: virtual waiting room (web page, API, admission controller) |
 | `cmd/wrsim` | Simulates a crowd arriving at the waiting room |
+| `internal/kitchen` | Domain core of the kitchen system: money, roles, menu, promotions, stock, event-sourced orders ([docs/kitchen](docs/kitchen/README.md)) |
 | `internal/storage` | Segments, index, crash recovery |
 | `internal/raft` | Raft consensus implementation |
 | `internal/broker` | Topics, partitions, consumer groups |
