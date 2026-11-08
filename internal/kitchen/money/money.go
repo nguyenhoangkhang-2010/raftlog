@@ -19,14 +19,18 @@ import (
 // Money is an amount in đồng. It may be negative (a discount, a refund).
 type Money int64
 
-// Bounds that keep every total far from int64 overflow.
+// MaxPrice is the largest price of one unit: 100 million đồng.
+const MaxPrice Money = 100_000_000
+
+// Bounds on how much one line and one order may hold.
 const (
-	MaxPrice    Money = 100_000_000 // 100 million đồng for one unit
-	MaxQuantity       = 99
-	MaxLines          = 100
-	// Bound is the largest total an order can reach: MaxPrice * MaxQuantity * MaxLines.
-	Bound Money = MaxPrice * MaxQuantity * MaxLines
+	MaxQuantity = 99
+	MaxLines    = 100
 )
+
+// Bound is the largest total an order can reach: MaxPrice * MaxQuantity * MaxLines.
+// It keeps every total far from int64 overflow.
+const Bound Money = MaxPrice * MaxQuantity * MaxLines
 
 // ErrNegativeShare is returned by Split for a negative total or weight.
 var ErrNegativeShare = errors.New("money: cannot split a negative amount")

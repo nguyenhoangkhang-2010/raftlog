@@ -243,7 +243,7 @@ func TestCodes(t *testing.T) {
 	}
 	// Single use is per customer.
 	used := map[string]bool{"ann": true}
-	c := Context{At: noon, Codes: []string{"WELCOME"}, Customer: "ann", Redeemed: func(id ID, who string) bool { return used[who] }}
+	c := Context{At: noon, Codes: []string{"WELCOME"}, Customer: "ann", Redeemed: func(_ ID, who string) bool { return used[who] }}
 	if r := s.Evaluate(lines, c); r.Discount != 0 || !hasRejection(r, ErrAlreadyRedeemed, "once") {
 		t.Fatalf("ann used it already: %+v", r)
 	}

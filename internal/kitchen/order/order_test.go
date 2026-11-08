@@ -640,7 +640,7 @@ func TestApplyRefusesEventsThatDoNotFit(t *testing.T) {
 		ev   Event
 		want error
 	}{
-		"a gap in the sequence":  {mk(func(e *Event) { e.Seq += 1 }), ErrSequence},
+		"a gap in the sequence":  {mk(func(e *Event) { e.Seq++ }), ErrSequence},
 		"an old sequence number": {mk(func(e *Event) { e.Seq = 1 }), ErrSequence},
 		"another order":          {mk(func(e *Event) { e.Order = "o2" }), ErrOtherOrder},
 		"placing it again":       {mk(func(e *Event) { e.Type, e.Ticket = EvPlaced, nil; e.Placed = &PlacedData{} }), ErrIllegalTransition},

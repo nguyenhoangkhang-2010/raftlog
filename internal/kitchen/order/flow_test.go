@@ -218,7 +218,7 @@ func guided(o *Order, rng *rand.Rand) (rbac.Actor, func(Meta) (*Event, error)) {
 			return mgr, func(m Meta) (*Event, error) { return o.IssueRefund(m, amount, "complaint") }
 		}
 	}
-	return ann, func(m Meta) (*Event, error) { return nil, nil }
+	return ann, func(Meta) (*Event, error) { return nil, nil }
 }
 
 func checkInvariants(t *testing.T, trial int, o *Order, events []Event) {

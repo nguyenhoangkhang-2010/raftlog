@@ -150,7 +150,7 @@ func (o *Order) Pay(m Meta, in PayInput) (*Event, error) {
 }
 
 // ticketCommand is what StartTicket and FinishTicket share.
-func (o *Order) ticketCommand(m Meta, p rbac.Permission, st menu.Station) error {
+func (o *Order) ticketCommand(m Meta, st menu.Station) error {
 	if st == "" || m.Actor.Station != string(st) {
 		return fmt.Errorf("%w: %q is at station %q", ErrWrongStation, m.Actor.ID, m.Actor.Station)
 	}
@@ -165,7 +165,7 @@ func (o *Order) StartTicket(m Meta, st menu.Station) (*Event, error) {
 	if done, err := o.begin(m, rbac.StartTicket); done || err != nil {
 		return nil, err
 	}
-	if err := o.ticketCommand(m, rbac.StartTicket, st); err != nil {
+	if err := o.ticketCommand(m, st); err != nil {
 		return nil, err
 	}
 	if o.Status != Paid && o.Status != Preparing {
@@ -187,7 +187,7 @@ func (o *Order) FinishTicket(m Meta, st menu.Station) (*Event, error) {
 	if done, err := o.begin(m, rbac.FinishTicket); done || err != nil {
 		return nil, err
 	}
-	if err := o.ticketCommand(m, rbac.FinishTicket, st); err != nil {
+	if err := o.ticketCommand(m, st); err != nil {
 		return nil, err
 	}
 	if o.Status != Preparing {
