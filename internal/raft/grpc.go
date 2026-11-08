@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
@@ -174,7 +176,17 @@ func (t *GRPCTransport) conn(id NodeID) (*grpc.ClientConn, error) {
 	if !ok {
 		return nil, fmt.Errorf("raft: no address for node %d", id)
 	}
-	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	// A peer that was down is tried again soon after it comes back: with the default
+	// backoff, which grows to two minutes, a node that restarts would not hear the
+	// leader for a long time, would start an election of its own and disturb a
+	// healthy cluster.
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff:           backoff.Config{BaseDelay: 50 * time.Millisecond, Multiplier: 1.5, Jitter: 0.2, MaxDelay: time.Second},
+			MinConnectTimeout: time.Second,
+		}),
+	}
 	if t.maxMessageBytes > 0 {
 		dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(
 			grpc.MaxCallSendMsgSize(t.maxMessageBytes), grpc.MaxCallRecvMsgSize(t.maxMessageBytes)))

@@ -25,6 +25,8 @@ const (
 	Broker_CommitOffset_FullMethodName = "/raftlog.v1.Broker/CommitOffset"
 	Broker_FetchOffset_FullMethodName  = "/raftlog.v1.Broker/FetchOffset"
 	Broker_NodeStatus_FullMethodName   = "/raftlog.v1.Broker/NodeStatus"
+	Broker_ListTopics_FullMethodName   = "/raftlog.v1.Broker/ListTopics"
+	Broker_ListGroups_FullMethodName   = "/raftlog.v1.Broker/ListGroups"
 )
 
 // BrokerClient is the client API for Broker service.
@@ -40,6 +42,12 @@ type BrokerClient interface {
 	FetchOffset(ctx context.Context, in *FetchOffsetRequest, opts ...grpc.CallOption) (*FetchOffsetResponse, error)
 	// NodeStatus reports the Raft state of the node that answers.
 	NodeStatus(ctx context.Context, in *NodeStatusRequest, opts ...grpc.CallOption) (*NodeStatusResponse, error)
+	// ListTopics describes every topic of the node that answers, with the end offset
+	// of each partition.
+	ListTopics(ctx context.Context, in *ListTopicsRequest, opts ...grpc.CallOption) (*ListTopicsResponse, error)
+	// ListGroups describes every consumer group that has committed an offset, with
+	// its position and lag in each partition.
+	ListGroups(ctx context.Context, in *ListGroupsRequest, opts ...grpc.CallOption) (*ListGroupsResponse, error)
 }
 
 type brokerClient struct {
@@ -110,6 +118,26 @@ func (c *brokerClient) NodeStatus(ctx context.Context, in *NodeStatusRequest, op
 	return out, nil
 }
 
+func (c *brokerClient) ListTopics(ctx context.Context, in *ListTopicsRequest, opts ...grpc.CallOption) (*ListTopicsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTopicsResponse)
+	err := c.cc.Invoke(ctx, Broker_ListTopics_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *brokerClient) ListGroups(ctx context.Context, in *ListGroupsRequest, opts ...grpc.CallOption) (*ListGroupsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListGroupsResponse)
+	err := c.cc.Invoke(ctx, Broker_ListGroups_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BrokerServer is the server API for Broker service.
 // All implementations must embed UnimplementedBrokerServer
 // for forward compatibility
@@ -123,6 +151,12 @@ type BrokerServer interface {
 	FetchOffset(context.Context, *FetchOffsetRequest) (*FetchOffsetResponse, error)
 	// NodeStatus reports the Raft state of the node that answers.
 	NodeStatus(context.Context, *NodeStatusRequest) (*NodeStatusResponse, error)
+	// ListTopics describes every topic of the node that answers, with the end offset
+	// of each partition.
+	ListTopics(context.Context, *ListTopicsRequest) (*ListTopicsResponse, error)
+	// ListGroups describes every consumer group that has committed an offset, with
+	// its position and lag in each partition.
+	ListGroups(context.Context, *ListGroupsRequest) (*ListGroupsResponse, error)
 	mustEmbedUnimplementedBrokerServer()
 }
 
@@ -147,6 +181,12 @@ func (UnimplementedBrokerServer) FetchOffset(context.Context, *FetchOffsetReques
 }
 func (UnimplementedBrokerServer) NodeStatus(context.Context, *NodeStatusRequest) (*NodeStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NodeStatus not implemented")
+}
+func (UnimplementedBrokerServer) ListTopics(context.Context, *ListTopicsRequest) (*ListTopicsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListTopics not implemented")
+}
+func (UnimplementedBrokerServer) ListGroups(context.Context, *ListGroupsRequest) (*ListGroupsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListGroups not implemented")
 }
 func (UnimplementedBrokerServer) mustEmbedUnimplementedBrokerServer() {}
 
@@ -269,6 +309,42 @@ func _Broker_NodeStatus_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Broker_ListTopics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTopicsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BrokerServer).ListTopics(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Broker_ListTopics_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BrokerServer).ListTopics(ctx, req.(*ListTopicsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Broker_ListGroups_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListGroupsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BrokerServer).ListGroups(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Broker_ListGroups_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BrokerServer).ListGroups(ctx, req.(*ListGroupsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Broker_ServiceDesc is the grpc.ServiceDesc for Broker service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -299,6 +375,14 @@ var Broker_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "NodeStatus",
 			Handler:    _Broker_NodeStatus_Handler,
+		},
+		{
+			MethodName: "ListTopics",
+			Handler:    _Broker_ListTopics_Handler,
+		},
+		{
+			MethodName: "ListGroups",
+			Handler:    _Broker_ListGroups_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

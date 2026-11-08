@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -121,6 +122,12 @@ type Runner struct {
 	logger      *slog.Logger
 	queues      map[NodeID]chan Message
 
+	// Counters for observation only (see Observe).
+	sendFailures       map[NodeID]*atomic.Uint64 // fixed at creation; the counters change
+	dropped            atomic.Uint64             // messages thrown away because a peer's queue was full
+	snapshotsTaken     atomic.Uint64
+	snapshotsInstalled atomic.Uint64
+
 	stop    chan struct{}
 	stopped sync.Once
 	started bool
@@ -161,8 +168,10 @@ func NewRunner(cfg Config, tr Transport, tickInterval time.Duration, opts ...Run
 	if r.snapshotEvery > 0 && r.sm == nil {
 		return nil, errors.New("raft: WithSnapshotEvery needs WithStateMachine")
 	}
+	r.sendFailures = make(map[NodeID]*atomic.Uint64, len(node.peers))
 	for _, p := range node.peers {
 		r.queues[p] = make(chan Message, peerQueueSize)
+		r.sendFailures[p] = new(atomic.Uint64)
 	}
 
 	// A snapshot found at startup is the first thing the state machine loads.
@@ -208,6 +217,42 @@ func (r *Runner) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.node.Status()
+}
+
+// Observation is everything worth looking at on a running node, read at one
+// moment. None of it influences the protocol.
+type Observation struct {
+	Status Status
+	Stats  Stats
+	// ApplyBacklog is how many committed items wait for the state machine.
+	ApplyBacklog int
+	// SnapshotsTaken and SnapshotsInstalled count snapshots this node made itself
+	// and snapshots it received from a leader.
+	SnapshotsTaken, SnapshotsInstalled uint64
+	// MessagesDropped counts messages thrown away because the queue to a peer was
+	// full; Raft recovers from them, a rising number means a peer that cannot keep up.
+	MessagesDropped uint64
+	// SendFailures counts, per peer, messages the transport failed to deliver.
+	SendFailures map[NodeID]uint64
+}
+
+// Observe returns the state and the counters of the node.
+func (r *Runner) Observe() Observation {
+	r.mu.Lock()
+	o := Observation{
+		Status:       r.node.Status(),
+		Stats:        r.node.Stats(),
+		ApplyBacklog: len(r.applyQueue),
+	}
+	r.mu.Unlock()
+	o.SnapshotsTaken = r.snapshotsTaken.Load()
+	o.SnapshotsInstalled = r.snapshotsInstalled.Load()
+	o.MessagesDropped = r.dropped.Load()
+	o.SendFailures = make(map[NodeID]uint64, len(r.sendFailures))
+	for p, c := range r.sendFailures {
+		o.SendFailures[p] = c.Load()
+	}
+	return o
 }
 
 // Receive hands a message from another node to the protocol. Transports call
@@ -375,6 +420,7 @@ func (r *Runner) applyLoop() {
 // would silently produce wrong results, so the apply loop stops.
 func (r *Runner) restore(s *Snapshot) bool {
 	r.snapIndex = s.Index
+	r.snapshotsInstalled.Add(1)
 	if r.sm == nil {
 		r.logger.Error("raft: received a snapshot but there is no state machine to load it into", "index", s.Index)
 		return true
@@ -406,7 +452,9 @@ func (r *Runner) maybeSnapshot(applied uint64) {
 	r.mu.Unlock()
 	if err != nil {
 		r.logger.Error("raft: cannot compact the log", "index", applied, "err", err)
+		return
 	}
+	r.snapshotsTaken.Add(1)
 }
 
 // dispatch queues messages for the per-peer senders without blocking.
@@ -420,6 +468,7 @@ func (r *Runner) dispatch(msgs []Message) {
 		case q <- m:
 		default:
 			// Full: drop the oldest message and try once more.
+			r.dropped.Add(1)
 			select {
 			case <-q:
 			default:
@@ -443,6 +492,7 @@ func (r *Runner) sender(to NodeID, q chan Message) {
 			err := r.tr.Send(ctx, m)
 			cancel()
 			if err != nil {
+				r.sendFailures[to].Add(1)
 				r.logger.Debug("raft send failed", "to", to, "type", m.Type.String(), "err", err)
 			}
 		}

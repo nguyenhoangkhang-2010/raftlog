@@ -8,6 +8,7 @@ build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogctl ./cmd/raftlogctl
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/waitingroom ./cmd/waitingroom
 	go build -o $(BIN_DIR)/wrsim ./cmd/wrsim
+	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogconsole ./cmd/raftlogconsole
 
 test:
 	go test -race -count=1 -short ./...
@@ -27,7 +28,7 @@ bench:
 	go test -run '^$$' -bench . -benchmem ./...
 
 chaos:
-	go test -race -count=1 -v ./test/chaos/...
+	go test -race -count=1 -v ./test/chaos/... ./cmd/raftlogconsole/...
 
 up:
 	docker compose -f deploy/docker-compose.yml up --build

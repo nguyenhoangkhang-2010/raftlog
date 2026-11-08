@@ -16,6 +16,8 @@
 //	commit       -group G [-partition P] -offset O <topic>
 //	offsets      -group G [-partition P] <topic>
 //	consume      -group G [-partition P] [-max N] [-wait D] <topic>
+//	topics
+//	groups
 //
 // consume reads from the group's committed offset (or from 0 if none), prints
 // the messages, then commits the offset after the last one it printed, so
@@ -39,6 +41,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/status"
@@ -125,6 +128,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		code = cmdOffsets(ctx, cluster, rest, stdout, stderr)
 	case "consume":
 		code = cmdConsume(ctx, cluster, rest, stdout, stderr)
+	case "topics":
+		code = cmdTopics(ctx, cluster, rest, stdout, stderr)
+	case "groups":
+		code = cmdGroups(ctx, cluster, rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "raftlogctl: unknown command %q\n", cmd)
 		usage(stderr)
@@ -144,6 +151,8 @@ commands:
   commit       -group G [-partition P] -offset O <topic>
   offsets      -group G [-partition P] <topic>
   consume      -group G [-partition P] [-max N] [-wait D] <topic>
+  topics       (every topic, its partitions and how many messages each holds)
+  groups       (every consumer group, its position and lag per partition)
 `)
 }
 
@@ -278,6 +287,62 @@ func cmdStatus(ctx context.Context, c pb.BrokerClient, args []string, stdout, st
 	}
 	fmt.Fprintf(stdout, "node=%d role=%s term=%d leader=%d commit=%d last=%d snapshot=%d\n",
 		resp.NodeId, resp.Role, resp.Term, resp.LeaderId, resp.CommitIndex, resp.LastIndex, resp.SnapshotIndex)
+	return 0
+}
+
+// noArgs parses a subcommand that takes no flags and no arguments.
+func noArgs(name string, args []string, stderr io.Writer) (code int, ok bool) {
+	fs := newFlags(name, stderr)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0, false
+		}
+		return 2, false
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "raftlogctl %s: takes no arguments\n", name)
+		return 2, false
+	}
+	return 0, true
+}
+
+// cmdTopics lists the topics of the node that answers: one line each, with the end
+// offset of every partition.
+func cmdTopics(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	if code, ok := noArgs("topics", args, stderr); !ok {
+		return code
+	}
+	resp, err := c.ListTopics(ctx, &pb.ListTopicsRequest{})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	for _, t := range resp.Topics {
+		var total uint64
+		ends := make([]string, len(t.EndOffsets))
+		for i, e := range t.EndOffsets {
+			total += e
+			ends[i] = strconv.FormatUint(e, 10)
+		}
+		fmt.Fprintf(stdout, "topic=%s partitions=%d messages=%d ends=%s\n", t.Name, len(t.EndOffsets), total, strings.Join(ends, ","))
+	}
+	return 0
+}
+
+// cmdGroups lists the consumer groups of the node that answers: one line for every
+// partition a group has committed in.
+func cmdGroups(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	if code, ok := noArgs("groups", args, stderr); !ok {
+		return code
+	}
+	resp, err := c.ListGroups(ctx, &pb.ListGroupsRequest{})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	for _, g := range resp.Groups {
+		for _, p := range g.Partitions {
+			fmt.Fprintf(stdout, "group=%s topic=%s partition=%d offset=%d end=%d lag=%d\n", g.Group, p.Topic, p.Partition, p.Offset, p.EndOffset, p.Lag)
+		}
+	}
 	return 0
 }
 

@@ -42,6 +42,15 @@ type Backend interface {
 
 var _ Backend = (*broker.Replicated)(nil)
 
+// Describer is what a backend offers to answer ListTopics and ListGroups. The two
+// real backends have it; a backend without it makes those calls Unimplemented.
+type Describer interface {
+	Describe() []broker.TopicDescription
+	Groups() []broker.GroupDescription
+}
+
+var _ Describer = (*broker.Replicated)(nil)
+
 // Local returns a Backend that applies everything directly to b, for a node
 // that is not part of a cluster.
 func Local(b *broker.Broker) Backend { return local{b} }
@@ -72,6 +81,10 @@ func (l local) GroupOffset(group, topic string, partition int) (broker.OffsetInf
 	return l.b.GroupOffset(group, topic, partition)
 }
 
+func (l local) Describe() []broker.TopicDescription { return l.b.Describe() }
+
+func (l local) Groups() []broker.GroupDescription { return l.b.Groups() }
+
 // Options configures the gRPC handlers.
 type Options struct {
 	// MaxFetchMessages caps the number of messages one Fetch may return.
@@ -86,6 +99,20 @@ type Options struct {
 	// LeaderAddr turns a node ID into the address clients can reach it at, so a
 	// node that is not the leader can tell clients where to go. Optional.
 	LeaderAddr func(raft.NodeID) string
+	// Observer is told about the work the handlers do, so that it can be counted.
+	// Optional.
+	Observer Observer
+}
+
+// Observer receives what the handlers do. Implementations must not block.
+type Observer interface {
+	// Produced is called after a batch was stored.
+	Produced(messages, bytes int)
+	// Fetched is called after a fetch that returned messages.
+	Fetched(messages int)
+	// FetchWaiting is called with +1 when a fetch starts waiting for messages and
+	// -1 when it stops.
+	FetchWaiting(delta int)
 }
 
 // RaftStatus is implemented by raft.Runner.
@@ -150,6 +177,13 @@ func (s *Server) Produce(ctx context.Context, req *pb.ProduceRequest) (*pb.Produ
 	if err != nil {
 		return nil, s.fail(ctx, err)
 	}
+	if s.opts.Observer != nil {
+		bytes := 0
+		for _, m := range msgs {
+			bytes += len(m.Key) + len(m.Value)
+		}
+		s.opts.Observer.Produced(len(msgs), bytes)
+	}
 	return &pb.ProduceResponse{Partition: uint32(part), BaseOffset: base}, nil
 }
 
@@ -192,6 +226,10 @@ func (s *Server) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResp
 			timer := time.NewTimer(wait)
 			defer timer.Stop()
 			deadline = timer.C
+			if s.opts.Observer != nil {
+				s.opts.Observer.FetchWaiting(1)
+				defer s.opts.Observer.FetchWaiting(-1)
+			}
 		}
 		select {
 		case <-wake:
@@ -212,6 +250,9 @@ func (s *Server) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResp
 			Key:         m.Key,
 			Value:       m.Value,
 		}
+	}
+	if s.opts.Observer != nil && len(out) > 0 {
+		s.opts.Observer.Fetched(len(out))
 	}
 	return &pb.FetchResponse{Messages: out}, nil
 }
@@ -236,6 +277,40 @@ func (s *Server) FetchOffset(ctx context.Context, req *pb.FetchOffsetRequest) (*
 		EndOffset: info.End,
 		Lag:       info.Lag(),
 	}, nil
+}
+
+// ListTopics describes every topic of this node.
+func (s *Server) ListTopics(context.Context, *pb.ListTopicsRequest) (*pb.ListTopicsResponse, error) {
+	d, ok := s.backend.(Describer)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "this backend cannot list topics")
+	}
+	topics := d.Describe()
+	out := &pb.ListTopicsResponse{Topics: make([]*pb.TopicDescription, len(topics))}
+	for i, t := range topics {
+		out.Topics[i] = &pb.TopicDescription{Name: t.Name, EndOffsets: t.Ends}
+	}
+	return out, nil
+}
+
+// ListGroups describes every consumer group of this node that has committed an offset.
+func (s *Server) ListGroups(context.Context, *pb.ListGroupsRequest) (*pb.ListGroupsResponse, error) {
+	d, ok := s.backend.(Describer)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "this backend cannot list groups")
+	}
+	groups := d.Groups()
+	out := &pb.ListGroupsResponse{Groups: make([]*pb.GroupDescription, len(groups))}
+	for i, g := range groups {
+		gd := &pb.GroupDescription{Group: g.Group, Partitions: make([]*pb.GroupPartitionInfo, len(g.Partitions))}
+		for j, p := range g.Partitions {
+			gd.Partitions[j] = &pb.GroupPartitionInfo{
+				Topic: p.Topic, Partition: uint32(p.Partition), Offset: p.Offset, EndOffset: p.End, Lag: p.Lag(),
+			}
+		}
+		out.Groups[i] = gd
+	}
+	return out, nil
 }
 
 // NodeStatus reports the Raft role of this node.

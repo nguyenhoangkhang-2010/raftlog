@@ -124,3 +124,21 @@ func TestStorageOptions(t *testing.T) {
 		t.Fatalf("StorageOptions = %+v", o)
 	}
 }
+
+func TestMetricsListenIsOffByDefaultAndComesFromTheEnvironmentOrAFlag(t *testing.T) {
+	cfg, err := Load(nil, env(nil), io.Discard)
+	if err != nil || cfg.MetricsListen != "" {
+		t.Fatalf("default: %q, %v; want metrics off", cfg.MetricsListen, err)
+	}
+	cfg, err = Load(nil, env(map[string]string{EnvMetricsListen: ":2112"}), io.Discard)
+	if err != nil || cfg.MetricsListen != ":2112" {
+		t.Fatalf("environment: %q, %v", cfg.MetricsListen, err)
+	}
+	cfg, err = Load([]string{"-metrics-listen", "127.0.0.1:9100"}, env(map[string]string{EnvMetricsListen: ":2112"}), io.Discard)
+	if err != nil || cfg.MetricsListen != "127.0.0.1:9100" {
+		t.Fatalf("flag over environment: %q, %v", cfg.MetricsListen, err)
+	}
+	if _, err := Load([]string{"-metrics-listen", "nonsense"}, env(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "metrics listen address") {
+		t.Fatalf("a bad address: %v", err)
+	}
+}

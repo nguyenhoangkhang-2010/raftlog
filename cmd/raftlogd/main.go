@@ -9,16 +9,20 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sort"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/broker"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/config"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/metrics"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/observe"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/raft"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/server"
 )
@@ -80,6 +84,23 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 		srvOpts.LeaderAddr = func(id raft.NodeID) string { return cfg.Peers[uint64(id)] }
 	}
 
+	// Metrics are off unless an address is given for them.
+	var obs *observe.Node
+	var reg *metrics.Registry
+	if cfg.MetricsListen != "" {
+		reg = metrics.NewRegistry()
+		obs = observe.New(reg, version)
+		srvOpts.Observer = obs
+		var src observe.BrokerSource = b
+		if rep, ok := backend.(*broker.Replicated); ok {
+			src = rep // read through the state machine's lock
+		}
+		obs.WatchBroker(src)
+		if runner != nil {
+			obs.WatchRaft(runner)
+		}
+	}
+
 	srv, err := server.New(backend, srvOpts)
 	if err != nil {
 		return err
@@ -93,6 +114,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 		// Raft messages, snapshots included, can be larger than gRPC's default.
 		serverOpts = raft.ServerOptions(cfg.MaxMessageBytes)
 	}
+	if obs != nil {
+		serverOpts = append(serverOpts, grpc.UnaryInterceptor(obs.UnaryInterceptor()))
+	}
 	gs := grpc.NewServer(serverOpts...)
 	server.Register(gs, srv)
 	if runner != nil {
@@ -104,6 +128,20 @@ func run(ctx context.Context, args []string, getenv func(string) string, out io.
 		mode = fmt.Sprintf("raft node %d of %s", cfg.NodeID, config.FormatPeers(cfg.Peers))
 	}
 	fmt.Fprintf(out, "raftlogd %s listening on %s, data in %s, %s\n", version, lis.Addr(), cfg.DataDir, mode)
+
+	if reg != nil {
+		metricsLis, err := net.Listen("tcp", cfg.MetricsListen)
+		if err != nil {
+			return fmt.Errorf("listen for metrics on %s: %w", cfg.MetricsListen, err)
+		}
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", reg.Handler())
+		mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") })
+		ms := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() { _ = ms.Serve(metricsLis) }()
+		defer ms.Close()
+		fmt.Fprintf(out, "raftlogd: metrics on http://%s/metrics\n", metricsLis.Addr())
+	}
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- gs.Serve(lis) }()

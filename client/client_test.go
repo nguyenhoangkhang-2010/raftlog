@@ -306,3 +306,42 @@ func TestOneClientServesManyGoroutines(t *testing.T) {
 		t.Fatalf("read %d messages and saw %d offsets, want %d of each", total, len(offsets), workers*each)
 	}
 }
+
+func TestTopicsAndGroups(t *testing.T) {
+	c := newClient(t, []string{startBroker(t)})
+	if topics, err := c.Topics(ctx(t, 10*time.Second)); err != nil || len(topics) != 0 {
+		t.Fatalf("Topics on an empty broker = %v, %v", topics, err)
+	}
+	for _, name := range []string{"orders", "audit"} {
+		if err := c.CreateTopic(ctx(t, 10*time.Second), name, 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs := []client.Message{{Value: []byte("a")}, {Value: []byte("b")}, {Value: []byte("c")}}
+	if _, err := c.Produce(ctx(t, 10*time.Second), "orders", msgs, client.ToPartition(1)); err != nil {
+		t.Fatal(err)
+	}
+
+	topics, err := c.Topics(ctx(t, 10*time.Second))
+	if err != nil || len(topics) != 2 || topics[0].Name != "audit" || topics[1].Name != "orders" {
+		t.Fatalf("Topics = %v, %v", topics, err)
+	}
+	if topics[1].Partitions() != 2 || topics[1].Ends[0] != 0 || topics[1].Ends[1] != 3 {
+		t.Fatalf("orders = %+v, want 2 partitions ending at 0 and 3", topics[1])
+	}
+
+	if groups, err := c.Groups(ctx(t, 10*time.Second)); err != nil || len(groups) != 0 {
+		t.Fatalf("Groups before any commit = %v, %v", groups, err)
+	}
+	if err := c.CommitOffset(ctx(t, 10*time.Second), "billing", "orders", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := c.Groups(ctx(t, 10*time.Second))
+	if err != nil || len(groups) != 1 || groups[0].Name != "billing" || len(groups[0].Partitions) != 1 {
+		t.Fatalf("Groups = %v, %v", groups, err)
+	}
+	want := client.GroupPartition{Topic: "orders", Partition: 1, Offset: 1, End: 3, Lag: 2}
+	if groups[0].Partitions[0] != want {
+		t.Fatalf("partition = %+v, want %+v", groups[0].Partitions[0], want)
+	}
+}

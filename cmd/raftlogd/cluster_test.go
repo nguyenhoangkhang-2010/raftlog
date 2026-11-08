@@ -33,6 +33,22 @@ type testNode struct {
 	dir    string
 	cancel context.CancelFunc
 	done   chan error
+	// metrics is the address the node serves /metrics on; empty if it does not.
+	metrics string
+}
+
+// enableMetrics gives every node an address for its metrics. Call it before the
+// nodes start.
+func (c *testCluster) enableMetrics() {
+	c.t.Helper()
+	for _, n := range c.nodes {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		n.metrics = l.Addr().String()
+		_ = l.Close()
+	}
 }
 
 type testCluster struct {
@@ -77,6 +93,9 @@ func (c *testCluster) start(n *testNode) {
 		"-listen", n.addr, "-data-dir", n.dir,
 		"-tick-interval", "10ms", "-election-ticks", "10", "-heartbeat-ticks", "2",
 	}, c.extra...)
+	if n.metrics != "" {
+		args = append(args, "-metrics-listen", n.metrics)
+	}
 
 	deadline := time.Now().Add(clusterWait)
 	for {

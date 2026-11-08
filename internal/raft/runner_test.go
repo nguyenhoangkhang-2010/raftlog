@@ -531,3 +531,76 @@ func (b *blockingTransport) Send(ctx context.Context, _ Message) error {
 	}
 	return nil
 }
+
+func TestObserveCountsElectionsAndShowsTheProgressOfEachFollower(t *testing.T) {
+	nodes := startRealCluster(t, 3)
+	first := waitForLeader(t, nodes, nil)
+	leader := nodeByID(nodes, first.ID)
+
+	var campaigns, wins uint64
+	for _, n := range nodes {
+		o := n.runner.Observe()
+		campaigns += o.Stats.Campaigns
+		wins += o.Stats.Wins
+		if n.id != leader.id && len(o.Stats.Followers) != 0 {
+			t.Fatalf("node %d is not the leader but reports followers: %+v", n.id, o.Stats.Followers)
+		}
+	}
+	if wins != 1 || campaigns < 1 {
+		t.Fatalf("the first election: %d campaigns and %d wins across the cluster, want at least 1 and exactly 1", campaigns, wins)
+	}
+	if o := leader.runner.Observe(); o.Stats.Wins != 1 {
+		t.Fatalf("the leader's own count of wins = %d", o.Stats.Wins)
+	}
+
+	// The leader knows how far each follower has got, and it ends up at the leader's last index.
+	proposeAll(t, leader.runner, []string{"a", "b", "c"})
+	waitFor(t, "both followers to match the leader's log", func() bool {
+		o := leader.runner.Observe()
+		if len(o.Stats.Followers) != 2 || o.Stats.Followers[0].ID >= o.Stats.Followers[1].ID {
+			return false
+		}
+		for _, f := range o.Stats.Followers {
+			if f.Match != o.Status.LastIndex || f.Next != o.Status.LastIndex+1 {
+				return false
+			}
+		}
+		return true
+	})
+	if o := leader.runner.Observe(); o.Stats.Applied != o.Status.CommitIndex || o.ApplyBacklog != 0 {
+		t.Fatalf("applied %d, commit %d, backlog %d: an idle leader has applied everything it committed", o.Stats.Applied, o.Status.CommitIndex, o.ApplyBacklog)
+	}
+
+	// When the leader dies, another node wins an election and the count shows it.
+	leader.kill()
+	second := waitForLeader(t, nodes, map[NodeID]bool{leader.id: true})
+	if o := nodeByID(nodes, second.ID).runner.Observe(); o.Stats.Wins < 1 || o.Stats.Campaigns < 1 {
+		t.Fatalf("the new leader: %+v", o.Stats)
+	}
+}
+
+func TestObserveCountsSnapshotsAndFailedSends(t *testing.T) {
+	// Node 3 is down: the sends to it fail. Nodes 1 and 2 snapshot every 10
+	// entries; when node 3 starts it receives a snapshot instead of the cut log.
+	nodes := startRealClusterWith(t, 3, 10, 0, map[NodeID]bool{3: true})
+	first := waitForLeader(t, nodes, map[NodeID]bool{3: true})
+	leader := nodeByID(nodes, first.ID)
+
+	commands := make([]string, 40)
+	for i := range commands {
+		commands[i] = fmt.Sprintf("cmd-%03d", i)
+	}
+	proposeAll(t, leader.runner, commands)
+	waitFor(t, "the leader to take a snapshot", func() bool { return leader.runner.Observe().SnapshotsTaken > 0 })
+	o := leader.runner.Observe()
+	if o.SendFailures[3] == 0 {
+		t.Fatalf("send failures to the dead node = %v, want some", o.SendFailures)
+	}
+
+	late := nodeByID(nodes, 3)
+	late.start()
+	waitFor(t, "the late node to install a snapshot", func() bool { return late.runner.Observe().SnapshotsInstalled > 0 })
+	if got := leader.runner.Observe().SnapshotsInstalled; got != 0 {
+		t.Fatalf("the leader installed %d snapshots, but nobody sent it one", got)
+	}
+}

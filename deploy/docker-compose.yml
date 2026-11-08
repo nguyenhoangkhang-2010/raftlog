@@ -23,6 +23,7 @@ x-node: &node
     RAFTLOG_SEGMENT_MAX_BYTES: "${RAFTLOG_SEGMENT_MAX_BYTES:-0}"
     RAFTLOG_INDEX_INTERVAL_BYTES: "${RAFTLOG_INDEX_INTERVAL_BYTES:-0}"
     RAFTLOG_SYNC_ON_APPEND: "${RAFTLOG_SYNC_ON_APPEND:-false}"
+    RAFTLOG_METRICS_LISTEN: ":2112"
 
 services:
   node1:
@@ -46,6 +47,15 @@ services:
       RAFTLOG_NODE_ID: "3"
     ports: ["${RAFTLOG_PORT_3:-9093}:9092"]
     volumes: ["node3-data:/data"]
+
+  # Prometheus scrapes the three nodes (see deploy/prometheus/prometheus.yml) and keeps
+  # what it reads; open http://localhost:9090 and try the queries in docs/observability.md.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes: ["./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["${PROMETHEUS_PORT:-9090}:9090"]
+    depends_on: [node1, node2, node3]
 
 volumes:
   node1-data:

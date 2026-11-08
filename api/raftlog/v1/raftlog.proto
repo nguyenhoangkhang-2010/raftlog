@@ -13,6 +13,12 @@ service Broker {
   rpc FetchOffset(FetchOffsetRequest) returns (FetchOffsetResponse);
   // NodeStatus reports the Raft state of the node that answers.
   rpc NodeStatus(NodeStatusRequest) returns (NodeStatusResponse);
+  // ListTopics describes every topic of the node that answers, with the end offset
+  // of each partition.
+  rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
+  // ListGroups describes every consumer group that has committed an offset, with
+  // its position and lag in each partition.
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
 }
 
 message Message {
@@ -99,3 +105,35 @@ message FetchOffsetResponse {
 
 // TODO(phase 3): internal Raft RPCs (RequestVote, AppendEntries, InstallSnapshot)
 // live in api/raftlog/v1/raft.proto.
+
+message ListTopicsRequest {}
+message TopicDescription {
+  string name = 1;
+  // end_offsets[i] is the offset the next message of partition i will get, which
+  // is also how many messages the partition holds.
+  repeated uint64 end_offsets = 2;
+}
+message ListTopicsResponse {
+  // Sorted by name.
+  repeated TopicDescription topics = 1;
+}
+
+message ListGroupsRequest {}
+message GroupPartitionInfo {
+  string topic = 1;
+  uint32 partition = 2;
+  // The committed offset: the next one the group will read.
+  uint64 offset = 3;
+  uint64 end_offset = 4;
+  // end_offset - offset.
+  uint64 lag = 5;
+}
+message GroupDescription {
+  string group = 1;
+  // Sorted by topic, then partition.
+  repeated GroupPartitionInfo partitions = 2;
+}
+message ListGroupsResponse {
+  // Sorted by group.
+  repeated GroupDescription groups = 1;
+}
