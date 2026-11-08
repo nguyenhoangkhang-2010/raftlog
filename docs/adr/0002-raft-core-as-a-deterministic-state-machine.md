@@ -51,6 +51,7 @@ matching and state machine safety after every delivered message.
   caveat: the "only commit entries of the current term" rule is caught by a
   targeted unit test, not by the random test, which does not reproduce Figure 8.
 - Not done yet: snapshots and log compaction (the `FileLog` keeps all entries in
-  memory), pre-vote and check-quorum, membership changes, encrypted transport.
+  memory), membership changes, encrypted transport. (Snapshots, pre-vote and
+  check-quorum have been added since: see ADRs 3 and 10.)
 - After a restart `Committed()` replays the log from index 1, so a durable state
   machine must remember which index it has applied.

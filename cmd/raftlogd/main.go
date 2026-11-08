@@ -203,6 +203,8 @@ func newRaftRunner(cfg config.Config, logger *slog.Logger, machine raft.StateMac
 		Logger:         logger,
 
 		SnapshotTrailing: cfg.SnapshotTrailing,
+		PreVote:          cfg.PreVote,
+		CheckQuorum:      cfg.CheckQuorum,
 	}, tr, cfg.TickInterval, raft.WithStateMachine(machine), raft.WithSnapshotEvery(cfg.SnapshotEvery))
 	if err != nil {
 		_ = tr.Close()

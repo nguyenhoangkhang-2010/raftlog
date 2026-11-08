@@ -73,6 +73,10 @@ const (
 	// entries a follower needs, so it sends the state they were folded into.
 	MsgSnapshot
 	MsgSnapshotResp
+	// MsgPreVote asks whether the sender would win an election in the term it would
+	// start, without anyone changing their term or vote. See Config.PreVote.
+	MsgPreVote
+	MsgPreVoteResp
 )
 
 func (t MessageType) String() string {
@@ -89,6 +93,10 @@ func (t MessageType) String() string {
 		return "Snapshot"
 	case MsgSnapshotResp:
 		return "SnapshotResp"
+	case MsgPreVote:
+		return "PreVote"
+	case MsgPreVoteResp:
+		return "PreVoteResp"
 	default:
 		return fmt.Sprintf("MessageType(%d)", int(t))
 	}

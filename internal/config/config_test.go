@@ -53,6 +53,7 @@ func TestEnvOverridesDefaults(t *testing.T) {
 	want.ElectionTicks, want.HeartbeatTicks, want.TickInterval = defaultElectionTicks, defaultHeartbeatTicks, defaultTickInterval
 	want.MaxMessageBytes = defaultMaxMessageBytes
 	want.SnapshotEvery, want.SnapshotTrailing = defaultSnapshotEvery, defaultSnapshotTrailing
+	want.PreVote, want.CheckQuorum = true, true // the hardening is on unless turned off
 	want.Peers = map[uint64]string{}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
@@ -140,5 +141,25 @@ func TestMetricsListenIsOffByDefaultAndComesFromTheEnvironmentOrAFlag(t *testing
 	}
 	if _, err := Load([]string{"-metrics-listen", "nonsense"}, env(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "metrics listen address") {
 		t.Fatalf("a bad address: %v", err)
+	}
+}
+
+func TestPreVoteAndCheckQuorumAreOnByDefaultAndCanBeTurnedOff(t *testing.T) {
+	cfg, err := Load(nil, env(nil), io.Discard)
+	if err != nil || !cfg.PreVote || !cfg.CheckQuorum {
+		t.Fatalf("defaults: pre-vote %t, check-quorum %t, %v; want both on", cfg.PreVote, cfg.CheckQuorum, err)
+	}
+	cfg, err = Load(nil, env(map[string]string{EnvPreVote: "false", EnvCheckQuorum: "0"}), io.Discard)
+	if err != nil || cfg.PreVote || cfg.CheckQuorum {
+		t.Fatalf("environment: %t %t, %v", cfg.PreVote, cfg.CheckQuorum, err)
+	}
+	cfg, err = Load([]string{"-pre-vote=true", "-check-quorum=false"}, env(map[string]string{EnvPreVote: "false", EnvCheckQuorum: "true"}), io.Discard)
+	if err != nil || !cfg.PreVote || cfg.CheckQuorum {
+		t.Fatalf("flags over environment: %t %t, %v", cfg.PreVote, cfg.CheckQuorum, err)
+	}
+	for _, e := range []string{EnvPreVote, EnvCheckQuorum} {
+		if _, err := Load(nil, env(map[string]string{e: "maybe"}), io.Discard); err == nil || !strings.Contains(err.Error(), e) {
+			t.Fatalf("a bad %s: %v", e, err)
+		}
 	}
 }

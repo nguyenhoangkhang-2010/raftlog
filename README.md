@@ -36,6 +36,7 @@ Consumer ◄── read by offset
 - [ ] Failover and follower catch-up
 - [ ] Chaos tests and linearizability checking
 - [x] Prometheus metrics (`-metrics-listen`), `raftlogctl topics` and `groups`, and a cluster console that kills nodes, writes under load and verifies that no acknowledged write was lost ([docs/observability.md](docs/observability.md))
+- [x] Raft pre-vote and check-quorum (on by default): a node that cannot hear the leader no longer forces an election, and a cut-off leader steps down ([ADR 10](docs/adr/0010-pre-vote-and-check-quorum.md))
 - [ ] Grafana dashboard
 
 ## Quick start
@@ -109,6 +110,8 @@ tests prove and what a measured run looked like.
   (`-max-message-bytes`), so the data set is bounded.
 - Delivery is at-least-once (a retried request can store a message twice); reads can
   lag on a follower and are not linearizable; node-to-node traffic is not encrypted.
+- Every node of a cluster must run with the same `-pre-vote` setting (on by default); there
+  is no rolling upgrade between the two. No leadership transfer and no membership changes.
 - See `docs/adr` for the reasoning behind each design decision.
 
 ## Results

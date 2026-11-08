@@ -34,6 +34,8 @@ const (
 	EnvMaxMessageBytes    = "RAFTLOG_MAX_MESSAGE_BYTES"
 	EnvSnapshotEvery      = "RAFTLOG_SNAPSHOT_EVERY"
 	EnvSnapshotTrailing   = "RAFTLOG_SNAPSHOT_TRAILING"
+	EnvPreVote            = "RAFTLOG_PRE_VOTE"
+	EnvCheckQuorum        = "RAFTLOG_CHECK_QUORUM"
 )
 
 // Built-in defaults, used only when neither a flag nor a variable is given.
@@ -103,6 +105,13 @@ type Config struct {
 	// below a snapshot.
 	SnapshotEvery    uint64
 	SnapshotTrailing uint64
+
+	// PreVote and CheckQuorum harden elections: a node that cannot hear the leader
+	// first asks whether it would win before it raises the term, and a leader that
+	// hears from no majority steps down. Every node of a cluster must use the same
+	// PreVote setting. Both default to on.
+	PreVote     bool
+	CheckQuorum bool
 }
 
 // ParsePeers parses a peer list of the form "1=host:port,2=host:port".
@@ -164,6 +173,8 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		MaxMessageBytes:  defaultMaxMessageBytes,
 		SnapshotEvery:    defaultSnapshotEvery,
 		SnapshotTrailing: defaultSnapshotTrailing,
+		PreVote:          true,
+		CheckQuorum:      true,
 	}
 	var peersFlag string
 
@@ -255,6 +266,20 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 		}
 		cfg.SnapshotEvery = n
 	}
+	if v := getenv(EnvPreVote); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvPreVote, err))
+		}
+		cfg.PreVote = b
+	}
+	if v := getenv(EnvCheckQuorum); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvCheckQuorum, err))
+		}
+		cfg.CheckQuorum = b
+	}
 	if v := getenv(EnvSnapshotTrailing); v != "" {
 		n, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {
@@ -292,6 +317,8 @@ func Load(args []string, getenv func(string) string, out io.Writer) (Config, err
 	fs.IntVar(&cfg.MaxMessageBytes, "max-message-bytes", cfg.MaxMessageBytes, "largest node-to-node message, which bounds the size of a snapshot ["+EnvMaxMessageBytes+"]")
 	fs.Uint64Var(&cfg.SnapshotEvery, "snapshot-every", cfg.SnapshotEvery, "applied entries between Raft snapshots, 0 = never ["+EnvSnapshotEvery+"]")
 	fs.Uint64Var(&cfg.SnapshotTrailing, "snapshot-trailing", cfg.SnapshotTrailing, "log entries kept below a snapshot ["+EnvSnapshotTrailing+"]")
+	fs.BoolVar(&cfg.PreVote, "pre-vote", cfg.PreVote, "ask whether an election could be won before raising the term; the same on every node ["+EnvPreVote+"]")
+	fs.BoolVar(&cfg.CheckQuorum, "check-quorum", cfg.CheckQuorum, "a leader that hears from no majority steps down ["+EnvCheckQuorum+"]")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}

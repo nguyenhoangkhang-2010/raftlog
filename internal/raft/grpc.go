@@ -23,6 +23,8 @@ var typeToPB = map[MessageType]pb.RaftMessageType{
 	MsgAppendResp:      pb.RaftMessageType_RAFT_MESSAGE_TYPE_APPEND_ENTRIES_RESP,
 	MsgSnapshot:        pb.RaftMessageType_RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT,
 	MsgSnapshotResp:    pb.RaftMessageType_RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT_RESP,
+	MsgPreVote:         pb.RaftMessageType_RAFT_MESSAGE_TYPE_PRE_VOTE,
+	MsgPreVoteResp:     pb.RaftMessageType_RAFT_MESSAGE_TYPE_PRE_VOTE_RESP,
 }
 
 var entryTypeToPB = map[EntryType]pb.LogEntryType{

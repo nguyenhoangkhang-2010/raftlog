@@ -522,9 +522,17 @@ func TestElectionTimeAcrossSeeds(t *testing.T) {
 // Randomly cut links and crash nodes, checking election safety at every step.
 // checkSafety runs after every delivered message, so one violation fails the test.
 func TestElectionSafetyUnderRandomFaults(t *testing.T) {
+	electionSafetyUnderRandomFaults(t, newCluster)
+}
+
+func TestElectionSafetyUnderRandomFaultsWithPreVoteAndCheckQuorum(t *testing.T) {
+	electionSafetyUnderRandomFaults(t, newHardenedCluster)
+}
+
+func electionSafetyUnderRandomFaults(t *testing.T, mk func(*testing.T, int, int64) *cluster) {
 	const seeds = 60
 	for seed := int64(1); seed <= seeds; seed++ {
-		c := newCluster(t, 5, seed)
+		c := mk(t, 5, seed)
 		rng := rand.New(rand.NewSource(seed))
 
 		for step := 0; step < 40; step++ {
