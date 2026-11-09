@@ -4,21 +4,52 @@
 
 ![CI](https://github.com/nguyenhoangkhang-2010/raftlog/actions/workflows/ci.yml/badge.svg)
 
-<!-- TODO: add GIF demo of killing the leader -->
+<!-- TODO: record a GIF of the cluster console while the leader is killed (see "Watch it survive a crash") and put it here -->
 
 ## Why this project
-<!-- TODO: your story. Why did you build this? What problem did you hit with existing brokers? -->
+A message broker is a small system with a hard promise: once it has told a producer that a
+message is stored, the message stays stored, in order, even if a machine dies at the worst
+moment. raftlog is a broker built to see that promise kept, and to see what breaks it.
+
+The replication protocol, Raft, is written from scratch rather than taken from a library, and
+most of the work went into trying to break it: random faults against a simulated cluster, real
+processes killed and cut off from each other while clients write, and a checker that compares
+what the clients were told with what the nodes ended up holding. The findings are in the
+[ADRs](docs/adr) and the [chaos README](test/chaos/README.md), including the bugs the tests
+found and the measurements that did not look good ([bench/README.md](bench/README.md)).
+
+<!-- TODO: add your own story here: what made you want to build this, and what you learned. -->
 
 ## Architecture
-<!-- TODO: architecture diagram (docs/architecture.png) -->
 
+```mermaid
+flowchart LR
+    P[Producer / consumer<br/>client library] -->|Produce / Fetch| L
+    subgraph cluster [3 raftlogd nodes]
+        direction LR
+        L["Node 1 (leader)<br/>Raft + broker state machine<br/>Raft log, partition logs"]
+        F2["Node 2 (follower)<br/>same, replicated"]
+        F3["Node 3 (follower)<br/>same, replicated"]
+        L <-->|AppendEntries / votes / snapshots| F2
+        L <-->|AppendEntries / votes / snapshots| F3
+        F2 <--> F3
+    end
 ```
-Producer ──► [Node 1 (Leader)] ◄──Raft──► [Node 2 (Follower)]
-                    ▲                         ▲
-                    └────────Raft─────────────┘
-                          [Node 3 (Follower)]
-Consumer ◄── read by offset
+
+A write is a Raft entry: the leader appends it, a majority stores it, every node applies it to
+the same state machine (topics, partitions, consumer offsets), and only then is the client told.
+Reads are served by any node from what it has applied. See [docs/design.md](docs/design.md) for
+the write path, the failure model and what is and is not guaranteed.
+
+## Watch it survive a crash
+```bash
+make build
+./bin/raftlogconsole -spawn 3      # then open http://127.0.0.1:8090
 ```
+Start the write load on the page, press **Kill** on the node marked leader, watch another node
+take over within about a second or two while the writes go on, press **Start** on the dead
+node, and then press **Verify**: it reads the whole topic back and checks that every write the
+cluster acknowledged is there. [docs/observability.md](docs/observability.md) describes the page.
 
 ## Features (roadmap)
 - [x] Append-only log storage with segments and sparse index
@@ -33,17 +64,19 @@ Consumer ◄── read by offset
 - [x] Client library (`client`) that follows the leader and rides through failover
 - [x] Demo application: a virtual waiting room for course registration, whose whole state is two raftlog topics ([docs/waitingroom.md](docs/waitingroom.md))
 - [ ] Kitchen system (orders, stations, till) on raftlog: the domain core is done (`internal/kitchen`), the service, database and screens are next ([docs/kitchen](docs/kitchen/README.md))
-- [ ] Failover and follower catch-up
-- [ ] Chaos tests and linearizability checking
+- [x] Benchmark tool (`raftlogbench`): write throughput and latency, and failover time with a check of every node's log; measured results and their limits in [bench/README.md](bench/README.md)
 - [x] Prometheus metrics (`-metrics-listen`), `raftlogctl topics` and `groups`, and a cluster console that kills nodes, writes under load and verifies that no acknowledged write was lost ([docs/observability.md](docs/observability.md))
 - [x] Raft pre-vote and check-quorum (on by default): a node that cannot hear the leader no longer forces an election, and a cut-off leader steps down ([ADR 10](docs/adr/0010-pre-vote-and-check-quorum.md))
 - [ ] Grafana dashboard
 
 ## Quick start
 ```bash
-# starts one broker node (the 3-node Raft cluster comes in later phases)
-docker compose -f deploy/docker-compose.yml up
+# starts a 3-node cluster and a Prometheus that scrapes it (ports 9091-9093 and 9090)
+docker compose -f deploy/docker-compose.yml up --build
 ```
+Then `raftlogctl -addr localhost:9091,localhost:9092,localhost:9093 status` as in the next section.
+(CI builds the image. The Compose cluster itself was not run when the benchmarks were made,
+because the Docker daemon was not running on that machine, so no figure here is from Docker.)
 
 ## Try a cluster
 Start three nodes (each in its own terminal; every node needs the same `-peers`):
@@ -105,6 +138,8 @@ anyone their place; `cmd/wrsim` simulates the crowd. See
 tests prove and what a measured run looked like.
 
 ## Known limitations
+- Write throughput is low and bounded per request (see Results): no group commit, so
+  concurrent producers queue behind each other.
 - One Raft group for the whole cluster: every write goes through a single leader.
 - A snapshot is a copy of all data held in memory and sent in one message
   (`-max-message-bytes`), so the data set is bounded.
@@ -115,13 +150,27 @@ tests prove and what a measured run looked like.
 - See `docs/adr` for the reasoning behind each design decision.
 
 ## Results
-<!-- TODO: benchmark table (throughput, p50/p99 latency, failover time) -->
+Measured with `raftlogbench` on one laptop (Intel i7-12700H, NVMe SSD, Windows 11), three real
+`raftlogd` processes and the client on the same machine, one run each. These are not production
+figures; the method, the limits and the raw output are in [bench/README.md](bench/README.md).
+
+| What | Result |
+|---|---|
+| Writes, 3 nodes, 1 message per request, 16 producers | 178 messages/s, request latency p50 88.9 ms, p99 104.9 ms |
+| Writes, 3 nodes, 100 messages per request, 16 producers | 13,850 messages/s (1.8 MB/s of 128-byte values), p50 112.6 ms, p99 155.0 ms |
+| One producer, 1 message per request | 90 messages/s on 3 nodes, 158 on 1 node |
+| Leader killed (10 times, default Raft timings of 1 to 2 s) | new leader visible after a median of 1.24 s (0.91 to 1.77 s); first write acknowledged again after a median of 1.28 s |
+| Leader killed (10 times, timings five times shorter) | median 0.20 s (0.15 to 0.27 s); first write after a median of 0.23 s |
+| Acknowledged writes missing from any node's log after those 20 kills | 0 (of 11,613 acknowledged) |
+
+**The write path is slow, and the benchmark says why.** A request costs about 6 ms with one node
+and 11 ms with three, whatever the number of producers, because every request is its own Raft
+entry with its own fsyncs and journal rewrite, applied one at a time. Sending many messages per
+request is the only thing that helps today. Group commit is the obvious next step
+([design.md](docs/design.md), section 9).
 
 ## Design decisions and trade-offs
 See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
-
-## Known limitations
-<!-- TODO: be honest, e.g. no security, no dynamic membership yet, no exactly-once -->
 
 ## Project layout
 | Path | Purpose |
@@ -129,6 +178,7 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 | `cmd/raftlogd` | Broker server |
 | `cmd/raftlogctl` | CLI client |
 | `cmd/raftlogconsole`, `internal/console` | Cluster console: node cards, Kill/Start, write load, Verify, timeline |
+| `cmd/raftlogbench`, `internal/bench` | Benchmark tool: write throughput and latency, failover time, per-node check of acknowledged writes |
 | `internal/metrics`, `internal/observe` | Prometheus metrics, and what is measured in a node |
 | `client` | Go client library: finds the leader, follows failover |
 | `cmd/waitingroom`, `internal/waitingroom` | Demo application: virtual waiting room (web page, API, admission controller) |
@@ -141,12 +191,12 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 | `api` | Protobuf definitions |
 | `deploy` | Dockerfile, Compose with Prometheus |
 | `test/chaos` | Fault-injection scenarios |
-| `bench` | Benchmarks and results |
+| `bench` | Benchmark method, results and the script that produced them |
 | `docs` | Design doc and architecture decision records |
 
 ## Development
 ```bash
-make build   # build raftlogd and raftlogctl into ./bin
+make build   # build all the commands into ./bin
 make test    # run tests with the race detector
 make lint    # run golangci-lint
 make proto   # generate gRPC code (needs protoc)

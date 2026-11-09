@@ -9,6 +9,7 @@ build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/waitingroom ./cmd/waitingroom
 	go build -o $(BIN_DIR)/wrsim ./cmd/wrsim
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogconsole ./cmd/raftlogconsole
+	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogbench ./cmd/raftlogbench
 
 test:
 	go test -race -count=1 -short ./...
@@ -24,11 +25,11 @@ proto:
 	       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
 	       api/raftlog/v1/raftlog.proto api/raftlog/v1/raft.proto api/raftlog/v1/command.proto
 
-bench:
+bench: # micro-benchmarks; the cluster benchmark is bench/run-matrix.sh
 	go test -run '^$$' -bench . -benchmem ./...
 
 chaos:
-	go test -race -count=1 -v ./test/chaos/... ./cmd/raftlogconsole/...
+	go test -race -count=1 -v ./test/chaos/... ./cmd/raftlogconsole/... ./cmd/raftlogbench/...
 
 up:
 	docker compose -f deploy/docker-compose.yml up --build
