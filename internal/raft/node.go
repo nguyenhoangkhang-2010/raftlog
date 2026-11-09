@@ -46,6 +46,20 @@ type Config struct {
 	// is still sent on its own.
 	MaxBatchEntries int
 	MaxBatchBytes   int
+	// PreVote makes a node whose election timer ran out first ask the others
+	// whether they would vote for it, without changing its term. Only when a
+	// majority says yes does it start a real election. A node that merely cannot
+	// hear the leader (it was restarted, or the network between them is broken)
+	// then no longer forces an election on a healthy cluster by raising the term.
+	// Nodes that have heard from a leader within an election timeout refuse.
+	// Every node of a cluster must use the same setting: a node without it does not
+	// understand the new messages.
+	PreVote bool
+	// CheckQuorum makes a leader step down when it has not heard from a majority of
+	// the cluster for an election timeout, so a leader that is cut off stops
+	// believing it leads. With it, a leader also ignores vote requests from nodes
+	// that would depose it while it is in contact with a majority.
+	CheckQuorum bool
 	// Rand chooses the randomized election timeouts. Optional: nil means a
 	// generator seeded from the clock and the node ID, so nodes differ. Tests
 	// pass a seeded generator to make runs reproducible.
@@ -121,6 +135,14 @@ type Node struct {
 	leader NodeID
 	votes  map[NodeID]bool // candidate only: who answered, and whether they granted
 
+	preVote, checkQuorum bool
+	// While preVoting, a follower is asking whether it would win an election. It
+	// is still a follower, in its own term; preVotes records who has answered.
+	preVoting bool
+	preVotes  map[NodeID]bool
+	// Leader only, with checkQuorum: the followers heard from since the last check.
+	active map[NodeID]bool
+
 	// Volatile state of the log (section 5.3). Without a snapshot both start at
 	// 0 after a restart and are rebuilt from the leader's messages; with one
 	// they start at the snapshot's index.
@@ -145,8 +167,10 @@ type Node struct {
 	heartbeatElapsed  int
 
 	// Counters for observation only; the protocol never reads them.
-	campaigns uint64 // elections this node started
-	wins      uint64 // elections it won
+	campaigns     uint64 // elections this node started
+	wins          uint64 // elections it won
+	preVoteRounds uint64 // pre-vote rounds it started
+	quorumLost    uint64 // times it stepped down as leader for lack of contact with a majority
 
 	outbox []Message
 }
@@ -179,6 +203,8 @@ func New(cfg Config) (*Node, error) {
 		storage:          cfg.Storage,
 		log:              cfg.Log,
 		snaps:            cfg.Snapshots,
+		preVote:          cfg.PreVote,
+		checkQuorum:      cfg.CheckQuorum,
 		rnd:              cfg.Rand,
 		logger:           cfg.Logger,
 		hs:               hs,
@@ -289,13 +315,16 @@ type Stats struct {
 	Applied uint64
 	// Campaigns counts the elections this node started, Wins those it won.
 	Campaigns, Wins uint64
+	// PreVotes counts the pre-vote rounds it started, and QuorumLost the times it
+	// stepped down as leader for lack of contact with a majority.
+	PreVotes, QuorumLost uint64
 	// Followers is empty unless the node is the leader; sorted by node ID.
 	Followers []FollowerProgress
 }
 
 // Stats returns the counters of the node.
 func (n *Node) Stats() Stats {
-	s := Stats{Applied: n.lastApplied, Campaigns: n.campaigns, Wins: n.wins}
+	s := Stats{Applied: n.lastApplied, Campaigns: n.campaigns, Wins: n.wins, PreVotes: n.preVoteRounds, QuorumLost: n.quorumLost}
 	if n.role == Leader {
 		for _, p := range n.peers {
 			s.Followers = append(s.Followers, FollowerProgress{ID: p, Match: n.matchIndex[p], Next: n.nextIndex[p]})
@@ -418,10 +447,28 @@ func (n *Node) Tick() error {
 			n.heartbeatElapsed = 0
 			n.broadcastAppend()
 		}
+		if n.checkQuorum {
+			n.electionElapsed++
+			if n.electionElapsed >= n.electionTicks {
+				n.electionElapsed = 0
+				if len(n.active)+1 < n.quorum {
+					// Not even a majority answered in a whole election timeout: this
+					// leader may be the one on the wrong side of a broken network, and
+					// the others may already have chosen another. Stop leading.
+					n.quorumLost++
+					n.logger.Info("stepping down: no contact with a majority", "node", n.id, "term", n.hs.Term, "heard_from", len(n.active)+1)
+					return n.becomeFollower(n.hs.Term, None)
+				}
+				n.active = make(map[NodeID]bool, len(n.peers))
+			}
+		}
 		return nil
 	}
 	n.electionElapsed++
 	if n.electionElapsed >= n.randomizedTimeout {
+		if n.preVote && n.role == Follower && len(n.peers) > 0 {
+			return n.startPreVote()
+		}
 		return n.campaign()
 	}
 	return nil
@@ -431,6 +478,29 @@ func (n *Node) Tick() error {
 func (n *Node) Step(m Message) error {
 	if m.To != n.id || m.From == n.id || !n.isMember(m.From) {
 		return nil // not for us, or from a stranger: ignore
+	}
+
+	// A pre-vote is a question about a term that nobody has entered yet, so it is
+	// answered without the usual rules about terms, which would make the receiver
+	// adopt the asker's term.
+	switch m.Type {
+	case MsgPreVote:
+		n.handlePreVote(m)
+		return nil
+	case MsgPreVoteResp:
+		if m.Granted {
+			return n.handlePreVoteGranted(m)
+		}
+		// A refusal carries the refuser's own term, handled like any message below.
+	case MsgRequestVote:
+		// A node that has heard from a leader within an election timeout does not
+		// take a vote request from a higher term seriously and does not even adopt
+		// the term (section 4.2.3 of the thesis): the cluster has a leader, and the
+		// asker is out of touch with it. A candidate that is not is told in the usual
+		// way once the leader's contact times out.
+		if m.Term > n.hs.Term && n.inLease() {
+			return nil
+		}
 	}
 
 	switch {
@@ -458,6 +528,8 @@ func (n *Node) Step(m Message) error {
 
 	// From here on m.Term == n.hs.Term.
 	switch m.Type {
+	case MsgPreVoteResp:
+		return nil // a refusal that tells us nothing new
 	case MsgRequestVote:
 		return n.handleRequestVote(m)
 	case MsgRequestVoteResp:
@@ -529,6 +601,7 @@ func (n *Node) becomeFollower(term uint64, leader NodeID) error {
 	n.role = Follower
 	n.leader = leader
 	n.votes = nil
+	n.preVoting, n.preVotes, n.active = false, nil, nil
 	n.nextIndex, n.matchIndex, n.snapshotPause = nil, nil, nil
 	n.resetElectionTimer()
 	return nil
@@ -541,6 +614,7 @@ func (n *Node) campaign() error {
 	}
 	n.role = Candidate
 	n.campaigns++
+	n.preVoting, n.preVotes = false, nil
 	n.leader = None
 	n.votes = map[NodeID]bool{n.id: true}
 	n.resetElectionTimer()
@@ -554,6 +628,80 @@ func (n *Node) campaign() error {
 		n.send(Message{Type: MsgRequestVote, To: p, LastLogIndex: lastIndex, LastLogTerm: lastTerm})
 	}
 	return nil
+}
+
+// startPreVote asks the others whether they would vote for this node in the term
+// it would start, without changing its own term or vote. It stays a follower: only
+// a majority of yeses turns it into a candidate (see handlePreVoteGranted). The
+// node no longer counts the old leader as alive, since it just waited out the
+// timeout for hearing from it.
+func (n *Node) startPreVote() error {
+	n.preVoting = true
+	n.preVoteRounds++
+	n.leader = None
+	n.preVotes = map[NodeID]bool{n.id: true}
+	n.resetElectionTimer() // if this round fails, try again after another timeout
+	n.logger.Info("asking for pre-votes", "node", n.id, "term", n.hs.Term)
+
+	lastIndex, lastTerm := n.lastIndexTerm()
+	for _, p := range n.peers {
+		n.sendAtTerm(Message{Type: MsgPreVote, To: p, LastLogIndex: lastIndex, LastLogTerm: lastTerm}, n.hs.Term+1)
+	}
+	return nil
+}
+
+// sendAtTerm queues a message that carries a term other than the node's own.
+func (n *Node) sendAtTerm(m Message, term uint64) {
+	m.From = n.id
+	m.Term = term
+	n.outbox = append(n.outbox, m)
+}
+
+// inLease reports whether this node counts the cluster as having a live leader: it
+// is the leader and checks its quorum, or it heard from a leader within the base
+// election timeout. A node in the lease refuses to help anyone start an election.
+// It is only used when pre-vote or check-quorum is on.
+func (n *Node) inLease() bool {
+	if !n.preVote && !n.checkQuorum {
+		return false
+	}
+	if n.role == Leader {
+		return n.checkQuorum
+	}
+	return n.leader != None && n.electionElapsed < n.electionTicks
+}
+
+// handlePreVote answers a pre-vote. It changes nothing in this node: no term, no
+// vote, no timer. The answer is yes when the asker's term is newer than ours, its
+// log is at least as up to date as ours, and we do not know a live leader.
+func (n *Node) handlePreVote(m Message) {
+	if m.Term > n.hs.Term && n.logUpToDate(m.LastLogIndex, m.LastLogTerm) && !n.inLease() {
+		n.sendAtTerm(Message{Type: MsgPreVoteResp, To: m.From, Granted: true}, m.Term)
+		return
+	}
+	n.send(Message{Type: MsgPreVoteResp, To: m.From, Granted: false}) // carries our own term
+}
+
+// handlePreVoteGranted counts a yes. When a majority has said yes, the election is
+// held for real.
+func (n *Node) handlePreVoteGranted(m Message) error {
+	// A yes is for the term we asked about: one more than ours. Anything else is an
+	// answer to a round that is over.
+	if !n.preVoting || n.role != Follower || m.Term != n.hs.Term+1 {
+		return nil
+	}
+	n.preVotes[m.From] = true
+	granted := 0
+	for _, g := range n.preVotes {
+		if g {
+			granted++
+		}
+	}
+	if granted < n.quorum {
+		return nil
+	}
+	n.preVoting, n.preVotes = false, nil
+	return n.campaign()
 }
 
 func (n *Node) countVotes() int {
@@ -578,6 +726,9 @@ func (n *Node) becomeLeader() error {
 
 	n.role = Leader
 	n.wins++
+	n.electionElapsed = 0
+	n.preVoting, n.preVotes = false, nil
+	n.active = make(map[NodeID]bool, len(n.peers))
 	n.leader = n.id
 	n.votes = nil
 	n.heartbeatElapsed = 0
@@ -740,6 +891,7 @@ func (n *Node) acceptLeader(m Message) bool {
 		n.votes = nil
 	}
 	n.leader = m.From
+	n.preVoting, n.preVotes = false, nil // a leader exists: nothing to ask about
 	n.resetElectionTimer()
 	return true
 }
@@ -883,6 +1035,9 @@ func (n *Node) storeEntries(entries []Entry) error {
 func (n *Node) handleAppendResp(m Message) {
 	if n.role != Leader {
 		return
+	}
+	if n.checkQuorum {
+		n.active[m.From] = true // any answer in the current term shows the follower is in touch
 	}
 	if m.Type == MsgSnapshotResp {
 		n.snapshotPause[m.From] = 0 // answered: no need to wait any longer

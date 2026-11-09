@@ -22,6 +22,11 @@ enum RaftMessageType {
   // InstallSnapshot: the leader no longer has the entries a follower needs.
   RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT = 5;
   RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT_RESP = 6;
+  // PreVote: a node whose election timer ran out asks whether it would win an
+  // election, before it changes its term. `term` is the term it would start, and
+  // the last_log_* fields are as in RequestVote. The response uses `granted`.
+  RAFT_MESSAGE_TYPE_PRE_VOTE = 7;
+  RAFT_MESSAGE_TYPE_PRE_VOTE_RESP = 8;
 }
 
 enum LogEntryType {

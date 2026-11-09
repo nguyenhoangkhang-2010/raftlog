@@ -44,7 +44,7 @@ is ever lost" that only holds in the tests that were written to show it.
   the suite is able to see both kinds of failure.
 - The suite showed a real availability cost: when a long-isolated node returns with
   a high term, the leader steps down and an election follows although nothing was
-  wrong. Safety held. Pre-vote and check-quorum would fix it and are not built.
+  wrong. Safety held. Pre-vote and check-quorum would fix it and were not built then; they were added later (ADR 10).
 - Limits: a killed process does not lose data the operating system has buffered, so
   a missing `fsync` cannot be seen (a power-loss test would need a virtual disk);
   runs last seconds, not hours; clusters have three or five nodes.

@@ -113,9 +113,9 @@ disturbed the cluster. The transport now retries a peer at least once a second. 
 real nodes, kills the leader, starts it again and requires that the leader and the term do
 not change in the seconds after.
 
-The weakness underneath is still there: without pre-vote, a node that cannot hear the leader
-for any reason can force an election. That is the next piece of work (see the limits in the
-README).
+The weakness underneath, that a node which cannot hear the leader for any reason could force an
+election, was removed afterwards with pre-vote and check-quorum (ADR 10): bringing a node back
+up is now a non-event on the timeline.
 
 ### Two measured runs
 

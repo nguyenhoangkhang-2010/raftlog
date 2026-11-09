@@ -682,11 +682,19 @@ func TestEverythingSurvivesARestartOfAllNodes(t *testing.T) {
 // Cut links, crash nodes and submit commands at random. The harness checks the
 // safety properties after every message; at the end the cluster must converge
 // and keep everything that was ever committed.
-func TestReplicationUnderRandomFaults(t *testing.T) {
+func TestReplicationUnderRandomFaults(t *testing.T) { replicationUnderRandomFaults(t, newCluster) }
+
+// The same faults against a cluster with pre-vote and check-quorum: the hardening must
+// not cost safety, and the cluster must still converge once the faults are repaired.
+func TestReplicationUnderRandomFaultsWithPreVoteAndCheckQuorum(t *testing.T) {
+	replicationUnderRandomFaults(t, newHardenedCluster)
+}
+
+func replicationUnderRandomFaults(t *testing.T, mk func(*testing.T, int, int64) *cluster) {
 	const seeds = 300
 	committedTotal := 0
 	for seed := int64(1); seed <= seeds; seed++ {
-		c := newCluster(t, 5, seed)
+		c := mk(t, 5, seed)
 		rng := rand.New(rand.NewSource(seed))
 		next := 0
 

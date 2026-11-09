@@ -150,6 +150,8 @@ type cluster struct {
 	seed    int64
 	restart int64 // makes the RNG of a restarted node differ from before
 
+	preVote, checkQuorum bool // the hardening under test
+
 	snapEvery    uint64 // 0 disables snapshots
 	snapTrailing uint64
 	snapIdx      map[NodeID]uint64 // index of each node's latest snapshot
@@ -168,7 +170,20 @@ func newCluster(t *testing.T, size int, seed int64) *cluster {
 // entries and keep `trailing` entries in the log below the snapshot.
 func newClusterWithSnapshots(t *testing.T, size int, seed int64, every, trailing uint64) *cluster {
 	t.Helper()
+	return newClusterWith(t, size, seed, every, trailing, false, false)
+}
+
+// newHardenedCluster is newCluster with pre-vote and check-quorum on, as raftlogd runs.
+func newHardenedCluster(t *testing.T, size int, seed int64) *cluster {
+	t.Helper()
+	return newClusterWith(t, size, seed, 0, 0, true, true)
+}
+
+func newClusterWith(t *testing.T, size int, seed int64, every, trailing uint64, preVote, checkQuorum bool) *cluster {
+	t.Helper()
 	c := &cluster{
+		preVote:      preVote,
+		checkQuorum:  checkQuorum,
 		t:            t,
 		ids:          clusterIDs(size),
 		nodes:        make(map[NodeID]*Node),
@@ -204,6 +219,7 @@ func (c *cluster) start(id NodeID) {
 	cfg.Log = c.logs[id]
 	cfg.Snapshots = c.snaps[id]
 	cfg.SnapshotTrailing = c.snapTrailing
+	cfg.PreVote, cfg.CheckQuorum = c.preVote, c.checkQuorum
 	n, err := New(cfg)
 	if err != nil {
 		c.t.Fatalf("New(%d): %v", id, err)

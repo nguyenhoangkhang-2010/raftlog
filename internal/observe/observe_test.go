@@ -121,7 +121,7 @@ func TestTheRaftMetricsAreReadWhenScraped(t *testing.T) {
 	node := New(reg, "v")
 	src := &fakeRaft{o: raft.Observation{
 		Status:       raft.Status{ID: 1, Role: raft.Leader, Term: 7, Leader: 1, CommitIndex: 90, LastIndex: 100, SnapshotIndex: 50},
-		Stats:        raft.Stats{Applied: 88, Campaigns: 3, Wins: 2, Followers: []raft.FollowerProgress{{ID: 2, Match: 100, Next: 101}, {ID: 3, Match: 60, Next: 61}}},
+		Stats:        raft.Stats{Applied: 88, Campaigns: 3, Wins: 2, PreVotes: 5, QuorumLost: 1, Followers: []raft.FollowerProgress{{ID: 2, Match: 100, Next: 101}, {ID: 3, Match: 60, Next: 61}}},
 		ApplyBacklog: 2, SnapshotsTaken: 4, SnapshotsInstalled: 1, MessagesDropped: 9,
 		SendFailures: map[raft.NodeID]uint64{3: 12, 2: 1},
 	}}
@@ -133,6 +133,7 @@ func TestTheRaftMetricsAreReadWhenScraped(t *testing.T) {
 		"raftlog_raft_leader_id 1\n", "raftlog_raft_commit_index 90\n", "raftlog_raft_last_index 100\n", "raftlog_raft_applied_index 88\n",
 		"raftlog_raft_snapshot_index 50\n", "raftlog_raft_apply_backlog 2\n",
 		"raftlog_raft_elections_started_total 3\n", "raftlog_raft_elections_won_total 2\n",
+		"raftlog_raft_prevote_rounds_total 5\n", "raftlog_raft_quorum_stepdowns_total 1\n",
 		"raftlog_raft_snapshots_taken_total 4\n", "raftlog_raft_snapshots_installed_total 1\n", "raftlog_raft_messages_dropped_total 9\n",
 		`raftlog_raft_send_failures_total{peer="2"} 1`, `raftlog_raft_send_failures_total{peer="3"} 12`,
 		`raftlog_raft_follower_match_index{peer="3"} 60`,

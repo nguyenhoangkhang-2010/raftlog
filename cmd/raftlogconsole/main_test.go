@@ -216,7 +216,7 @@ func TestTheWholeConsoleOnRealNodes(t *testing.T) {
 	go func() {
 		done <- run(ctx, []string{
 			"-spawn", "3", "-raftlogd", bin, "-data-dir", dataDir, "-base-port", fmt.Sprint(base),
-			"-listen", "127.0.0.1:0", "-node-args", "-tick-interval 20ms -election-ticks 10 -heartbeat-ticks 2", "-poll", "100ms",
+			"-listen", "127.0.0.1:0", "-node-args", "-tick-interval 50ms -election-ticks 20 -heartbeat-ticks 2", "-poll", "100ms",
 		}, env(nil), &out, &errOut)
 	}()
 	defer func() {

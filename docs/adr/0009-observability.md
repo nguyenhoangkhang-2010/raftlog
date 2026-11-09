@@ -48,8 +48,7 @@ reading logs.
 - The console found a real defect the unit tests and the chaos suite had not: a restarted
   node disturbed a healthy cluster because the Raft transport's reconnect backoff grew to
   minutes. The transport now caps it at one second, and a test requires that a returning node
-  causes no election. The underlying weakness, no pre-vote, remains and is the next piece of
-  work.
+  causes no election. The underlying weakness, no pre-vote, was removed afterwards (ADR 10).
 - Latency percentiles shown by the console come from its own writer over a window of a few
   seconds, and those in the metrics from fixed histogram buckets; neither is a benchmark.
   Real numbers need a controlled run, which belongs to the benchmark phase.

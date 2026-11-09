@@ -77,6 +77,21 @@ On a failure the tail of every node's log is printed.
 No violation in any of them. The messages in the final log are the acknowledged
 ones plus the unknown ones that did get stored.
 
+The same scenarios run again after pre-vote and check-quorum were added (ADR 10), once
+each on the same laptop, again without any violation:
+
+| Scenario | Acknowledged | Refused | Unknown | Faults injected |
+|---|---|---|---|---|
+| no faults | 465 | 34 | 3 | 0 |
+| process crashes | 1408 | 246 | 289 | 19 |
+| network faults (5 nodes) | 618 | 310 | 20 | 43 |
+| stale nodes return | 745 | 890 | 48 | 62 |
+| everything + snapshots | 817 | 1449 | 307 | 52 |
+
+These are single runs with different random faults, so the two tables are not a controlled
+comparison: the counts vary from run to run. The controlled comparison is the pair of
+hardening scenarios below.
+
 ### Does the suite catch bugs?
 A test that always passes proves nothing, so bugs were put into the system on
 purpose (the daemon is rebuilt from the source for every run) and the suite was run:
@@ -100,10 +115,29 @@ invalid change.)
 - Retried requests: an attempt is never repeated, so the at-least-once duplicates
   that a retrying client can cause are not exercised.
 
-## Observation: availability when a node returns
+## Hardening scenarios
+Three more tests (`hardening_test.go`) hold the effect of pre-vote and check-quorum (ADR 10)
+against real processes. They use a 50 ms tick and an election timeout of 1 to 2 s
+(`steadyTimings`), not the 100 to 200 ms they were first written with: they assert that
+*nothing happens* (no election, no change of term), and with a timeout that short a
+machine whose cores are all busy, or a slow CI runner, looks like a leader that has been
+lost. The first version failed in CI for that reason and was reproduced locally with every
+core busy.
+
+| Test | What it does | Result (one local run, every core busy) |
+|---|---|---|
+| `TestAnIsolatedNodeDoesNotDisturbTheClusterWhenItComesBack` | cut one follower off for 10 s while writes go on, then reconnect it | its term stays at the cluster's (1); after it returns the leader and the term are unchanged |
+| `TestWithoutHardeningTheReturnOfAnIsolatedNodeCausesAnElection` | the same with `-pre-vote=false -check-quorum=false` | the cut-off node's term rises to 7 while alone and the cluster ends in term 9: the control that shows what the hardening prevents |
+| `TestACutOffLeaderStopsLeadingWithinAFewElectionTimeouts` | cut the leader off | it stops leading within the 15 s the test allows (the whole test took about 4 s), the others elect a new leader in a higher term, and healing changes nothing |
+
+The terms in the second row depend on the timing and on the load; they are one run, not a
+property.
+
+## Observation: availability when a node returns (fixed)
 In `TestChaosStaleNodesReturn` only 447 writes were acknowledged in 15 s,
 against 1548 with crashes alone. A node that was cut off keeps raising its term;
 when it returns, its high term makes the current leader step down and forces a new
 election, although the cluster was fine. Safety holds (nothing was lost), but
-availability drops. Raft's *pre-vote* and *check-quorum* extensions address this;
-they are not implemented (see the optional `feat/raft-hardening` branch idea).
+availability drops. Raft's *pre-vote* and *check-quorum* extensions address this,
+and have been implemented and are on by default (ADR 10); the numbers in the table above
+are from before that. The hardening scenarios above show the effect directly.
