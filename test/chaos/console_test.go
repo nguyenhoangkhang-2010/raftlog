@@ -48,7 +48,7 @@ func newConsoleRig(t *testing.T) *consoleRig {
 	}
 	sup, err := console.NewSupervisor(console.SupervisorConfig{
 		Binary: daemon(t), DataDir: filepath.Join(t.TempDir(), "console"), Nodes: nodes,
-		ExtraArgs: []string{"-tick-interval", "20ms", "-election-ticks", "10", "-heartbeat-ticks", "2"},
+		ExtraArgs: steadyTimings,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -7,9 +7,16 @@ import (
 	pb "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1"
 )
 
+// steadyTimings give the nodes an election timeout of 1 to 2 seconds. These tests say
+// that nothing happens (no election, no change of term) while a node is away and after
+// it returns, so they must not mistake a pause of a loaded machine, a slow CI runner
+// or the race detector for a node that lost its leader. An election timeout of 100 to
+// 200 ms was tried first and failed when every core of the machine was busy.
+var steadyTimings = []string{"-tick-interval", "50ms", "-election-ticks", "20", "-heartbeat-ticks", "2"}
+
 // These tests run real raftlogd processes, with the network between them cut by the
-// test's own proxies. Their Raft timings are short (an election timeout of 100 to
-// 200 ms), so a few seconds of isolation is dozens of election timeouts.
+// test's own proxies. The election timeout is 1 to 2 seconds (see steadyTimings), so
+// ten seconds of isolation is several election timeouts.
 
 // statuses returns the status of every node that answers, by node ID.
 func statuses(t *testing.T, c *cluster) map[int]*pb.NodeStatusResponse {
@@ -74,7 +81,7 @@ type isolationResult struct {
 
 func runIsolation(t *testing.T, extra ...string) isolationResult {
 	t.Helper()
-	c := newCluster(t, 3, extra...)
+	c := newCluster(t, 3, append(append([]string(nil), steadyTimings...), extra...)...)
 	for id := 1; id <= 3; id++ {
 		c.mustStart(id)
 	}
@@ -90,7 +97,7 @@ func runIsolation(t *testing.T, extra ...string) isolationResult {
 	}
 
 	c.isolate(victim)
-	time.Sleep(6 * time.Second) // dozens of election timeouts
+	time.Sleep(10 * time.Second) // several election timeouts
 	sts := statuses(t, c)
 	if st := sts[victim]; st != nil {
 		r.termAlone = st.Term
@@ -99,7 +106,7 @@ func runIsolation(t *testing.T, extra ...string) isolationResult {
 	r.committedWhileCutOff = canWrite(w, 15*time.Second)
 
 	c.heal()
-	time.Sleep(3 * time.Second)
+	time.Sleep(5 * time.Second)
 	r.leaderAfter, r.termAfter = waitForSettledLeader(t, c, nil)
 	if st := statuses(t, c)[victim]; st != nil {
 		r.followerTermAfterHeal = st.Term
@@ -146,21 +153,21 @@ func TestACutOffLeaderStopsLeadingWithinAFewElectionTimeouts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts real processes")
 	}
-	c := newCluster(t, 3)
+	c := newCluster(t, 3, steadyTimings...)
 	for id := 1; id <= 3; id++ {
 		c.mustStart(id)
 	}
 	old, term := waitForSettledLeader(t, c, nil)
 
 	c.isolate(old)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		sts := statuses(t, c)
 		if st := sts[old]; st != nil && st.Role != "leader" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the cut-off leader still thinks it leads after 5 s (status %+v)", statuses(t, c)[old])
+			t.Fatalf("the cut-off leader still thinks it leads after 15 s (status %+v)", statuses(t, c)[old])
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

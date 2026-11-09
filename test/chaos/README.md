@@ -117,13 +117,21 @@ invalid change.)
 
 ## Hardening scenarios
 Three more tests (`hardening_test.go`) hold the effect of pre-vote and check-quorum (ADR 10)
-against real processes, with a 100 to 200 ms election timeout:
+against real processes. They use a 50 ms tick and an election timeout of 1 to 2 s
+(`steadyTimings`), not the 100 to 200 ms they were first written with: they assert that
+*nothing happens* (no election, no change of term), and with a timeout that short a
+machine whose cores are all busy, or a slow CI runner, looks like a leader that has been
+lost. The first version failed in CI for that reason and was reproduced locally with every
+core busy.
 
-| Test | What it does | Result |
+| Test | What it does | Result (one local run, every core busy) |
 |---|---|---|
-| `TestAnIsolatedNodeDoesNotDisturbTheClusterWhenItComesBack` | cut one follower off for 6 s while writes go on, then reconnect it | its term stays at the cluster's (1); after it returns the leader and the term are unchanged |
-| `TestWithoutHardeningTheReturnOfAnIsolatedNodeCausesAnElection` | the same with `-pre-vote=false -check-quorum=false` | the cut-off node's term rises to 43 while alone and the cluster ends in term 49: the control that shows what the hardening prevents |
-| `TestACutOffLeaderStopsLeadingWithinAFewElectionTimeouts` | cut the leader off | it stops leading in about half a second, the others elect a new leader in a higher term, and healing changes nothing |
+| `TestAnIsolatedNodeDoesNotDisturbTheClusterWhenItComesBack` | cut one follower off for 10 s while writes go on, then reconnect it | its term stays at the cluster's (1); after it returns the leader and the term are unchanged |
+| `TestWithoutHardeningTheReturnOfAnIsolatedNodeCausesAnElection` | the same with `-pre-vote=false -check-quorum=false` | the cut-off node's term rises to 7 while alone and the cluster ends in term 9: the control that shows what the hardening prevents |
+| `TestACutOffLeaderStopsLeadingWithinAFewElectionTimeouts` | cut the leader off | it stops leading within the 15 s the test allows (the whole test took about 4 s), the others elect a new leader in a higher term, and healing changes nothing |
+
+The terms in the second row depend on the timing and on the load; they are one run, not a
+property.
 
 ## Observation: availability when a node returns (fixed)
 In `TestChaosStaleNodesReturn` only 447 writes were acknowledged in 15 s,
