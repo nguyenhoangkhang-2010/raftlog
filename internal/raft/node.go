@@ -419,16 +419,35 @@ func (n *Node) Compact(index uint64, data []byte) error {
 // changes first, the entry may be overwritten, so a caller must compare the
 // term of the delivered entry with the term returned here.
 func (n *Node) Propose(data []byte) (index, term uint64, err error) {
+	return n.ProposeBatch([][]byte{data})
+}
+
+// ProposeBatch appends several commands to the log as consecutive entries of the
+// current term, with one write and one fsync of the log and one round of messages to
+// the followers, and returns the index of the first. Entry i of the batch has index
+// first+i. It is Propose for callers that have several commands waiting: the cost of
+// making them durable is paid once instead of once each.
+//
+// Like Propose it fails with a *NotLeaderError on a node that is not the leader. If it
+// fails for any other reason none of the commands was appended.
+func (n *Node) ProposeBatch(data [][]byte) (first, term uint64, err error) {
 	if n.role != Leader {
 		return 0, 0, &NotLeaderError{Leader: n.leader}
 	}
-	e := Entry{Index: n.log.LastIndex() + 1, Term: n.hs.Term, Type: EntryNormal, Data: data}
-	if err := n.log.Append([]Entry{e}); err != nil {
+	if len(data) == 0 {
+		return 0, 0, errors.New("raft: a batch of proposals needs at least one command")
+	}
+	first = n.log.LastIndex() + 1
+	entries := make([]Entry, len(data))
+	for i, d := range data {
+		entries[i] = Entry{Index: first + uint64(i), Term: n.hs.Term, Type: EntryNormal, Data: d}
+	}
+	if err := n.log.Append(entries); err != nil {
 		return 0, 0, fmt.Errorf("raft: append proposal: %w", err)
 	}
 	n.maybeCommit() // a one-node cluster commits at once
 	n.broadcastAppend()
-	return e.Index, e.Term, nil
+	return first, n.hs.Term, nil
 }
 
 // Tick advances logical time by one tick.

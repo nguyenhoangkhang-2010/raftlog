@@ -45,6 +45,18 @@ type StateMachine interface {
 	Restore([]byte) error
 }
 
+// BatchStateMachine is a StateMachine that can apply several consecutive entries in
+// one call, which lets it make them durable together instead of one at a time. The
+// runner uses ApplyBatch when the state machine has it.
+type BatchStateMachine interface {
+	StateMachine
+	// ApplyBatch applies the entries, which are consecutive committed commands in log
+	// order (no-op entries are not passed), and returns the outcome of each, in the same
+	// order. The state afterwards, and each outcome, must be what calling Apply on each
+	// entry in turn would have given.
+	ApplyBatch([]Entry) []any
+}
+
 // RunnerOption customizes a Runner.
 type RunnerOption func(*Runner)
 
@@ -88,6 +100,26 @@ type waiter struct {
 	done chan waitResult
 }
 
+// A proposal batch ends when it holds this many commands or this many bytes of them.
+// Nothing waits to fill a batch: the proposer takes what is queued when it is free.
+const (
+	proposeBatchMaxEntries = 256
+	proposeBatchMaxBytes   = 4 << 20
+	proposeQueueSize       = 1024
+)
+
+// proposal is one Propose call handed to the proposer goroutine.
+type proposal struct {
+	data []byte
+	w    *waiter         // registered under the entry's index before the entry can apply
+	ack  chan proposeAck // answered exactly once, with the index or the reason it failed
+}
+
+type proposeAck struct {
+	index uint64
+	err   error
+}
+
 // applyItem is one unit of work for the apply goroutine: either a snapshot the
 // state machine must load, or a committed entry to apply.
 type applyItem struct {
@@ -110,6 +142,8 @@ type Runner struct {
 	applyQueue []applyItem
 	waiters    map[uint64]*waiter // by log index
 	halted     bool
+
+	proposals chan *proposal // from Propose calls to the proposer goroutine
 
 	applier       func(Entry)
 	sm            StateMachine
@@ -151,6 +185,7 @@ func NewRunner(cfg Config, tr Transport, tickInterval time.Duration, opts ...Run
 	r := &Runner{
 		node:        node,
 		waiters:     make(map[uint64]*waiter),
+		proposals:   make(chan *proposal, proposeQueueSize),
 		tr:          tr,
 		tick:        tickInterval,
 		sendTimeout: tickInterval * time.Duration(cfg.ElectionTicks), // never outlive an election timeout
@@ -194,9 +229,10 @@ func (r *Runner) Start() {
 		r.wg.Add(1)
 		go r.sender(id, q)
 	}
-	r.wg.Add(2)
+	r.wg.Add(3)
 	go r.loop()
 	go r.applyLoop()
+	go r.proposeLoop()
 }
 
 // Stop stops the goroutines and waits for them. Entries already committed are
@@ -281,22 +317,41 @@ func (r *Runner) Propose(ctx context.Context, data []byte) (uint64, error) {
 
 // ProposeResult is Propose that also returns what the state machine's Apply
 // returned for the command (nil if the state machine is an applier function).
+//
+// Proposals that arrive while the node is busy making an earlier one durable are
+// appended to the log together, with one fsync (see proposeLoop). A caller never waits
+// for others to arrive: with nothing queued, its command goes in at once.
 func (r *Runner) ProposeResult(ctx context.Context, data []byte) (uint64, any, error) {
-	r.mu.Lock()
-	index, term, err := r.node.Propose(data)
-	if err != nil {
-		r.mu.Unlock()
-		return 0, nil, err
+	p := &proposal{
+		data: data,
+		w:    &waiter{done: make(chan waitResult, 1)},
+		ack:  make(chan proposeAck, 1),
 	}
-	w := &waiter{term: term, done: make(chan waitResult, 1)}
-	r.waiters[index] = w
-	msgs := r.flushLocked()
-	r.mu.Unlock()
+	select {
+	case r.proposals <- p:
+	case <-ctx.Done():
+		return 0, nil, ctx.Err()
+	case <-r.stop:
+		return 0, nil, ErrStopped
+	}
 
-	r.dispatch(msgs)
+	// Once queued, the command may be proposed even if ctx ends first, like a proposal
+	// whose caller gives up after it was appended: it may still commit.
+	var index uint64
+	select {
+	case a := <-p.ack:
+		if a.err != nil {
+			return 0, nil, a.err
+		}
+		index = a.index
+	case <-ctx.Done():
+		return 0, nil, ctx.Err()
+	case <-r.stop:
+		return 0, nil, ErrStopped
+	}
 
 	select {
-	case res := <-w.done:
+	case res := <-p.w.done:
 		return index, res.value, res.err
 	case <-ctx.Done():
 		r.mu.Lock()
@@ -306,6 +361,67 @@ func (r *Runner) ProposeResult(ctx context.Context, data []byte) (uint64, any, e
 	case <-r.stop:
 		return index, nil, ErrStopped
 	}
+}
+
+// proposeLoop appends the queued proposals to the log. It takes the first one that is
+// waiting, then every other one that is already there (up to a limit), and makes them
+// durable and sends them to the followers together: one fsync and one round of messages
+// for the whole group. While it is busy with one group, the next one builds up, so the
+// more load there is, the bigger the groups, and with no load a group is a single
+// proposal and nothing is delayed.
+func (r *Runner) proposeLoop() {
+	defer r.wg.Done()
+	for {
+		var batch []*proposal
+		select {
+		case <-r.stop:
+			return
+		case p := <-r.proposals:
+			batch = append(batch, p)
+		}
+		size := len(batch[0].data)
+	drain:
+		for len(batch) < proposeBatchMaxEntries && size < proposeBatchMaxBytes {
+			select {
+			case p := <-r.proposals:
+				batch = append(batch, p)
+				size += len(p.data)
+			default:
+				break drain
+			}
+		}
+		r.propose(batch)
+	}
+}
+
+// propose appends one group of proposals as consecutive entries and answers each.
+func (r *Runner) propose(batch []*proposal) {
+	data := make([][]byte, len(batch))
+	for i, p := range batch {
+		data[i] = p.data
+	}
+	r.mu.Lock()
+	first, term, err := r.node.ProposeBatch(data)
+	if err != nil {
+		r.mu.Unlock()
+		for _, p := range batch {
+			p.ack <- proposeAck{err: err}
+		}
+		return
+	}
+	// The waiters are registered before the entries can be applied, and with the term
+	// they were proposed in, which is what flushLocked compares against.
+	for i, p := range batch {
+		p.w.term = term
+		r.waiters[first+uint64(i)] = p.w
+	}
+	msgs := r.flushLocked()
+	r.mu.Unlock()
+
+	for i, p := range batch {
+		p.ack <- proposeAck{index: first + uint64(i)}
+	}
+	r.dispatch(msgs)
 }
 
 // flushLocked collects what the node produced after a step: messages to send,
@@ -382,37 +498,108 @@ func (r *Runner) applyLoop() {
 		r.applyQueue = nil
 		r.mu.Unlock()
 
-		for _, it := range batch {
-			if it.restore != nil {
-				if !r.restore(it.restore) {
+		for i := 0; i < len(batch); {
+			if batch[i].restore != nil {
+				if !r.restore(batch[i].restore) {
 					return
 				}
+				i++
 				continue
 			}
-			e := it.entry
-			var result any
+			// The entries up to the next snapshot to load go to the state machine together.
+			entries := make([]Entry, 0, len(batch)-i)
+			for i < len(batch) && batch[i].restore == nil {
+				entries = append(entries, batch[i].entry)
+				i++
+			}
+			r.applyEntries(entries)
+		}
+	}
+}
+
+// applyEntries gives consecutive committed entries to the state machine, answers the
+// callers waiting for them, and takes a snapshot when one is due. A state machine that
+// can apply several entries at once (BatchStateMachine) gets them in groups, which lets
+// it make them durable together; otherwise they go one at a time.
+//
+// A group never runs past the entry at which a snapshot falls due, so snapshots are
+// taken at the same indexes as when the entries are applied one by one.
+func (r *Runner) applyEntries(entries []Entry) {
+	bsm, batched := r.sm.(BatchStateMachine)
+	for len(entries) > 0 {
+		n := 1
+		if batched {
+			n = r.groupSize(entries)
+		}
+		group := entries[:n]
+		entries = entries[n:]
+
+		results := make([]any, len(group))
+		switch {
+		case batched:
+			var normal []Entry
+			for _, e := range group {
+				if e.Type == EntryNormal {
+					normal = append(normal, e)
+				}
+			}
+			if len(normal) > 0 {
+				out := bsm.ApplyBatch(normal)
+				if len(out) != len(normal) {
+					r.logger.Error("raft: the state machine answered a batch with the wrong number of outcomes", "entries", len(normal), "outcomes", len(out))
+				}
+				k := 0
+				for i, e := range group {
+					if e.Type == EntryNormal {
+						if k < len(out) {
+							results[i] = out[k]
+						}
+						k++
+					}
+				}
+			}
+		default:
+			e := group[0]
 			if e.Type == EntryNormal {
 				switch {
 				case r.sm != nil:
-					result = r.sm.Apply(e)
+					results[0] = r.sm.Apply(e)
 				case r.applier != nil:
 					r.applier(e)
 				}
 			}
-			r.mu.Lock()
+		}
+
+		r.mu.Lock()
+		for i, e := range group {
 			if w, ok := r.waiters[e.Index]; ok {
 				delete(r.waiters, e.Index)
 				if w.term == e.Term {
-					w.done <- waitResult{value: result}
+					w.done <- waitResult{value: results[i]}
 				} else {
 					w.done <- waitResult{err: ErrEntryReplaced}
 				}
 			}
-			r.mu.Unlock()
+		}
+		r.mu.Unlock()
 
-			r.maybeSnapshot(e.Index)
+		r.maybeSnapshot(group[len(group)-1].Index)
+	}
+}
+
+// groupSize is how many of the entries to apply together: at most proposeBatchMaxEntries,
+// and not past the entry at which the next snapshot falls due.
+func (r *Runner) groupSize(entries []Entry) int {
+	n := min(len(entries), proposeBatchMaxEntries)
+	if r.snapshotEvery > 0 {
+		due := r.snapIndex + r.snapshotEvery
+		for i := 0; i < n; i++ {
+			if entries[i].Index >= due {
+				return i + 1
+			}
 		}
 	}
+	return n
 }
 
 // restore loads a snapshot into the state machine. It reports false if that

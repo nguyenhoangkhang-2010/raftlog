@@ -76,7 +76,8 @@ memory and travels in one message, bounded by `-max-message-bytes`.
   everything, rebuild from a snapshot).
 - Costs and limits, for now:
   - one leader handles all writes; a produce costs an fsync in the Raft log, one
-    for the journal and one for the partition;
+    for the journal and one for the partition (ADR 12 later made concurrent
+    produces share all three);
   - `-max-partitions` (and the other broker settings that change what a command
     does) must be the same on every node, or nodes would disagree;
   - directories are not fsynced, so a power failure right after a topic is created
