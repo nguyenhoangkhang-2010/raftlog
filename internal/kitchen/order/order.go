@@ -315,6 +315,9 @@ func (o *Order) applyTicketReady(ev Event) error {
 	if o.Status != Preparing {
 		return illegal(ev, o.Status)
 	}
+	if o.Request != nil {
+		return fmt.Errorf("%w: %s", ErrIllegalTransition, "a cancellation is waiting")
+	}
 	t := o.Tickets[ev.Ticket.Station]
 	if t == nil {
 		return fmt.Errorf("%w: %q", ErrNoSuchTicket, ev.Ticket.Station)

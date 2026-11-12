@@ -247,6 +247,16 @@ func (s *Stock) Low() []Ingredient {
 	return out
 }
 
+// Clone returns an independent copy of the stock. A service uses it to try a movement
+// and see whether it would be accepted before the movement is written to a log.
+func (s *Stock) Clone() *Stock {
+	c := &Stock{levels: make(map[Ingredient]Level, len(s.levels))}
+	for ing, l := range s.levels {
+		c.levels[ing] = l
+	}
+	return c
+}
+
 // Snapshot returns the quantity of every ingredient, for comparing two stocks.
 func (s *Stock) Snapshot() map[Ingredient]int64 {
 	out := make(map[Ingredient]int64, len(s.levels))

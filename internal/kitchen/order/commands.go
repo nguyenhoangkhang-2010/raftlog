@@ -193,6 +193,9 @@ func (o *Order) FinishTicket(m Meta, st menu.Station) (*Event, error) {
 	if o.Status != Preparing {
 		return nil, o.wrongState("finish work on")
 	}
+	if o.Request != nil {
+		return nil, ErrCancelPending
+	}
 	if o.Tickets[st].Status != TicketStarted {
 		return nil, fmt.Errorf("%w: the %s ticket is %s, not started", ErrWrongState, st, o.Tickets[st].Status)
 	}

@@ -6,8 +6,8 @@ kitchen stations (drinks, hot, cold) each with a screen, runners, a manager and 
 storekeeper. Its orders are a stream of events, which is what a replicated log is for.
 
 This page describes the **domain core** (`internal/kitchen/...`): the rules, with no
-database, network or screen. The service on raftlog, the database and the screens come
-in the next branches (see the end).
+database, network or screen. The service that puts them on raftlog is described in
+[service.md](service.md); the screens come in the next branches (see the end).
 
 ## The packages
 
@@ -84,11 +84,17 @@ that worked is not reported as forbidden.
 
 ## Not here yet
 
-This is the pure core. Still to come, in this order: the service that writes the events
-to raftlog with order numbers taken from the log and one consumer group per kitchen
-station; the database (users, menu, shifts); login and the enforcement of roles at the
-API; the screens for the customer, the till, the kitchen and the manager; the
-inventory screens; a test that kills the leader at the lunch rush.
+The service is done in a reduced form ([service.md](service.md)): events in one topic, roles
+enforced at the API, the menu, promotions and users read from files. Still to come, in this
+order: a test that kills the cluster's leader and the service while orders are taken at a
+rush; the screens for the customer, the till, the kitchen and the manager, and the inventory
+screens. Left out on purpose: a database, accounts and login, shifts, and editing the menu without
+a restart.
 
-The menu used in the tests is invented for the tests. Real menus will be imported from
-files the stall provides.
+The menu used in the tests, and the sample files in `examples/kitchen`, are invented. Real
+menus are files that the venue provides.
+
+One rule of this core was found missing by the service's tests: the table says that a ticket cannot
+be started or finished while a cancellation waits for the manager, and finishing was not checked,
+neither in the command nor in `Apply`. Both refuse it now, with tests (`order/pending_test.go`),
+and the `Apply` check for starting, which had none, has one.

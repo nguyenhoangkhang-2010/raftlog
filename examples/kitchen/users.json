@@ -1,0 +1,11 @@
+[
+  { "id": "khach-1",      "roles": ["customer"],    "token": "demo-token-customer-1" },
+  { "id": "khach-2",      "roles": ["customer"],    "token": "demo-token-customer-2" },
+  { "id": "thu-ngan-1",   "roles": ["cashier"],     "token": "demo-token-cashier-1" },
+  { "id": "bep-do-uong",  "roles": ["kitchen"],     "token": "demo-token-kitchen-drinks", "station": "drinks" },
+  { "id": "bep-nong",     "roles": ["kitchen"],     "token": "demo-token-kitchen-hot",    "station": "hot" },
+  { "id": "chay-ban-1",   "roles": ["runner"],      "token": "demo-token-runner-1" },
+  { "id": "quan-ly-1",    "roles": ["manager"],     "token": "demo-token-manager-1" },
+  { "id": "thu-kho-1",    "roles": ["storekeeper"], "token": "demo-token-storekeeper-1" },
+  { "id": "admin-1",      "roles": ["admin"],       "token": "demo-token-admin-1" }
+]
