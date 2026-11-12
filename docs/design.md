@@ -96,16 +96,21 @@ is what makes the simulation tests possible (ADR 2).
 **A write** (`Produce`):
 1. The client sends it to a node. A follower refuses and names the leader; the client library
    follows.
-2. The leader checks it, chooses the partition and stamps the messages, and proposes one Raft
-   entry for the whole batch. The entry is appended to the leader's Raft log and fsynced.
-3. The leader sends `AppendEntries` to the followers. Each appends and fsyncs, then answers.
-4. When a majority has the entry it is committed. Every node applies committed entries in
-   order: the state machine writes its intent to the journal, appends the messages to the
-   partition log, fsyncs it, and records the entry as applied.
-5. The leader answers the client only after it has applied the entry. An acknowledged write is
-   therefore on a majority of disks.
+2. The leader checks it, chooses the partition and stamps the messages, and hands one Raft entry
+   for the whole batch to the runner's proposer. The proposer appends it to the leader's Raft log
+   together with every other proposal that is queued at that moment, with one fsync.
+3. The leader sends `AppendEntries` to the followers, one message for the whole group. Each
+   follower appends and fsyncs once, then answers.
+4. When a majority has the entries they are committed. Every node applies committed entries in
+   order, and consecutive Produce commands as a group: the state machine writes one intent to
+   the journal for the group, appends the messages to the partition logs, and fsyncs each
+   partition once.
+5. The leader answers each client after the group its entry was applied in is durable. An
+   acknowledged write is therefore on a majority of disks.
 
-The Results section of the README and `bench/README.md` measure what these steps cost.
+Nothing waits to fill a group: with no concurrent load a group is a single request, so a lone
+producer pays the whole cost alone, and under load the cost is shared (ADR 12). The Results
+section of the README and `bench/README.md` measure what these steps cost.
 
 **A read** (`Fetch`) is served by any node from its applied state, so it returns only
 committed data, but a follower can be a little behind. A long poll (`-wait`) holds the request
@@ -170,10 +175,12 @@ from the internet would not be comparable.
 
 ## 9. Open questions and future work
 
-- **Cost per write.** Each write is applied one at a time and pays several fsyncs and a journal
-  rewrite. Batching concurrent proposals into one Raft entry and one fsync (group commit), and a
-  journal that is not rewritten for every entry, are the obvious next steps; the benchmark gives
-  the number to beat.
+- **Cost per write for a lone producer.** Group commit (ADR 12) shares the fsyncs, the journal
+  rewrite and the replication round between concurrent writes, but one producer sending one
+  request at a time still pays all of them: about 6 ms with one node and 10 ms with three on the
+  test laptop. A journal that is overwritten in place instead of replaced would lower it, and so
+  would a faster disk; the fsync of the Raft log on the leader and on a follower stays on the path
+  of every write.
 - **One Raft group** means one leader takes every write. Per-partition groups would spread the
   load and need many logs, chunked snapshots and a placement scheme (ADR 4).
 - **Snapshots** are a copy of all data in one message, which bounds the data set.

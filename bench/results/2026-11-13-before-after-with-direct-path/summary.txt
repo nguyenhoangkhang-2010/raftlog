@@ -1,0 +1,5 @@
+scenario   build  runs  messages/s: median (min - max)    p50 ms: median    p99 ms: median
+p1-b1      old      5         130 (107 - 132)             7.7              11.1
+p1-b1      new      5         131 (113 - 137)             7.6              11.3
+p16-b1     old      5         183 (173 - 188)            86.0             104.0
+p16-b1     new      5         921 (893 - 965)            17.2              24.1

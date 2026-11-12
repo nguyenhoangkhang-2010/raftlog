@@ -7,6 +7,7 @@
 
 # Runtime data (broker log segments, raft state)
 /data/
+/console-data/
 *.log
 *.wal
 *.snap

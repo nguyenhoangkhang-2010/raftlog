@@ -49,15 +49,33 @@ type Result struct {
 // after a restart. Without a record of what was already done, those entries
 // would be applied twice.
 type journalRecord struct {
-	// Index is the last log entry applied, or, for a Produce, the last one begun.
+	// Index is the last log entry applied, or, for a group of Produce commands, the
+	// last one of the group that was begun.
 	Index uint64 `json:"index"`
-	// For a Produce that was begun: where it appends and how many messages it
-	// carries. A crash can leave it half done; whether it finished is read off
-	// the partition (its next offset against Start+Count).
+
+	// For a group of Produce commands that was begun: First is the index of its first
+	// entry, and Parts says, for every partition the group appends to, where the group's
+	// messages start and end. A crash can leave the group half done; how far it got is
+	// read off the partitions (their next offset against Start and End), and the entries
+	// First..Index are applied again after the restart, skipping what is already there.
+	First uint64        `json:"first,omitempty"`
+	Parts []journalPart `json:"parts,omitempty"`
+
+	// The journal of a single Produce, as an earlier version wrote it. It is only read:
+	// NewMachine turns it into a group of one.
 	Topic     string `json:"topic,omitempty"`
 	Partition uint32 `json:"partition,omitempty"`
 	Start     uint64 `json:"start,omitempty"`
 	Count     uint32 `json:"count,omitempty"`
+}
+
+// journalPart is where one group of Produce commands appends in one partition: the
+// messages it adds occupy offsets Start up to, not including, End.
+type journalPart struct {
+	Topic     string `json:"topic"`
+	Partition uint32 `json:"partition"`
+	Start     uint64 `json:"start"`
+	End       uint64 `json:"end"`
 }
 
 // Machine is the broker as a replicated state machine. Raft hands it the
@@ -73,12 +91,21 @@ type Machine struct {
 
 	mu sync.RWMutex // Restore takes it exclusively; reads share it
 
+	// While the entries of a group that was begun before a restart are applied again
+	// (see replayEntry): where the next message of each partition of the group goes, and
+	// the partitions of the group, which are synced when it is complete. Nil at all other times.
+	replayNext    map[partKey]uint64
+	replayTouched map[partKey]*partition
+
 	// hook is called at named points during Apply. Tests use it to crash the
 	// state machine at a chosen moment.
 	hook func(point string)
 }
 
-var _ raft.StateMachine = (*Machine)(nil)
+var (
+	_ raft.StateMachine      = (*Machine)(nil)
+	_ raft.BatchStateMachine = (*Machine)(nil)
+)
 
 // NewMachine wraps b as a state machine and keeps its journal in dir.
 func NewMachine(b *Broker, dir string) (*Machine, error) {
@@ -96,6 +123,13 @@ func NewMachine(b *Broker, dir string) (*Machine, error) {
 	default:
 		if err := json.Unmarshal(data, &m.rec); err != nil {
 			return nil, fmt.Errorf("parse journal %s: %w", m.path, err)
+		}
+		if m.rec.Count > 0 && len(m.rec.Parts) == 0 {
+			// A journal written for one Produce: the same thing as a group of one.
+			m.rec = journalRecord{
+				Index: m.rec.Index, First: m.rec.Index,
+				Parts: []journalPart{{Topic: m.rec.Topic, Partition: m.rec.Partition, Start: m.rec.Start, End: m.rec.Start + uint64(m.rec.Count)}},
+			}
 		}
 	}
 	return m, nil
@@ -144,41 +178,94 @@ func (m *Machine) at(point string) {
 	}
 }
 
-// pendingProduce reports whether the journal records a Produce that began but
-// whose messages are not all in the partition yet.
+// pendingProduce reports whether the journal records a group of Produce commands that
+// began but whose messages are not all in the partitions yet.
 func (m *Machine) pendingProduce() bool {
-	if m.rec.Count == 0 {
-		return false
+	for _, jp := range m.rec.Parts {
+		next, err := m.b.nextOffset(jp.Topic, int(jp.Partition))
+		if err != nil || next < jp.End {
+			return true
+		}
 	}
-	next, err := m.b.nextOffset(m.rec.Topic, int(m.rec.Partition))
-	return err != nil || next < m.rec.Start+uint64(m.rec.Count)
+	return false
+}
+
+// applied reports whether entry index was fully applied before a restart: its work is
+// done and the journal has moved past it.
+func (m *Machine) applied(index uint64) bool {
+	if len(m.rec.Parts) > 0 {
+		return index < m.rec.First
+	}
+	return index <= m.rec.Index
+}
+
+// begun reports whether entry index belongs to the group of Produce commands that the
+// journal says was begun, and is applied again to finish it.
+func (m *Machine) begun(index uint64) bool {
+	return len(m.rec.Parts) > 0 && index >= m.rec.First && index <= m.rec.Index
 }
 
 // Apply implements raft.StateMachine.
-func (m *Machine) Apply(e raft.Entry) any {
-	if e.Index < m.rec.Index {
-		return nil // applied before a restart
-	}
-	if e.Index == m.rec.Index && !m.pendingProduce() {
-		return nil // also applied before the restart
-	}
+func (m *Machine) Apply(e raft.Entry) any { return m.ApplyBatch([]raft.Entry{e})[0] }
 
-	var cmd pb.Command
-	if err := proto.Unmarshal(e.Data, &cmd); err != nil {
-		m.record(e.Index)
-		return Result{Err: fmt.Errorf("%w: %v", errUnreadableCommand, err)}
+// A group of Produce commands ends when it holds this many commands or this many bytes.
+const (
+	applyRunMaxEntries = 256
+	applyRunMaxBytes   = 4 << 20
+)
+
+// ApplyBatch implements raft.BatchStateMachine: it applies the entries in order, and
+// consecutive Produce commands as one group, so that the journal is written once and
+// each partition is synced once for all of them, not once for each. The result for each
+// entry is what Apply would have returned, and the state afterwards is the same.
+func (m *Machine) ApplyBatch(entries []raft.Entry) []any {
+	results := make([]any, len(entries))
+	var run []plannedProduce
+	runBytes := 0
+	flush := func() {
+		if len(run) > 0 {
+			m.applyProduceRun(run, results)
+			run, runBytes = run[:0], 0
+		}
 	}
-	switch c := cmd.Command.(type) {
-	case *pb.Command_CreateTopic:
-		return m.createTopic(e.Index, c.CreateTopic)
-	case *pb.Command_Produce:
-		return m.produce(e.Index, c.Produce)
-	case *pb.Command_CommitOffset:
-		return m.commitOffset(e.Index, c.CommitOffset)
-	default:
-		m.record(e.Index)
-		return Result{Err: errUnreadableCommand}
+	for i, e := range entries {
+		switch {
+		case m.applied(e.Index):
+			continue // done before a restart
+		case m.begun(e.Index):
+			flush()
+			results[i] = m.replayEntry(e)
+			continue
+		}
+
+		var cmd pb.Command
+		if err := proto.Unmarshal(e.Data, &cmd); err != nil {
+			flush()
+			m.record(e.Index)
+			results[i] = Result{Err: fmt.Errorf("%w: %v", errUnreadableCommand, err)}
+			continue
+		}
+		switch c := cmd.Command.(type) {
+		case *pb.Command_Produce:
+			run = append(run, plannedProduce{pos: i, index: e.Index, cmd: c.Produce})
+			runBytes += len(e.Data)
+			if len(run) >= applyRunMaxEntries || runBytes >= applyRunMaxBytes {
+				flush()
+			}
+		case *pb.Command_CreateTopic:
+			flush()
+			results[i] = m.createTopic(e.Index, c.CreateTopic)
+		case *pb.Command_CommitOffset:
+			flush()
+			results[i] = m.commitOffset(e.Index, c.CommitOffset)
+		default:
+			flush()
+			m.record(e.Index)
+			results[i] = Result{Err: errUnreadableCommand}
+		}
 	}
+	flush()
+	return results
 }
 
 // record marks entry index as applied.
@@ -232,7 +319,22 @@ func (m *Machine) commitOffset(index uint64, c *pb.CommitOffsetCommand) Result {
 	return Result{Err: err}
 }
 
-func (m *Machine) produce(index uint64, c *pb.ProduceCommand) Result {
+// partKey names a partition.
+type partKey struct {
+	topic     string
+	partition uint32
+}
+
+// plannedProduce is a Produce command that waits to be applied with its neighbours.
+type plannedProduce struct {
+	pos   int // where its result goes in the slice ApplyBatch returns
+	index uint64
+	cmd   *pb.ProduceCommand
+}
+
+// checkProduce returns the partition a Produce command appends to, or the reason the
+// command is refused. A refusal is the same on every node, and changes nothing.
+func (m *Machine) checkProduce(c *pb.ProduceCommand) (*partition, error) {
 	t, err := m.b.lookup(c.GetTopic())
 	if err == nil && int(c.GetPartition()) >= len(t.parts) {
 		err = ErrInvalidPartition
@@ -253,50 +355,156 @@ func (m *Machine) produce(index uint64, c *pb.ProduceCommand) Result {
 		}
 	}
 	if err != nil {
-		m.record(index)
-		return Result{Err: err}
+		return nil, err
+	}
+	return t.parts[c.GetPartition()], nil
+}
+
+// applyProduceRun applies consecutive Produce commands as one group: it writes one
+// journal record for all of them, appends their messages, and syncs each partition once.
+// The commands are applied in order, so the offsets are the ones they would get one by
+// one, and a command that is refused changes nothing, as when applied alone. Each
+// command's outcome goes to results at its position.
+func (m *Machine) applyProduceRun(run []plannedProduce, results []any) {
+	type target struct {
+		key        partKey
+		p          *partition
+		start, end uint64
+	}
+	var targets []*target
+	byKey := map[partKey]*target{}
+	owner := make([]*partition, len(run)) // the partition of each command; nil if refused
+	for i, pr := range run {
+		p, err := m.checkProduce(pr.cmd)
+		if err != nil {
+			results[pr.pos] = Result{Err: err}
+			continue
+		}
+		owner[i] = p
+		k := partKey{pr.cmd.GetTopic(), pr.cmd.GetPartition()}
+		tg := byKey[k]
+		if tg == nil {
+			start := p.log.NextOffset()
+			tg = &target{key: k, p: p, start: start, end: start}
+			byKey[k] = tg
+			targets = append(targets, tg)
+		}
+		results[pr.pos] = Result{Partition: int(k.partition), BaseOffset: tg.end}
+		tg.end += uint64(len(pr.cmd.GetMessages()))
 	}
 
-	p := t.parts[c.GetPartition()]
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	first, last := run[0].index, run[len(run)-1].index
+	if len(targets) == 0 {
+		m.record(last) // nothing was valid: only the position moves
+		return
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		a, b := targets[i].key, targets[j].key
+		if a.topic != b.topic {
+			return a.topic < b.topic
+		}
+		return a.partition < b.partition
+	})
+	for _, tg := range targets {
+		tg.p.mu.Lock()
+		defer tg.p.mu.Unlock()
+	}
 
 	// Write down what is about to happen before doing it, so that a crash in the
 	// middle can be finished after the restart instead of repeated.
-	start := p.log.NextOffset()
-	if index == m.rec.Index {
-		if m.rec.Topic != c.GetTopic() || m.rec.Partition != c.GetPartition() {
-			m.fatal("resume produce", fmt.Errorf("journal says %s/%d, entry %d says %s/%d",
-				m.rec.Topic, m.rec.Partition, index, c.GetTopic(), c.GetPartition()))
-		}
-		start = m.rec.Start
-	} else {
-		m.writeJournal(journalRecord{
-			Index:     index,
-			Topic:     c.GetTopic(),
-			Partition: c.GetPartition(),
-			Start:     start,
-			Count:     uint32(len(c.GetMessages())),
-		})
+	parts := make([]journalPart, len(targets))
+	for i, tg := range targets {
+		parts[i] = journalPart{Topic: tg.key.topic, Partition: tg.key.partition, Start: tg.start, End: tg.end}
 	}
+	m.writeJournal(journalRecord{Index: last, First: first, Parts: parts})
 	m.at("produce:intent")
 
-	done := p.log.NextOffset() - start // messages an interrupted attempt already wrote
-	if done > uint64(len(c.GetMessages())) {
-		m.fatal("resume produce", fmt.Errorf("partition holds %d messages of a batch of %d", done, len(c.GetMessages())))
-	}
-	for i, sm := range c.GetMessages()[done:] {
-		_, err := p.log.Append(storage.Message{Key: sm.GetKey(), Value: sm.GetValue(), Timestamp: sm.GetTimestampMs()})
-		if err != nil {
-			m.fatal("append", err) // sizes were checked above, so this is the disk
+	for i, pr := range run {
+		if owner[i] == nil {
+			continue
 		}
-		m.at(fmt.Sprintf("produce:appended:%d", uint64(i)+done+1))
+		for j, sm := range pr.cmd.GetMessages() {
+			if _, err := owner[i].log.Append(storage.Message{Key: sm.GetKey(), Value: sm.GetValue(), Timestamp: sm.GetTimestampMs()}); err != nil {
+				m.fatal("append", err) // sizes were checked above, so this is the disk
+			}
+			m.at(fmt.Sprintf("produce:appended:%d", j+1))
+		}
 	}
-	if err := p.log.Sync(); err != nil {
-		m.fatal("sync partition", err)
+	for _, tg := range targets {
+		if err := tg.p.log.Sync(); err != nil {
+			m.fatal("sync partition", err)
+		}
 	}
-	p.signal() // readers waiting for data on this partition
-	return Result{Partition: int(c.GetPartition()), BaseOffset: start}
+	for _, tg := range targets {
+		tg.p.signal() // readers waiting for data on this partition
+	}
+}
+
+// replayEntry applies an entry of the group that the journal says was begun and may not
+// have finished, after a restart. Raft hands the entries over again, one by one, from
+// the first of the group. For each, the messages that are already in the partition are
+// not appended again: the partition's next offset says how many there are, counted from
+// where the group began. After the last entry of the group the partitions are synced
+// and the group is complete.
+func (m *Machine) replayEntry(e raft.Entry) any {
+	var cmd pb.Command
+	if err := proto.Unmarshal(e.Data, &cmd); err != nil {
+		m.fatal("replay", fmt.Errorf("entry %d, inside a begun group, does not decode: %w", e.Index, err))
+	}
+	c, ok := cmd.Command.(*pb.Command_Produce)
+	if !ok {
+		m.fatal("replay", fmt.Errorf("entry %d is inside a begun group of Produce commands but is not one", e.Index))
+	}
+	if m.replayNext == nil {
+		m.replayNext = make(map[partKey]uint64, len(m.rec.Parts))
+		m.replayTouched = map[partKey]*partition{}
+		for _, jp := range m.rec.Parts {
+			m.replayNext[partKey{jp.Topic, jp.Partition}] = jp.Start
+		}
+	}
+
+	var res any
+	p, err := m.checkProduce(c.Produce)
+	if err != nil {
+		res = Result{Err: err}
+	} else {
+		k := partKey{c.Produce.GetTopic(), c.Produce.GetPartition()}
+		start, known := m.replayNext[k]
+		if !known {
+			m.fatal("replay", fmt.Errorf("entry %d appends to %s/%d, which the journal's group does not", e.Index, k.topic, k.partition))
+		}
+		msgs := c.Produce.GetMessages()
+		have := p.log.NextOffset()
+		if have < start {
+			m.fatal("replay", fmt.Errorf("partition %s/%d holds %d messages, fewer than the %d where the group began", k.topic, k.partition, have, start))
+		}
+		done := min(have-start, uint64(len(msgs)))
+		if done < uint64(len(msgs)) {
+			p.mu.Lock()
+			for _, sm := range msgs[done:] {
+				if _, err := p.log.Append(storage.Message{Key: sm.GetKey(), Value: sm.GetValue(), Timestamp: sm.GetTimestampMs()}); err != nil {
+					p.mu.Unlock()
+					m.fatal("append", err)
+				}
+			}
+			p.mu.Unlock()
+		}
+		m.replayNext[k] = start + uint64(len(msgs))
+		m.replayTouched[k] = p // synced at the end even if nothing was appended: a message
+		// written before the crash may not have reached the disk
+		res = Result{Partition: int(k.partition), BaseOffset: start}
+	}
+
+	if e.Index == m.rec.Index { // the last entry of the group
+		for _, p := range m.replayTouched {
+			if err := p.log.Sync(); err != nil {
+				m.fatal("sync partition", err)
+			}
+			p.signal()
+		}
+		m.replayNext, m.replayTouched = nil, nil
+	}
+	return res
 }
 
 // Snapshot implements raft.StateMachine: the complete state, as a protobuf.
@@ -375,6 +583,7 @@ func (m *Machine) Restore(data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.replayNext, m.replayTouched = nil, nil // whatever was being finished is replaced
 	if err := m.b.reset(); err != nil {
 		return fmt.Errorf("clear the broker state: %w", err)
 	}

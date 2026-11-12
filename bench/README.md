@@ -51,7 +51,12 @@ Windows 11, Go 1.27.3, `raftlogd` built from commit `fa8ab93` (the code under te
 unchanged by the branch that added the benchmark). Three nodes and the client share the
 machine, over the loopback interface. No other test or benchmark was running during the matrix; I only read files while it ran.
 
-### Writing (3 nodes unless stated; value 128 bytes unless stated)
+### Writing before group commit, 9 November (3 nodes unless stated; value 128 bytes unless stated)
+
+This is the first measurement, made on 9 November before ADR 12. The machine was slower that
+day than on 13 November (the same one-node, one-producer scenario gave 158 messages/s then and
+211 on 13 November), so these numbers must not be set next to those of a later day: the
+before-and-after comparison is the one made on a single day, further down.
 
 One run each, 10 s window after 3 s of warm-up, default Raft timings. Results:
 `results/2026-11-09-i7-12700h-windows/produce-*.json`.
@@ -94,11 +99,99 @@ three fsyncs of 0.64 ms. That suggests the journal file replacement (creating an
 file is slow on this file system) and the work around it cost more than the fsyncs do, but it is
 an inference: it needs a profile to be a finding.
 
-Nothing batches: two concurrent requests become two entries, two sets of fsyncs and two journal
-rewrites, applied in order. That is why more producers only add queueing, and why one request
-with many messages (one entry, one set of fsyncs) is so much cheaper per message. Group commit
-(many proposals, one entry or one fsync) and a journal that is not replaced for every entry are
-the obvious improvements, and this table is the baseline to compare them against.
+Nothing batched: two concurrent requests became two entries, two sets of fsyncs and two journal
+rewrites, applied in order. That is why more producers only added queueing, and why one request
+with many messages (one entry, one set of fsyncs) was so much cheaper per message. Group commit
+(ADR 12) was the obvious improvement; its effect is measured below.
+
+A probe made before changing anything gave the split that this paragraph could only guess: on
+the same disk, rewriting the journal alone took 2.5 ms (median) of the 3.2 ms that applying a
+one-message produce took, against 0.64 ms for a bare write and fsync. The guess above, that the
+journal replacement costs more than the fsyncs, was right.
+
+### Group commit (ADR 12), measured on one day
+
+On 13 November the same matrix was run twice back to back on the same machine: once for the
+daemon before group commit (built from the parent commit with `git archive`), once for the
+daemon after it. Results:
+`results/2026-11-13-baseline-before-group-commit-i7-12700h-windows/` and
+`results/2026-11-13-group-commit-final-i7-12700h-windows/`. One run each, 10 s window after
+3 s of warm-up, 3 nodes unless stated.
+
+| Scenario | Before: messages/s (p50 / p99) | After: messages/s (p50 / p99) | Ratio |
+|---|---|---|---|
+| 1 node, 1 producer, 1 message | 211 (4.6 / 8.2 ms) | 240 (3.9 / 7.4 ms) | 1.1 |
+| 1 producer, 1 message | 133 (7.4 / 11.6 ms) | 121 (8.0 / 15.1 ms) | 0.9 |
+| 16 producers, 1 message | 181 (87.2 / 100.5 ms) | 938 (16.5 / 29.1 ms) | 5.2 |
+| 16 producers, 10 messages | 1,702 (93.1 / 105.1 ms) | 8,327 (18.9 / 30.6 ms) | 4.9 |
+| 16 producers, 100 messages | 14,500 (108.6 / 122.5 ms) | 65,280 (21.7 / 38.4 ms) | 4.5 |
+| 16 producers, 100 messages of 1 KiB | 7,790 (200.0 / 230.5 ms) | 9,080 (173.0 / 229.0 ms) | 1.2 |
+| 1 node, 16 producers, 100 messages | 22,470 (70.4 / 85.2 ms) | 76,130 (19.4 / 27.3 ms) | 3.4 |
+
+What it says, and what it does not:
+
+- **With concurrent producers the throughput is 3.4 to 5.2 times higher and the median latency of a
+  request 3.6 to 5.3 times lower**, because the fsyncs, the journal write and the replication
+  round are shared by every request that is queued together. This is the result that the data
+  supports well: it appears in every row with concurrent producers, and in the 5-round
+  comparison below.
+- **A lone producer gains nothing.** With nothing to group, the cost per request is the same. The
+  two single-producer rows differ by +14% (one node) and -9% (three nodes) from a single run each,
+  which is inside the run-to-run variation shown below, so they are no evidence of a gain or a loss.
+- **The 1 KiB row gains least** (1.2 times) and is also the least stable: it gave 19,230
+  messages/s with a p99 of 447 ms in an earlier run on 12 November, and 9,080 here. A group of
+  large requests can reach 4 MiB, so each fsync and each replication message is large. It should
+  not be quoted.
+- The 100-message rows reach 65,000 to 76,000 messages/s, which is about 8 to 10 MB/s of 128-byte
+  values: a laptop disk with a journal replaced once per group, not a figure for a server.
+
+#### The same comparison repeated, and why one run is not enough
+
+Single runs of this machine vary a great deal from day to day and sometimes within a day. Two more
+comparisons were made with `bench/compare.sh`, which runs the two daemons alternately, five
+rounds each, with the order swapped from one round to the next, and reports the median and the
+range (messages/s, 3 nodes, 1 message per request):
+
+| Comparison | Producers | Before: median (min - max) | After: median (min - max) |
+|---|---|---|---|
+| 13 Nov, after = with the direct path of ADR 12 | 1 | 130 (107 - 132) | 131 (113 - 137) |
+| | 16 | 183 (173 - 188) | 921 (893 - 965) |
+| 13 Nov, after = group commit without the direct path | 1 | 121 (95 - 130) | 114 (94 - 132) |
+| | 16 | 162 (125 - 183) | 906 (429 - 928) |
+| 12 Nov, on a noisier day, after = group commit without the direct path | 1 | 92 (84 - 137) | 72 (68 - 78) |
+| | 16 | 125 (108 - 138) | 228 (201 - 408) |
+
+Raw results, with `runs.csv` and `summary.txt` for each (`bench/summarize.sh`):
+`results/2026-11-12-before-after-group-commit/`,
+`results/2026-11-13-before-after-with-direct-path/` and
+`results/2026-11-13-before-after-without-direct-path/`. (A first, two-round comparison made on
+12 November, kept in the history of the repository, disagreed with the earlier single runs in the
+same way and is what led to repeating it with more rounds.)
+
+- On the noisy day the lone producer was 22% slower after the change, in all five rounds, and
+  16 producers gained only 1.8 times. On the quiet day the same two builds were within each other's
+  range with one producer, and 16 producers gained 5.0 to 5.6 times. The gain with concurrent
+  producers is real but its size depends on the state of the machine; the loss with one producer
+  appeared only on the noisy day.
+- The direct path (a lone caller appends its own proposal without handing it to another
+  goroutine) was added after the noisy-day result. It is correct and removes two goroutine
+  hand-offs per request, but the quiet-day comparison does not show that it was needed, so this
+  document does not claim it was the cause of the noisy-day difference.
+
+#### Failover is unchanged
+
+Same ten-round measurement as above, 13 November, before and after. Leader visible / first
+write acknowledged after the kill, median:
+
+| Raft timings | Before | After |
+|---|---|---|
+| default (election timeout 1.0 to 2.0 s) | 1,225 / 1,267 ms | 1,254 / 1,278 ms |
+| tick 20 ms (election timeout 0.2 to 0.4 s) | 253 / 428 ms | 190 / 210 ms |
+
+No acknowledged write was missing from any of the three nodes in any of the four runs (6,530
+and 6,252 acknowledged before, 6,768 and 5,664 after). The default-timings medians are the
+same within the noise. The fast-timings first-write median is lower after, but the "before"
+run had one slow round of 0.9 s, and with ten rounds this should not be read as an improvement.
 
 ### Failover
 
