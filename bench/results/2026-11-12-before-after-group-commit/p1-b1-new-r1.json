@@ -10,7 +10,7 @@
   },
   "produce": {
     "config": {
-      "topic": "bench-dmtdrtgxio24",
+      "topic": "bench-dmtdvc6fnlic",
       "partitions": 3,
       "producers": 1,
       "message_size_bytes": 128,
@@ -19,22 +19,22 @@
       "duration_ns": 8000000000,
       "request_timeout_ns": 15000000000
     },
-    "requests": 641,
-    "messages": 641,
-    "bytes": 82048,
+    "requests": 609,
+    "messages": 609,
+    "bytes": 77952,
     "elapsed_ns": 8000000000,
     "errors": 0,
     "latency": {
-      "count": 641,
-      "min_ns": 7848200,
-      "mean_ns": 12475454,
-      "p50_ns": 11968200,
-      "p95_ns": 17116100,
-      "p99_ns": 22413700,
-      "max_ns": 32479900
+      "count": 609,
+      "min_ns": 7656500,
+      "mean_ns": 13104877,
+      "p50_ns": 12429100,
+      "p95_ns": 19267400,
+      "p99_ns": 25238100,
+      "max_ns": 36645300
     },
-    "messages_per_sec": 80.125,
-    "megabytes_per_sec": 0.010256
+    "messages_per_sec": 76.125,
+    "megabytes_per_sec": 0.009744
   },
   "messages_in_topic_afterwards": 0
 }

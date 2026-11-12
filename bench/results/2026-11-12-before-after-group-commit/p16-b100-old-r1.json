@@ -10,7 +10,7 @@
   },
   "produce": {
     "config": {
-      "topic": "bench-dmtdsmali25c",
+      "topic": "bench-dmtdw4y5ufwg",
       "partitions": 3,
       "producers": 16,
       "message_size_bytes": 128,
@@ -19,22 +19,22 @@
       "duration_ns": 8000000000,
       "request_timeout_ns": 15000000000
     },
-    "requests": 920,
-    "messages": 92000,
-    "bytes": 11776000,
+    "requests": 878,
+    "messages": 87800,
+    "bytes": 11238400,
     "elapsed_ns": 8000000000,
     "errors": 0,
     "latency": {
-      "count": 920,
-      "min_ns": 99985700,
-      "mean_ns": 136660256,
-      "p50_ns": 131791300,
-      "p95_ns": 186605000,
-      "p99_ns": 200610500,
-      "max_ns": 208098100
+      "count": 878,
+      "min_ns": 121845900,
+      "mean_ns": 143091333,
+      "p50_ns": 142179500,
+      "p95_ns": 159013600,
+      "p99_ns": 178930200,
+      "max_ns": 186091100
     },
-    "messages_per_sec": 11500,
-    "megabytes_per_sec": 1.472
+    "messages_per_sec": 10975,
+    "megabytes_per_sec": 1.4048
   },
   "messages_in_topic_afterwards": 0
 }

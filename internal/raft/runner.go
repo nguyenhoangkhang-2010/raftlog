@@ -105,7 +105,6 @@ type waiter struct {
 const (
 	proposeBatchMaxEntries = 256
 	proposeBatchMaxBytes   = 4 << 20
-	proposeQueueSize       = 1024
 )
 
 // proposal is one Propose call handed to the proposer goroutine.
@@ -143,7 +142,13 @@ type Runner struct {
 	waiters    map[uint64]*waiter // by log index
 	halted     bool
 
-	proposals chan *proposal // from Propose calls to the proposer goroutine
+	// Proposals wait here for the proposer goroutine when another one is being made
+	// durable (see ProposeResult). Guarded by proposeMu, not mu: callers must be able to
+	// queue while the node is busy appending, which holds mu.
+	proposeMu  sync.Mutex
+	pending    []*proposal
+	committing bool          // a group is being appended right now, by a caller or the proposer
+	wake       chan struct{} // tells the proposer goroutine that pending has something
 
 	applier       func(Entry)
 	sm            StateMachine
@@ -185,7 +190,7 @@ func NewRunner(cfg Config, tr Transport, tickInterval time.Duration, opts ...Run
 	r := &Runner{
 		node:        node,
 		waiters:     make(map[uint64]*waiter),
-		proposals:   make(chan *proposal, proposeQueueSize),
+		wake:        make(chan struct{}, 1),
 		tr:          tr,
 		tick:        tickInterval,
 		sendTimeout: tickInterval * time.Duration(cfg.ElectionTicks), // never outlive an election timeout
@@ -320,19 +325,34 @@ func (r *Runner) Propose(ctx context.Context, data []byte) (uint64, error) {
 //
 // Proposals that arrive while the node is busy making an earlier one durable are
 // appended to the log together, with one fsync (see proposeLoop). A caller never waits
-// for others to arrive: with nothing queued, its command goes in at once.
+// for others to arrive. With nothing queued and nothing being appended, the caller appends
+// its own command at once, in its own goroutine, exactly as if there were no grouping: a
+// lone producer pays nothing for the others it does not have.
 func (r *Runner) ProposeResult(ctx context.Context, data []byte) (uint64, any, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
+	select {
+	case <-r.stop:
+		return 0, nil, ErrStopped
+	default:
+	}
 	p := &proposal{
 		data: data,
 		w:    &waiter{done: make(chan waitResult, 1)},
 		ack:  make(chan proposeAck, 1),
 	}
-	select {
-	case r.proposals <- p:
-	case <-ctx.Done():
-		return 0, nil, ctx.Err()
-	case <-r.stop:
-		return 0, nil, ErrStopped
+
+	r.proposeMu.Lock()
+	if !r.committing && len(r.pending) == 0 {
+		r.committing = true
+		r.proposeMu.Unlock()
+		r.propose([]*proposal{p})
+		r.doneCommitting()
+	} else {
+		r.pending = append(r.pending, p)
+		r.proposeMu.Unlock()
+		r.wakeProposer()
 	}
 
 	// Once queued, the command may be proposed even if ctx ends first, like a proposal
@@ -372,26 +392,64 @@ func (r *Runner) ProposeResult(ctx context.Context, data []byte) (uint64, any, e
 func (r *Runner) proposeLoop() {
 	defer r.wg.Done()
 	for {
-		var batch []*proposal
 		select {
 		case <-r.stop:
 			return
-		case p := <-r.proposals:
-			batch = append(batch, p)
+		case <-r.wake:
 		}
-		size := len(batch[0].data)
-	drain:
-		for len(batch) < proposeBatchMaxEntries && size < proposeBatchMaxBytes {
-			select {
-			case p := <-r.proposals:
-				batch = append(batch, p)
-				size += len(p.data)
-			default:
-				break drain
+		for {
+			r.proposeMu.Lock()
+			if r.committing || len(r.pending) == 0 {
+				// Either nothing is waiting, or a caller is appending its own proposal and
+				// will wake this goroutine when it is done (doneCommitting).
+				r.proposeMu.Unlock()
+				break
 			}
+			n, size := 0, 0
+			for n < len(r.pending) && n < proposeBatchMaxEntries && (n == 0 || size < proposeBatchMaxBytes) {
+				size += len(r.pending[n].data)
+				n++
+			}
+			batch := append([]*proposal(nil), r.pending[:n]...)
+			r.pending = append(r.pending[:0], r.pending[n:]...)
+			r.committing = true
+			r.proposeMu.Unlock()
+
+			r.propose(batch)
+
+			r.proposeMu.Lock()
+			r.committing = false
+			r.proposeMu.Unlock()
 		}
-		r.propose(batch)
 	}
+}
+
+// doneCommitting ends the append a caller made for itself, and hands whatever queued up
+// meanwhile to the proposer goroutine.
+func (r *Runner) doneCommitting() {
+	r.proposeMu.Lock()
+	r.committing = false
+	more := len(r.pending) > 0
+	r.proposeMu.Unlock()
+	if more {
+		r.wakeProposer()
+	}
+}
+
+// wakeProposer tells the proposer goroutine to look at the queue. A wake-up that is
+// already pending is enough.
+func (r *Runner) wakeProposer() {
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+// queued is how many proposals wait for the proposer.
+func (r *Runner) queued() int {
+	r.proposeMu.Lock()
+	defer r.proposeMu.Unlock()
+	return len(r.pending)
 }
 
 // propose appends one group of proposals as consecutive entries and answers each.

@@ -231,7 +231,7 @@ func TestProposalsThatQueueWhileTheLogIsBusyAreAppendedTogether(t *testing.T) {
 	// when it was taken, at least one; everything else waits in the queue.
 	waitFor(t, "the rest of the proposals to queue", func() bool {
 		calls, entries := log.counts()
-		return calls-callsBefore == 1 && len(r.proposals) == n-(entries-entriesBefore)
+		return calls-callsBefore == 1 && r.queued() == n-(entries-entriesBefore)
 	})
 	release()
 	finished := <-done

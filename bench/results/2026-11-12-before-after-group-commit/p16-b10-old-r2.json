@@ -10,7 +10,7 @@
   },
   "produce": {
     "config": {
-      "topic": "bench-dmtdtkslfw80",
+      "topic": "bench-dmtdx96900lk",
       "partitions": 3,
       "producers": 16,
       "message_size_bytes": 128,
@@ -19,22 +19,22 @@
       "duration_ns": 8000000000,
       "request_timeout_ns": 15000000000
     },
-    "requests": 924,
-    "messages": 9240,
-    "bytes": 1182720,
+    "requests": 815,
+    "messages": 8150,
+    "bytes": 1043200,
     "elapsed_ns": 8000000000,
     "errors": 0,
     "latency": {
-      "count": 924,
-      "min_ns": 109480600,
-      "mean_ns": 136358287,
-      "p50_ns": 132295400,
-      "p95_ns": 167404400,
-      "p99_ns": 185996600,
-      "max_ns": 195735000
+      "count": 815,
+      "min_ns": 106352200,
+      "mean_ns": 154454722,
+      "p50_ns": 152357800,
+      "p95_ns": 210707700,
+      "p99_ns": 260539200,
+      "max_ns": 280254600
     },
-    "messages_per_sec": 1155,
-    "megabytes_per_sec": 0.14784
+    "messages_per_sec": 1018.75,
+    "megabytes_per_sec": 0.1304
   },
   "messages_in_topic_afterwards": 0
 }
