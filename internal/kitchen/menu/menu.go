@@ -258,6 +258,16 @@ func (m *Menu) Items() []Item {
 	return out
 }
 
+// Combos returns the combos, sorted by ID.
+func (m *Menu) Combos() []Combo {
+	out := make([]Combo, 0, len(m.combos))
+	for _, c := range m.combos {
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // Categories returns the categories in use, sorted.
 func (m *Menu) Categories() []string {
 	seen := map[string]bool{}

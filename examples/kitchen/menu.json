@@ -1,0 +1,67 @@
+{
+  "items": [
+    {
+      "id": "ca-phe-sua",
+      "name": "Cà phê sữa đá",
+      "category": "drinks",
+      "station": "drinks",
+      "price": 29000,
+      "recipe": { "coffee-beans": 18, "condensed-milk": 30, "ice": 100 },
+      "groups": [
+        {
+          "id": "size", "name": "Size", "min": 1, "max": 1,
+          "options": [
+            { "id": "m", "name": "Medium" },
+            { "id": "l", "name": "Large", "delta": 8000, "recipe": { "coffee-beans": 6, "condensed-milk": 10, "ice": 50 } }
+          ]
+        },
+        {
+          "id": "ice", "name": "Ice", "min": 0, "max": 1,
+          "options": [
+            { "id": "less-ice", "name": "Less ice" },
+            { "id": "no-ice", "name": "No ice" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tra-dao",
+      "name": "Trà đào",
+      "category": "drinks",
+      "station": "drinks",
+      "price": 35000,
+      "recipe": { "tea-leaves": 5, "peach-syrup": 40, "ice": 100 },
+      "time_prices": [
+        { "days": ["mon", "tue", "wed", "thu", "fri"], "from": "15:00", "to": "17:00", "price": 29000 }
+      ]
+    },
+    {
+      "id": "banh-mi",
+      "name": "Bánh mì thịt",
+      "category": "food",
+      "station": "hot",
+      "price": 25000,
+      "recipe": { "baguette": 1, "pate": 20, "cucumber": 15 }
+    },
+    {
+      "id": "banh-mi-trung",
+      "name": "Bánh mì trứng",
+      "category": "food",
+      "station": "hot",
+      "price": 30000,
+      "recipe": { "baguette": 1, "egg": 1 }
+    }
+  ],
+  "combos": [
+    {
+      "id": "combo-sang",
+      "name": "Combo sáng",
+      "price": 45000,
+      "slots": [
+        { "name": "Drink", "items": ["ca-phe-sua", "tra-dao"] },
+        { "name": "Food", "items": ["banh-mi", "banh-mi-trung"] }
+      ]
+    }
+  ],
+  "low_at": { "coffee-beans": 200, "baguette": 10, "egg": 6 }
+}

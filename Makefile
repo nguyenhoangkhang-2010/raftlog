@@ -10,6 +10,7 @@ build:
 	go build -o $(BIN_DIR)/wrsim ./cmd/wrsim
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogconsole ./cmd/raftlogconsole
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogbench ./cmd/raftlogbench
+	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/orderservice ./cmd/orderservice
 
 test:
 	go test -race -count=1 -short ./...
@@ -29,7 +30,7 @@ bench: # micro-benchmarks; the cluster benchmark is bench/run-matrix.sh
 	go test -run '^$$' -bench . -benchmem ./...
 
 chaos:
-	go test -race -count=1 -v ./test/chaos/... ./cmd/raftlogconsole/... ./cmd/raftlogbench/...
+	go test -race -count=1 -v ./test/chaos/... ./cmd/raftlogconsole/... ./cmd/raftlogbench/... ./cmd/orderservice/...
 
 up:
 	docker compose -f deploy/docker-compose.yml up --build

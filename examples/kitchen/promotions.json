@@ -1,0 +1,20 @@
+[
+  {
+    "id": "hello10",
+    "name": "10% off a first order",
+    "kind": "percent_off",
+    "percent_bp": 1000,
+    "max_discount": 20000,
+    "code": "HELLO10",
+    "single_use": true
+  },
+  {
+    "id": "third-drink-free",
+    "name": "Buy 2 drinks, the third is free",
+    "kind": "buy_x_get_y",
+    "scope": { "categories": ["drinks"] },
+    "buy": 2,
+    "free": 1,
+    "priority": 1
+  }
+]
