@@ -5,7 +5,8 @@
 #
 # One run of each scenario, on this machine, with the nodes on the same machine as the
 # client. Close other programs first: the figures are only as quiet as the machine.
-# Environment: BIN_DIR (where raftlogbench and raftlogd were built, default ./bin),
+# Environment: BIN_DIR (where raftlogbench and raftlogd were built, default ./bin), RAFTLOGD (a
+# different daemon to measure, for example the build before a change),
 # DURATION and WARMUP (the measured window and the warm-up of each write run).
 set -euo pipefail
 
@@ -16,7 +17,7 @@ warmup="${WARMUP:-3s}"
 exe=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe=".exe" ;; esac
 bench="$bin_dir/raftlogbench$exe"
-daemon="$bin_dir/raftlogd$exe"
+daemon="${RAFTLOGD:-$bin_dir/raftlogd$exe}"
 
 if [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
   echo "$out is not empty; choose a new directory so that results are never mixed" >&2

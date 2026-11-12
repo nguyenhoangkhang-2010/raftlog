@@ -1,0 +1,63 @@
+{
+  "environment": {
+    "tool": "raftlogbench dev",
+    "go_version": "go1.27.3",
+    "goos": "windows",
+    "goarch": "amd64",
+    "cpus": 20,
+    "nodes": 1,
+    "nodes_started_by_the_tool": true
+  },
+  "produce": {
+    "config": {
+      "topic": "bench-dmtekojdkmyk",
+      "partitions": 3,
+      "producers": 16,
+      "message_size_bytes": 128,
+      "batch": 100,
+      "warmup_ns": 3000000000,
+      "duration_ns": 10000000000,
+      "request_timeout_ns": 15000000000
+    },
+    "requests": 2247,
+    "messages": 224700,
+    "bytes": 28761600,
+    "elapsed_ns": 10000000000,
+    "errors": 0,
+    "latency": {
+      "count": 2247,
+      "min_ns": 58819200,
+      "mean_ns": 70665894,
+      "p50_ns": 70369600,
+      "p95_ns": 79975800,
+      "p99_ns": 85212900,
+      "max_ns": 95037900
+    },
+    "messages_per_sec": 22470,
+    "megabytes_per_sec": 2.87616
+  },
+  "fetch": {
+    "config": {
+      "topic": "bench-dmtekojdkmyk",
+      "partitions": 3,
+      "limit": 500,
+      "request_timeout_ns": 15000000000
+    },
+    "requests": 584,
+    "messages": 291600,
+    "bytes": 37324800,
+    "elapsed_ns": 178186600,
+    "latency": {
+      "count": 584,
+      "min_ns": 509800,
+      "mean_ns": 837173,
+      "p50_ns": 1035600,
+      "p95_ns": 1125800,
+      "p99_ns": 1598100,
+      "max_ns": 1641400
+    },
+    "messages_per_sec": 1636486.6942856533,
+    "megabytes_per_sec": 209.47029686856362
+  },
+  "messages_in_topic_afterwards": 291600
+}

@@ -27,12 +27,19 @@ Two groupings, with the same rule in both: **never wait to fill a group.** Whate
 queued when the worker is free goes together; with nothing queued, a group is one item and
 nothing is delayed.
 
-1. **Proposals.** `Runner.ProposeResult` no longer appends to the log itself. It hands the
-   command to a proposer goroutine, which takes the first waiting proposal and every other one
-   already queued (up to 256 or 4 MiB), appends them as consecutive entries with one fsync
-   (`Node.ProposeBatch`), and sends them to the followers in one round. Each caller is answered
-   with its own log index and its own outcome. While the proposer is busy with one group, the next
-   one builds up.
+1. **Proposals.** When nothing is queued and no append is under way, `Runner.ProposeResult`
+   appends the caller's own command at once, in the caller's goroutine, as before grouping
+   existed. When an append is under way, new proposals wait in a queue (guarded by its own mutex,
+   because the node's main lock is held during the fsync). The proposer goroutine then takes every
+   queued proposal (up to 256 or 4 MiB), appends them as consecutive entries with one fsync
+   (`Node.ProposeBatch`), and sends them to the followers in one round. A caller that appended for
+   itself wakes the proposer if proposals queued meanwhile. Each caller is answered with its own log
+   index and its own outcome. While one group is appended, the next one builds up.
+   The first version always went through the proposer goroutine. That added two goroutine
+   hand-offs to every request; measured on a noisy day a lone producer was about 20% slower, and
+   on a quiet day the difference was within the noise (see bench/README.md). The direct path is
+   kept because it removes those hand-offs when there is nothing to group, but the measurements do
+   not prove that it was needed.
 2. **Applying.** A state machine that implements `BatchStateMachine` is given consecutive
    committed entries together, in groups of up to 256 entries. A group never runs past the entry
    at which a snapshot falls due, so snapshots are taken at the same indexes as before. The
@@ -69,8 +76,17 @@ looks at every partition of the group).
 - **Per-partition Raft groups** (ADR 4) spread the load across leaders and are a far larger change.
 
 ## Consequences
-- Concurrent producers now share fsyncs, journal writes and replication rounds. The measurements
-  are in bench/README.md and the raw results in `bench/results/`.
+- Concurrent producers now share fsyncs, journal writes and replication rounds. Measured on one
+  day on the test laptop (bench/README.md, raw results in `bench/results/`), 3 nodes, one run each,
+  before against after: 16 producers sending 1 message per request 181 against 938 messages/s,
+  with 10 messages 1,702 against 8,327, with 100 messages 14,500 against 65,280; the median latency
+  of a request fell from 87 to 17 ms in the first case. A repeated comparison, five rounds with
+  the order of the builds alternated, gave 183 (173 - 188) against 921 (893 - 965) messages/s for
+  the first case. The size of the gain depends on the state of the machine: on a noisier day the
+  same comparison gave 125 against 228.
+- A group of large requests (100 messages of 1 KiB) is the least stable case, between 7,790 and
+  19,230 messages/s in the runs made, and its p99 reached 447 ms once; a group can hold up to
+  4 MiB. The group limit is a possible thing to tune; it was not tuned.
 - A caller is answered when the whole group it was applied in is durable, so the first request of
   a group waits for the last. Under load that is the price of the shared fsyncs, and it is far
   smaller than the queueing it replaces.

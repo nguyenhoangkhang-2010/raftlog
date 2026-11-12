@@ -65,6 +65,7 @@ cluster acknowledged is there. [docs/observability.md](docs/observability.md) de
 - [x] Demo application: a virtual waiting room for course registration, whose whole state is two raftlog topics ([docs/waitingroom.md](docs/waitingroom.md))
 - [ ] Kitchen system (orders, stations, till) on raftlog: the domain core is done (`internal/kitchen`), the service, database and screens are next ([docs/kitchen](docs/kitchen/README.md))
 - [x] Benchmark tool (`raftlogbench`): write throughput and latency, and failover time with a check of every node's log; measured results and their limits in [bench/README.md](bench/README.md)
+- [x] Group commit: requests that arrive together share their fsyncs, the journal write and the replication round, 3.4 to 5.2 times the throughput with 16 concurrent producers on the test laptop ([ADR 12](docs/adr/0012-group-commit.md))
 - [x] Prometheus metrics (`-metrics-listen`), `raftlogctl topics` and `groups`, and a cluster console that kills nodes, writes under load and verifies that no acknowledged write was lost ([docs/observability.md](docs/observability.md))
 - [x] Raft pre-vote and check-quorum (on by default): a node that cannot hear the leader no longer forces an election, and a cut-off leader steps down ([ADR 10](docs/adr/0010-pre-vote-and-check-quorum.md))
 - [ ] Grafana dashboard
@@ -138,8 +139,8 @@ anyone their place; `cmd/wrsim` simulates the crowd. See
 tests prove and what a measured run looked like.
 
 ## Known limitations
-- Write throughput is low and bounded per request (see Results): no group commit, so
-  concurrent producers queue behind each other.
+- A lone producer is bound by the cost of one request (about 6 ms with one node, 8 to 11 ms with three on the test laptop): requests that arrive together share their fsyncs (group commit, ADR 12), but one at a time they do not, and
+  every write still waits for an fsync of the Raft log on the leader and on a follower.
 - One Raft group for the whole cluster: every write goes through a single leader.
 - A snapshot is a copy of all data held in memory and sent in one message
   (`-max-message-bytes`), so the data set is bounded.
@@ -151,23 +152,32 @@ tests prove and what a measured run looked like.
 
 ## Results
 Measured with `raftlogbench` on one laptop (Intel i7-12700H, NVMe SSD, Windows 11), three real
-`raftlogd` processes and the client on the same machine, one run each. These are not production
-figures; the method, the limits and the raw output are in [bench/README.md](bench/README.md).
+`raftlogd` processes and the client on the same machine. These are not production figures. The
+laptop is faster on some days than on others, so the before-and-after figures below were made
+back to back on one day (13 November), one run each; the method, the repeated comparisons, the
+limits and the raw output are in [bench/README.md](bench/README.md).
 
-| What | Result |
+| What (3 nodes, 128-byte values) | Before group commit | After group commit |
+|---|---|---|
+| 16 producers, 1 message per request | 181 messages/s, p50 87 ms, p99 101 ms | 938 messages/s, p50 17 ms, p99 29 ms |
+| 16 producers, 10 messages per request | 1,702 messages/s | 8,327 messages/s |
+| 16 producers, 100 messages per request | 14,500 messages/s (1.9 MB/s), p50 109 ms | 65,280 messages/s (8.4 MB/s), p50 22 ms |
+| One producer, 1 message per request | 133 messages/s | 121 messages/s (no change within the noise) |
+
+| Failover (leader killed 10 times, 13 November, after group commit) | Result |
 |---|---|
-| Writes, 3 nodes, 1 message per request, 16 producers | 178 messages/s, request latency p50 88.9 ms, p99 104.9 ms |
-| Writes, 3 nodes, 100 messages per request, 16 producers | 13,850 messages/s (1.8 MB/s of 128-byte values), p50 112.6 ms, p99 155.0 ms |
-| One producer, 1 message per request | 90 messages/s on 3 nodes, 158 on 1 node |
-| Leader killed (10 times, default Raft timings of 1 to 2 s) | new leader visible after a median of 1.24 s (0.91 to 1.77 s); first write acknowledged again after a median of 1.28 s |
-| Leader killed (10 times, timings five times shorter) | median 0.20 s (0.15 to 0.27 s); first write after a median of 0.23 s |
-| Acknowledged writes missing from any node's log after those 20 kills | 0 (of 11,613 acknowledged) |
+| default Raft timings (election timeout 1 to 2 s) | new leader visible after a median of 1.25 s; first write acknowledged again after a median of 1.28 s |
+| timings five times shorter | median 0.19 s and 0.21 s |
+| Acknowledged writes missing from any node's log | 0 (every run, on all three nodes) |
 
-**The write path is slow, and the benchmark says why.** A request costs about 6 ms with one node
-and 11 ms with three, whatever the number of producers, because every request is its own Raft
-entry with its own fsyncs and journal rewrite, applied one at a time. Sending many messages per
-request is the only thing that helps today. Group commit is the obvious next step
-([design.md](docs/design.md), section 9).
+**Group commit** ([ADR 12](docs/adr/0012-group-commit.md)) lets requests that arrive together share
+their fsyncs, the journal write and the replication round. With sixteen concurrent producers it
+raised throughput 3.4 to 5.2 times and lowered the median latency of a request 3.6 to 5.3 times,
+and a repeated five-round comparison agrees (5.0 to 5.6 times for 1 message per request). A lone
+producer gains nothing: it still pays about 6 ms with one node and 8 to 11 ms with three for every
+request, which is the figure that only a faster disk or a cheaper journal would lower. One result
+is not reliable and is not quoted: a group of large requests (100 messages of 1 KiB) varied from
+7,790 to 19,230 messages/s between runs.
 
 ## Design decisions and trade-offs
 See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
