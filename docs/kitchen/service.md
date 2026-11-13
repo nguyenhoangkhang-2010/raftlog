@@ -152,6 +152,60 @@ There are `stock` events too (`{"offset": n}`), keep-alive comments when idle, a
 and reconnect. The token goes in the `Authorization` header, so a browser reads the stream with
 `fetch`, not `EventSource` (which cannot set it).
 
+## The screens
+
+Open `http://127.0.0.1:8100/` in a browser. The service itself serves the screens, so there is
+nothing else to run or install. The page asks for a token (the ones in `users.json`) and shows
+the screens that the person's roles allow; it keeps the token in `sessionStorage` of that tab,
+so closing the tab signs out.
+
+| Screen | Who | What it does |
+|---|---|---|
+| **Order** | customer; cashier (at the counter, with an optional customer ID) | the menu with today's prices, options and combos, a cart, a promotion code, then "Place order". The price shown while choosing is an estimate: the total and any offer come from the service when the order is placed |
+| **My orders** | customer | their orders with a live status, a note when the order is ready, "Cancel" before payment and "Ask to cancel" after |
+| **Till** | cashier, runner | three columns: to pay, in the kitchen, ready to hand over. Payment by cash (with the change, and quick amounts), card or transfer (with a reference); "Hand over" |
+| **Kitchen** | kitchen, for their own station | what is waiting and what is being made, with customer notes. When a cancellation is waiting for the manager, "Done" is held back and the card says so |
+| **Manager** | manager | the day's counts and money (taken, refunded, net), cancellation requests with the refund that the rules allow (from 0 to the total once work began, the whole total before), refunds for completed orders, and a lookup of one order's audit trail |
+| **Stock** | storekeeper (receive, write off, count); kitchen and manager (look) | the quantity of each ingredient, flagged when low or out |
+
+How it is built, and why it can be trusted with what customers type:
+
+- **Four static files, an icon and two fonts, embedded in the program** (`internal/orderservice/web`):
+  no framework, no build step, no network request to anywhere else, so the screens work on a
+  venue's network without the internet. They are served with `ETag` and `Cache-Control: no-cache`,
+  so a new version of the service is picked up at once.
+- **A strict content security policy**: `default-src 'none'` with only the service's own script, style,
+  font, icon and connections allowed, no inline script or style, no frames. A customer's note appears on
+  the kitchen's screen, so the code puts all data on the page as text (`textContent`), never as
+  HTML; a test fails the build if the scripts use `innerHTML`, `eval` and the like, and another
+  if the page has an inline script or style.
+- **The look is a canteen ticket**: warm paper and ink-black rules in the light scheme, chalk on a
+  dark board in the dark one; hard offset shadows, buttons that press down onto the page, order
+  cards cut like tickets with a dashed tear line, and the status stamped on them (the stamp is
+  struck again only when the status changes). Names and text are in Bricolage Grotesque, numbers,
+  money and labels in Space Mono; the files, their sources and their licence (SIL OFL 1.1) are in
+  [`web/fonts/README.md`](../../internal/orderservice/web/fonts/README.md). Only the status stamp,
+  a card that newly appears, a toast, the live dot and a late ticket's blinking frame move, and
+  none of it moves for people who ask the system for less motion. The colours are tokens at the
+  top of `web/app.css`: changing the look is changing that file.
+- **Live without polling**: the screen reads the state, then listens to `GET /api/stream` (with
+  `fetch`, because `EventSource` cannot send the token) and asks again for what changed. It
+  reconnects with a growing pause, treats 45 seconds of silence as a dead connection, and refreshes
+  every 20 seconds anyway. The pill in the header says whether it is live, reconnecting or off.
+- **A command is never done twice**: every button makes a `command_id` and keeps it until the
+  answer arrives, so pressing again after a timeout repeats the same command.
+- **The logic is testable**: the rules of the screens that are not drawing (money formats, the
+  option rules, the cart's body, which orders belong in which column, the refund policy) are in
+  `web/logic.js`, covered by `node --test internal/orderservice/web/logic.test.js`. `go test`
+  runs them too when `node` is installed, and skips them with a message when it is not.
+
+What was checked in a real browser (Chromium in the desktop app): each screen above, with the
+sample users, on a three-node cluster; a customer's order paid in another tab appearing in the
+first without a reload; a note containing `<b>` shown as text; the refund above the total refused;
+numbers continuing after a restart of the service; dark and light schemes; a phone-width viewport
+with no horizontal scroll. It was one person clicking, not a test suite: there are no automated
+browser tests yet.
+
 ## How it works, and what to know
 
 - **The log.** One topic with one partition, so the log gives one order to everything. Each
@@ -181,5 +235,6 @@ and reconnect. The token goes in the `Authorization` header, so a browser reads 
 ## What is not here
 
 A login and accounts (the users file stands in), shifts and reports, editing the menu without a
-restart, several writers or read-only replicas, snapshots of the state, and the screens. The
-screens, and a test that kills the cluster's leader at the lunch rush, are the next branches.
+restart, several writers or read-only replicas, snapshots of the state, automated browser tests of
+the screens, and a printed receipt or a display for customers waiting. A language other than
+English on the screens is not done either: the text is in the files, in one place each.

@@ -7,7 +7,7 @@ storekeeper. Its orders are a stream of events, which is what a replicated log i
 
 This page describes the **domain core** (`internal/kitchen/...`): the rules, with no
 database, network or screen. The service that puts them on raftlog is described in
-[service.md](service.md); the screens come in the next branches (see the end).
+[service.md](service.md), which also describes the screens that it serves to a browser.
 
 ## The packages
 
@@ -85,11 +85,11 @@ that worked is not reported as forbidden.
 ## Not here yet
 
 The service is done in a reduced form ([service.md](service.md)): events in one topic, roles
-enforced at the API, the menu, promotions and users read from files. Still to come, in this
-order: a test that kills the cluster's leader and the service while orders are taken at a
-rush; the screens for the customer, the till, the kitchen and the manager, and the inventory
-screens. Left out on purpose: a database, accounts and login, shifts, and editing the menu without
-a restart.
+enforced at the API, the menu, promotions and users read from files, and the screens for the
+customer, the till, the kitchen, the manager and the storekeeper, served by the service itself.
+Not done: automated tests that drive the screens in a browser (they were checked by hand), a
+display for customers who are waiting, and printed receipts. Left out on purpose: a database,
+accounts and login, shifts, and editing the menu without a restart.
 
 The menu used in the tests, and the sample files in `examples/kitchen`, are invented. Real
 menus are files that the venue provides.
