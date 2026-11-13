@@ -34,11 +34,20 @@ lost, and what the service stores besides the log.
   ID of the event. The first order is "ord-" plus the ID of the command that placed it. A repeat
   is recognised by the core (`Apply` ignores an event it has seen) and by the service (which
   returns the order that exists), so a client that times out can send the same command again.
-- **A write with an unknown outcome marks the state stale.** If the log fails to answer, the
-  command may or may not be stored. The service answers `503`, and before the next command it reads
-  the log to the end. If a node that is itself behind answers that read, the command may be decided
-  again and written a second time; the duplicate event has the same ID and is ignored when applied,
-  and the stock is not taken twice.
+- **The state is made complete with a barrier before anything is decided on it.** A read of a
+  raftlog cluster may be answered by a node that has not caught up, so reading the log to its end
+  says nothing about whether everything is there. After it starts, and after a write whose outcome
+  it did not learn, the service writes a barrier record (it changes nothing) and reads until it sees
+  its own barrier. Everything written before the barrier, by this service or by its earlier self, is
+  then in the state, and the next decision is made on state that is current. The first version
+  of this ADR relied on a plain read, and the chaos test of the service found the consequence:
+  after a restart that read a node which was behind, two orders had the same number. A write whose
+  outcome was unknown is answered `503` and can be sent again with the same command ID; a background
+  loop (`Reconcile`) makes the state complete again without waiting for the next command.
+- **A record that was decided on state that was not current is not acknowledged.** The service
+  applies its own record in the order of the log, and if it does not fit (the stock was taken by a
+  payment it had not seen, say) the answer is `409`, not a success. The record stays in the log,
+  is skipped by every reader alike, and is counted.
 - **Records that do not fit are skipped, counted and reported, never fatal.** A garbled record,
   an event for an order that does not exist, a payment that the order cannot take: every reader
   skips them in the same way, so readers stay in step and no order becomes impossible (the core
@@ -60,7 +69,9 @@ lost, and what the service stores besides the log.
 - The service is thin and its state is disposable. The durability and the failover of the
   orders are the cluster's: a test starts real nodes, takes orders, restarts the service,
   kills the cluster's leader in the middle of taking orders and paying, and rebuilds the state in
-  a third service.
+  a third service. A chaos test (`test/chaos`, "Kitchen scenarios") does it at random, with many
+  clients, the service killed every second or two and the nodes of the cluster killed and cut off
+  from each other, and checks every promise against the log.
 - Starting reads the whole log, so the start takes longer as the history grows. Snapshots of the
   service's state would bound it and are not done.
 - One writer is a single point of failure for commands (reads of the log still work). A standby

@@ -345,3 +345,7 @@ func (s *Service) Stock(actor rbac.Actor) (StockView, error) {
 	defer s.mu.RUnlock()
 	return s.stockView(), nil
 }
+
+// ViewOf is the API view of an order, for tools that build a State themselves (a test that
+// reads the raw log, say) and want to compare it with what the service says.
+func ViewOf(o *order.Order) OrderView { return viewOf(o) }

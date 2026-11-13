@@ -141,3 +141,71 @@ election, although the cluster was fine. Safety holds (nothing was lost), but
 availability drops. Raft's *pre-vote* and *check-quorum* extensions address this,
 and have been implemented and are on by default (ADR 10); the numbers in the table above
 are from before that. The hardening scenarios above show the effect directly.
+
+## Kitchen scenarios
+The kitchen service (`cmd/orderservice`, ADR 13) is a real application of the cluster: its state
+is the events in one topic. `orders_test.go` runs it as a **real process** next to the cluster, with
+many clients that take orders through their whole lives, while the service is killed every second or
+two and the nodes are killed or cut off from each other. The clients are the till, the kitchen
+stations, the runner, the manager and customers in the app, from the sample users of
+`examples/kitchen`. Each order is one of: paid and handed over; cancelled before it was paid; paid and
+cancelled before any station started (the ingredients go back); paid, a station started, and a
+cancellation approved with part of the money back; or a cancellation that the manager rejects and
+the order goes on. Every command has an ID, and a command that gets no answer is sent again with the
+same ID until the client gives up.
+
+After the faults the checker (`ordercheck.go`) compares the history with the state read three ways:
+from the service that ran through the faults, from a new service started afterwards, and built by the
+test itself from the raw log. It checks that:
+
+| Promise | Violation if broken |
+|---|---|
+| An order whose placing was acknowledged exists, for the right customer, with the lines asked for and the price of those lines; no order exists that nobody placed; no order was made from a request that was refused | `acknowledged-order-missing`, `order-nobody-placed`, `refused-order-exists`, `order-of-the-wrong-customer`, `order-with-other-lines-than-asked`, `order-total-is-not-the-price-of-the-lines` |
+| Order numbers are not given twice | `order-number-given-twice` |
+| Every acknowledged step is in the order: the payment (for the whole total, with the right change for cash), started and finished tickets, the hand-over, the cancellation, the refund the manager set; nothing a client was refused outright happened | `acknowledged-payment-missing`, `payment-is-not-the-total`, `cash-change-is-not-what-was-handed-over-minus-the-total`, `acknowledged-step-missing`, `refund-is-not-what-the-manager-set`, `command-refused-that-should-have-worked` |
+| The stock is what was received minus what the paid orders took (not what a cancellation before work gave back), computed from the menu, and never below zero | `stock-is-not-what-the-orders-imply`, `stock-below-zero` |
+| The three readings of the state are the same, and no record of the log was skipped | `live-state-differs-from-the-log`, `fresh-service-differs-from-the-live-one`, `records-of-the-log-were-skipped` |
+
+The checker has its own tests (`ordercheck_test.go`): a healthy run, and one test for each kind of
+violation.
+
+| Test | Nodes | Faults | One local run |
+|---|---|---|---|
+| `TestOrdersChaosHarnessWithoutFaults` | 3 | none: tests the harness | 138 orders, 620 later commands, all well |
+| `TestOrdersChaosServiceAndLeaderKilledWhileOrdersAreTaken` | 3 | the service killed every 1 to 2.5 s; nodes killed, the leader killed | 353 orders, 1,564 later commands, the service killed 10 times |
+| `TestOrdersChaosNetworkFaultsAndAScarceStock` | 5 | the service killed; isolation, partitions, one-way cuts, a node away for long, the leader killed; snapshots every 25 entries; few baguettes, eggs and coffee beans, so payments compete for the last ones; clients give up after 1 s | 144 orders, 549 later commands, the service killed 8 times, 1 command with no answer; payments refused for lack of stock are allowed, nothing else is |
+
+Longer runs (`CHAOS_SECONDS=60`), one run each: 1,052 orders and 4,891 later commands with the
+service killed 26 times; and, in the scarce-stock scenario, 270 orders acknowledged, 46 placings with
+no answer (one of them was stored, which the checker allows), the service killed 22 times. No promise
+was broken.
+
+### What it found
+The first run of the network scenario reported `order-number-given-twice`: two orders had number 9.
+The service had been restarted and had rebuilt its state by reading the log from a cluster node that
+was behind, so it did not see the newest orders and numbered a new one from what it did see. Reads of
+raftlog are not linearizable, so a service cannot tell from a read that it has seen everything.
+Two things changed (ADR 13): the service now writes a **barrier** record when it starts, and after a
+write whose answer was lost, and reads until it sees its own barrier, so its state is complete before
+it decides anything; and a command that does not fit when it is applied in the order of the log is
+answered with a conflict instead of a success. Unit tests reproduce the case without a cluster.
+
+The same mistake was then found in the test itself: it read the raw log from any node, and once
+reported an order that the log did have as missing. It now reads until it has as many records as a
+service that made its state complete says the log holds.
+
+### Does the suite catch bugs?
+As in the first table, bugs were put into the service and the core on purpose, one at a time:
+
+| Bug introduced | Caught? | By |
+|---|---|---|
+| A payment does not take the stock; a cancellation before work does not give it back | yes, first run | `stock-is-not-what-the-orders-imply` |
+| Order numbers are not unique | yes, first run | `order-number-given-twice` |
+| An acknowledged command is not applied to the service's own state | yes, first run | `command-refused-that-should-have-worked` (the next step on that order is refused), `order-number-given-twice` |
+| The cash change is one đồng too much; a refund is recorded as the whole total | yes, first run | the change and refund checks |
+| The service does not make its state complete when it starts | **3 runs of 6** | `order-number-given-twice`; the case needs the service to restart just when a node that is behind answers its reads, so a chaos run finds it by chance, and the unit tests in `internal/orderservice/barrier_test.go` are what guard it every time |
+
+## What the kitchen scenarios do not cover
+The service is one writer and is not tested with two. Power loss, a disk that lies, and clock jumps
+are not tested (as above). The clients do not read orders while they take them, so what a customer
+sees on the stream during a failover is not checked here. Each scenario lasts 6 to 60 seconds, not hours.

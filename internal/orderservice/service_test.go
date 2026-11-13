@@ -309,8 +309,9 @@ func TestRebuildingFromTheLogGivesTheSameOrdersTheSameStockAndTheNextNumber(t *t
 	if jsonOf(t, s1) != jsonOf(t, s2) {
 		t.Fatalf("the stock differs after rebuilding: %v and %v", s1, s2)
 	}
-	if again.Health() != r.svc.Health() {
-		t.Fatalf("health %+v and %+v", again.Health(), r.svc.Health())
+	// The offset of the next record differs: starting a service writes a barrier to the log.
+	if a, b := again.Health(), r.svc.Health(); a.Orders != b.Orders || a.Skipped != b.Skipped || a.Stale || a.Next != b.Next+1 {
+		t.Fatalf("health %+v and %+v", a, b)
 	}
 	// The next order gets the next number, not number 1.
 	p, err := again.Place(r.ctx, customer, PlaceRequest{Command: "after-restart-1", Selections: []menu.Selection{toastie(1)}})

@@ -31,6 +31,27 @@ type Record struct {
 	// Order is an order.Event, exactly as order.Encode writes it.
 	Order json.RawMessage `json:"order,omitempty"`
 	Stock *StockMove      `json:"stock,omitempty"`
+	// Barrier marks a point of the log and changes nothing. The service writes one after it
+	// starts, and after a write whose outcome it did not learn, and reads on until it sees its
+	// own barrier: everything written before the barrier is then in its state. A read may be
+	// answered by a node that is behind, so this is the only way to know that the state is
+	// complete before deciding something on it.
+	Barrier string `json:"barrier,omitempty"`
+}
+
+// kinds is how many of the three kinds the record has set; a valid record has exactly one.
+func (r Record) kinds() int {
+	n := 0
+	if len(r.Order) != 0 {
+		n++
+	}
+	if r.Stock != nil {
+		n++
+	}
+	if r.Barrier != "" {
+		n++
+	}
+	return n
 }
 
 // StockMove is a movement of the stock that a person made: goods received, something
@@ -65,8 +86,8 @@ func OrderRecord(ev order.Event) (Record, error) {
 
 // Encode returns the JSON form of the record, for the log.
 func (r Record) Encode() ([]byte, error) {
-	if (len(r.Order) == 0) == (r.Stock == nil) {
-		return nil, fmt.Errorf("%w: a record holds exactly one of an order event and a stock movement", ErrBadRecord)
+	if r.kinds() != 1 {
+		return nil, fmt.Errorf("%w: a record holds exactly one of an order event, a stock movement and a barrier", ErrBadRecord)
 	}
 	return json.Marshal(r)
 }
@@ -83,8 +104,8 @@ func DecodeRecord(data []byte) (Record, error) {
 	if dec.More() {
 		return Record{}, fmt.Errorf("%w: trailing data", ErrBadRecord)
 	}
-	if (len(r.Order) == 0) == (r.Stock == nil) {
-		return Record{}, fmt.Errorf("%w: a record holds exactly one of an order event and a stock movement", ErrBadRecord)
+	if r.kinds() != 1 {
+		return Record{}, fmt.Errorf("%w: a record holds exactly one of an order event, a stock movement and a barrier", ErrBadRecord)
 	}
 	if r.Stock != nil {
 		m := r.Stock

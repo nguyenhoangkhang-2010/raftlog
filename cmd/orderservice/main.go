@@ -196,6 +196,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	}
 	health := svc.Health()
 	logger.Info("state rebuilt from the log", "topic", cfg.topic, "orders", health.Orders, "records", health.Next, "skipped", health.Skipped)
+	// A write whose answer is lost leaves the state possibly behind the log; this makes it
+	// complete again without waiting for the next command.
+	reconcileCtx, stopReconcile := context.WithCancel(ctx)
+	defer stopReconcile()
+	go svc.Reconcile(reconcileCtx, time.Second)
 
 	lis, err := net.Listen("tcp", cfg.listen)
 	if err != nil {
