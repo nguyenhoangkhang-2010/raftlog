@@ -21,6 +21,9 @@ type Change struct {
 	Status order.Status
 	// Customer owns the order (empty for a walk-in).
 	Customer string
+	// MenuChanged is true when the menu, the promotions or a photo changed: a screen that shows the
+	// menu reads it again.
+	MenuChanged bool
 	// StockChanged is true when the quantity of an ingredient changed.
 	StockChanged bool
 	// Skipped is set when the record was refused: why.
@@ -28,7 +31,7 @@ type Change struct {
 }
 
 // Applied reports whether the record changed anything.
-func (c Change) Applied() bool { return c.Order != "" || c.StockChanged }
+func (c Change) Applied() bool { return c.Order != "" || c.StockChanged || c.MenuChanged }
 
 type redeemKey struct {
 	promo    promo.ID
@@ -226,4 +229,26 @@ func (s *State) StockLevels() map[string]int64 {
 		out[string(ing)] = q
 	}
 	return out
+}
+
+// setCatalog replaces the menu and the promotions, and the thresholds of the stock that go with
+// them. It checks everything before it changes anything, so that a refusal leaves the state as it was.
+func (s *State) setCatalog(m *menu.Menu, p *promo.Set, lowAt map[stock.Ingredient]int64) error {
+	for ing, at := range lowAt {
+		if at < 0 {
+			return fmt.Errorf("orderservice: the threshold of %q is negative", ing)
+		}
+	}
+	for ing := range s.stock.Snapshot() {
+		if err := s.stock.SetLowAt(ing, lowAt[ing]); err != nil { // zero when the new menu gives none
+			return err
+		}
+	}
+	for ing, at := range lowAt {
+		if err := s.stock.SetLowAt(ing, at); err != nil {
+			return err
+		}
+	}
+	s.menu, s.promos = m, p
+	return nil
 }

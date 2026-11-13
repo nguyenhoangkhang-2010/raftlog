@@ -31,6 +31,7 @@ import (
 	_ "time/tzdata" // the venue's time zone must be found on a machine that has no zone database
 
 	"github.com/nguyenhoangkhang-2010/raftlog/client"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/orderservice"
 )
 
@@ -174,8 +175,8 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	switch {
 	case len(cfg.addrs) == 0:
 		return config{}, errors.New("no raftlog nodes: give -addr")
-	case menuFile == "":
-		return config{}, errors.New("no menu: give -menu")
+	case menuFile == "" && cfg.databaseURL == "":
+		return config{}, errors.New("no menu: give -menu (with -database-url it is only needed the first time, to fill the database)")
 	case usersFile == "" && cfg.databaseURL == "":
 		return config{}, errors.New("nobody could use the service: give -database-url (people sign in with a password) or -users (tokens, for trying it out)")
 	case usersFile != "" && cfg.databaseURL != "":
@@ -210,14 +211,6 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	}
 	logger := slog.New(h)
 
-	m, lowAt, err := orderservice.LoadMenu(cfg.menuFile)
-	if err != nil {
-		return err
-	}
-	promos, err := orderservice.LoadPromotions(cfg.promoFile)
-	if err != nil {
-		return err
-	}
 	var authn orderservice.Authenticator
 	if !cfg.withAccounts() {
 		users, err := orderservice.LoadUsers(cfg.usersFile)
@@ -233,14 +226,25 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	startCtx, cancel := context.WithTimeout(ctx, cfg.startTO)
 	defer cancel()
 	var apiOptions []orderservice.APIOption
+	var store *catalog.Store
 	if cfg.withAccounts() {
 		pool, acc, err := openAccounts(startCtx, cfg, logger)
 		if err != nil {
 			return err
 		}
 		defer pool.Close()
+		if store, err = openCatalog(startCtx, pool, cfg, logger); err != nil {
+			return err
+		}
 		go purgeSessions(ctx, acc, logger)
-		apiOptions = append(apiOptions, orderservice.WithAccounts(acc, orderservice.AccountsOptions{SecureCookies: cfg.secureCookies, MaxLifetime: cfg.sessionMax}))
+		apiOptions = append(apiOptions,
+			orderservice.WithAccounts(acc, orderservice.AccountsOptions{SecureCookies: cfg.secureCookies, MaxLifetime: cfg.sessionMax}),
+			orderservice.WithCatalog(store))
+	}
+	// The menu and the promotions: from the database when there is one, else from the files.
+	m, lowAt, promos, err := startCatalog(startCtx, cfg, store, logger)
+	if err != nil {
+		return err
 	}
 
 	cl, err := client.New(cfg.addrs, client.WithRetryPause(50*time.Millisecond))
@@ -259,6 +263,13 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	})
 	if err != nil {
 		return err
+	}
+	if store != nil {
+		hashes, err := store.ImageHashes(startCtx)
+		if err != nil {
+			return err
+		}
+		svc.SetImages(hashes)
 	}
 	health := svc.Health()
 	logger.Info("state rebuilt from the log", "topic", cfg.topic, "orders", health.Orders, "records", health.Next, "skipped", health.Skipped)

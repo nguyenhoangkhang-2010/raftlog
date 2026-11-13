@@ -1,6 +1,7 @@
 package orderservice
 
 import (
+	"sort"
 	"context"
 	"errors"
 	"fmt"
@@ -102,6 +103,96 @@ type Service struct {
 	barriers uint64
 
 	hub *hub
+
+	// images maps an item to the hash of its photo; see SetImages.
+	images map[string]string
+}
+
+// ingredientsOf is the set of ingredients that the recipes of a menu use, those of its options
+// included: the stock can be changed for these and for no others.
+func ingredientsOf(m *menu.Menu) map[stock.Ingredient]bool {
+	out := map[stock.Ingredient]bool{}
+	for _, it := range m.Items() {
+		for ing := range it.Recipe {
+			out[ing] = true
+		}
+		for _, g := range it.Groups {
+			for _, op := range g.Options {
+				for ing := range op.Recipe {
+					out[ing] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// SetMenu puts a new menu in use, with the thresholds of the stock that go with it. The commands
+// that follow are decided with it; the orders that exist keep the names and prices they were
+// taken with, because the events of the log carry those. A threshold that the new menu does not
+// give is cleared. Everyone who looks at the menu or the stock is told, so that their screens
+// read it again.
+func (s *Service) SetMenu(m *menu.Menu, lowAt map[stock.Ingredient]int64) error {
+	if m == nil {
+		return errors.New("orderservice: a menu is needed")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.st.setCatalog(m, s.st.promos, lowAt); err != nil {
+		return err
+	}
+	s.ingredients = ingredientsOf(m)
+	s.hub.publish(Change{MenuChanged: true, StockChanged: true})
+	return nil
+}
+
+// SetPromotions puts a new set of promotions in use.
+func (s *Service) SetPromotions(p *promo.Set) error {
+	if p == nil {
+		return errors.New("orderservice: a set of promotions is needed")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.promos = p
+	s.hub.publish(Change{MenuChanged: true})
+	return nil
+}
+
+// HasItem says whether the menu has an item of that ID, for sale or not.
+func (s *Service) HasItem(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.st.menu.Item(menu.ItemID(id))
+	return ok
+}
+
+// SetImages tells the service which items have a photo, by the hash of the photo: the menu then
+// carries the address of the photo, which changes when the photo does.
+func (s *Service) SetImages(hashes map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.images = hashes
+	s.hub.publish(Change{MenuChanged: true})
+}
+
+// Ingredients lists the ingredients that the menu uses, and those that the stock knows, sorted:
+// what an editor of recipes may offer.
+func (s *Service) Ingredients() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	set := map[string]bool{}
+	for ing := range s.ingredients {
+		set[string(ing)] = true
+	}
+	for ing := range s.st.stock.Snapshot() {
+		set[string(ing)] = true
+	}
+	out := make([]string, 0, len(set))
+	for ing := range set {
+		out = append(out, ing)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Open builds the state from the whole log and returns the service.
@@ -129,19 +220,7 @@ func Open(ctx context.Context, l Log, o Options) (*Service, error) {
 	if s.batch <= 0 {
 		s.batch = 500
 	}
-	s.ingredients = map[stock.Ingredient]bool{}
-	for _, it := range o.Menu.Items() {
-		for ing := range it.Recipe {
-			s.ingredients[ing] = true
-		}
-		for _, g := range it.Groups {
-			for _, op := range g.Options {
-				for ing := range op.Recipe {
-					s.ingredients[ing] = true
-				}
-			}
-		}
-	}
+	s.ingredients = ingredientsOf(o.Menu)
 	if err := s.catchUp(ctx); err != nil {
 		return nil, fmt.Errorf("reading the log: %w", err)
 	}
@@ -581,6 +660,7 @@ func (s *Service) Subscribe(actor rbac.Actor) *Subscription {
 		if ch.Order != "" && (viewAll || (actor.Can(rbac.ViewOwnOrders) && ch.Customer != "" && ch.Customer == actor.ID)) {
 			out.Order, out.Number, out.Type, out.Status, out.Customer = ch.Order, ch.Number, ch.Type, ch.Status, ch.Customer
 		}
+		out.MenuChanged = ch.MenuChanged // the menu is public: everyone is told
 		if ch.StockChanged && actor.Can(rbac.ViewStock) {
 			out.StockChanged = true
 		}

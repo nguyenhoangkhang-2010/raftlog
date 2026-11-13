@@ -74,11 +74,38 @@ func Load(fsys fs.FS) ([]Migration, error) {
 	return out, nil
 }
 
+// An Option changes how Apply records what it has done.
+type Option func(*settings)
+
+type settings struct{ table string }
+
+// WithTable keeps the record of what was applied in another table than schema_migrations. Each
+// set of migrations (the accounts, the catalog) numbers its files from 0001 and keeps its own
+// table, so that the sets do not have to know about each other.
+func WithTable(name string) Option { return func(s *settings) { s.table = name } }
+
+var tableName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+
+func tableOf(options []Option) (string, error) {
+	s := settings{table: "schema_migrations"}
+	for _, o := range options {
+		o(&s)
+	}
+	if !tableName.MatchString(s.table) {
+		return "", fmt.Errorf("pgmigrate: %q is not a table name", s.table)
+	}
+	return s.table, nil
+}
+
 // ErrChanged says that a migration that was applied has been edited since.
 var ErrChanged = errors.New("pgmigrate: an applied migration was changed")
 
 // Apply brings the database up to date and returns the names of the migrations it applied.
-func Apply(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) ([]string, error) {
+func Apply(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, options ...Option) ([]string, error) {
+	table, err := tableOf(options)
+	if err != nil {
+		return nil, err
+	}
 	all, err := Load(fsys)
 	if err != nil {
 		return nil, err
@@ -95,11 +122,11 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) ([]string, error
 	// and with a context that survives a cancelled one.
 	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, lockKey) }()
 
-	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS `+table+` (
 		version int PRIMARY KEY, name text NOT NULL, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		return nil, fmt.Errorf("pgmigrate: %w", err)
 	}
-	rows, err := conn.Query(ctx, `SELECT version, checksum FROM schema_migrations`)
+	rows, err := conn.Query(ctx, `SELECT version, checksum FROM `+table)
 	if err != nil {
 		return nil, fmt.Errorf("pgmigrate: %w", err)
 	}
@@ -139,7 +166,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) ([]string, error
 			_ = tx.Rollback(context.WithoutCancel(ctx))
 			return done, fmt.Errorf("pgmigrate: %s: %w", m.Name, err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)`, m.Version, m.Name, m.Checksum); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO `+table+` (version, name, checksum) VALUES ($1, $2, $3)`, m.Version, m.Name, m.Checksum); err != nil {
 			_ = tx.Rollback(context.WithoutCancel(ctx))
 			return done, fmt.Errorf("pgmigrate: %s: %w", m.Name, err)
 		}

@@ -166,6 +166,7 @@
           }).join("; ");
         }
         break;
+      case "invalid_document": msg = T("Not saved: the service checked the document and says:") + " " + (body.error || ""); break;
       case "unavailable": msg = T("The kitchen system could not reach its log. Try again in a moment."); break;
       case "unauthorized": msg = T("The token was not accepted."); break;
       case "bad_credentials": msg = T("Wrong login name or password."); break;
@@ -362,6 +363,8 @@
     if (can("ticket.start") || can("ticket.finish")) out.push("kitchen");
     if (can("order.approve_cancel") || can("order.issue_refund")) out.push("manager");
     if (can("stock.view")) out.push("stock");
+    if (can("menu.manage")) out.push("menu");
+    if (can("promo.manage")) out.push("promotions");
     if (can("user.manage")) out.push("users");
     return out;
   }

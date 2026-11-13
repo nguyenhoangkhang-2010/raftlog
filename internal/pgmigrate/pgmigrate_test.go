@@ -81,6 +81,42 @@ func TestApplyRunsEachMigrationOnceAndInOrder(t *testing.T) {
 	}
 }
 
+func TestTwoSetsOfMigrationsKeepTheirOwnHistoryInOneDatabase(t *testing.T) {
+	pool := pgtest.Pool(t)
+	ctx := context.Background()
+	accounts := files(`CREATE TABLE people (n int)`)
+	catalog := files(`CREATE TABLE dishes (n int)`, `CREATE TABLE photos (n int)`)
+	if done, err := Apply(ctx, pool, accounts); err != nil || len(done) != 1 {
+		t.Fatalf("the first set: %v, %v", done, err)
+	}
+	// Both sets begin at version 1. Without a table of its own the second would find that it
+	// "had" version 1 already, and apply nothing.
+	if done, err := Apply(ctx, pool, catalog, WithTable("catalog_migrations")); err != nil || len(done) != 2 {
+		t.Fatalf("the second set: %v, %v", done, err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM photos`).Scan(&n); err != nil {
+		t.Fatalf("the second set did not run: %v", err)
+	}
+	// Each set is applied once, in its own table.
+	if done, _ := Apply(ctx, pool, accounts); len(done) != 0 {
+		t.Fatalf("the first set ran again: %v", done)
+	}
+	if done, _ := Apply(ctx, pool, catalog, WithTable("catalog_migrations")); len(done) != 0 {
+		t.Fatalf("the second set ran again: %v", done)
+	}
+	var one, two int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&one)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM catalog_migrations`).Scan(&two)
+	if one != 1 || two != 2 {
+		t.Fatalf("rows in the tables of history: %d and %d, want 1 and 2", one, two)
+	}
+	// A name that could be more than a name is refused.
+	if _, err := Apply(ctx, pool, catalog, WithTable("x; DROP TABLE people")); err == nil {
+		t.Fatal("a table name with SQL in it was accepted")
+	}
+}
+
 func TestAMigrationThatFailsLeavesNothingOfItself(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()

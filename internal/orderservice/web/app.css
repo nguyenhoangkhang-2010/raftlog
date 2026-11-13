@@ -97,7 +97,7 @@ body { margin: 0; color: var(--tx); background: var(--bg); min-height: 100vh; fo
 .pill.live::before { animation: beat 1.8s ease-in-out infinite; }
 .pill.wait { background: var(--warn-s); color: var(--warn); border-color: transparent; }
 .pill.off { background: var(--bad-s); color: var(--bad); border-color: transparent; }
-@media (max-width: 52rem) {
+@media (max-width: 70rem) {
   .top { padding-block: .5rem; gap: .6rem; }
   /* the name takes the room that is left, and is cut with an ellipsis, so the bar stays one line */
   .top .grow { display: none; }
@@ -158,7 +158,7 @@ h3 { margin: 0; font-size: 1rem; }
 .cols.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .cols.board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 64rem) { .cols.three { grid-template-columns: 1fr; } }
-@media (max-width: 52rem) { .cols.two, .cols.board { grid-template-columns: 1fr; } }
+@media (max-width: 52rem) { .cols.two, .cols.board { grid-template-columns: minmax(0, 1fr); } }
 .stack { display: grid; gap: .8rem; }
 .stack > .field { margin: 0; }
 .stack > :empty { display: none; }
@@ -297,6 +297,38 @@ td.n, th.n { text-align: right; }
 @keyframes slide { from { opacity: 0; transform: translateX(22px); } to { opacity: 1; transform: none; } }
 @keyframes beat { 50% { opacity: .3; } }
 @keyframes blink { 50% { opacity: .25; } }
+
+/* the screens of the managers: the menu and the promotions */
+input[type=search], input[type=datetime-local] { width: 100%; }
+.cols.two-eq { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+.stack.tight { gap: .35rem; }
+.rowlist { list-style: none; margin: 0; padding: 0; display: grid; }
+.rowitem { display: flex; align-items: center; gap: .7rem; padding: .55rem .3rem; border-bottom: 1px solid var(--bd); transition: background .12s; }
+.rowitem:last-child { border-bottom: 0; }
+.rowitem:hover { background: var(--sf2); }
+.rowitem.on { background: var(--sf2); box-shadow: inset 3px 0 0 var(--ac); }
+.rowitem.off > .grow { opacity: .6; }
+.rowitem .money { font-weight: 700; color: var(--ac-text); }
+.thumb { flex: none; width: 44px; height: 44px; border-radius: 4px; overflow: hidden; display: grid; place-items: center; background: var(--art-food); color: var(--art-line); font: 700 18px var(--head); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.photo-now img { display: block; max-width: 100%; max-height: 14rem; border-radius: var(--r); border: 1px solid var(--bd); }
+.erow { display: grid; gap: .4rem; align-items: center; }
+.erow.c2 { grid-template-columns: minmax(0, 1fr) auto; }
+.erow.c3 { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; }
+.erow.c4 { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr) auto; }
+.erow input { min-width: 0; }
+.sub { padding: .6rem; border: 1px solid var(--bd); border-radius: var(--r); background: var(--sf2); }
+fieldset.card.sub { padding: .6rem; }
+details.card > summary { cursor: pointer; font: 700 11.5px var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--mu); }
+details.card[open] > summary { margin-bottom: .8rem; }
+details > summary.fine { cursor: pointer; }
+textarea.json, pre.json { font: 400 12.5px/1.5 var(--mono); }
+pre.json { margin: 0; padding: .7rem; max-height: 22rem; overflow: auto; border: 1px solid var(--bd); border-radius: 4px; background: var(--sf2); white-space: pre; }
+code.code { font: 700 12px var(--mono); padding: .1rem .45rem; border: 1px dashed var(--mu); border-radius: 3px; letter-spacing: .04em; }
+@media (max-width: 40rem) {
+  .erow.c4 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+  .rowitem { flex-wrap: wrap; }
+}
 
 /* People who ask for less motion get none: a late ticket keeps its steady red bar. */
 @media (prefers-reduced-motion: reduce) {

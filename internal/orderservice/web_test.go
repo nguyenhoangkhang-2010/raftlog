@@ -1,6 +1,7 @@
 package orderservice
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,12 +13,13 @@ import (
 	"testing"
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/accounts"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
 )
 
 func TestTheScreensAreServedWithTheRightTypesAndASecurityPolicy(t *testing.T) {
 	h := newHTTPRig(t)
 	cases := []struct{ path, ctype string }{
-		{"/", "text/html"}, {"/app.css", "text/css"}, {"/logic.js", "text/javascript"}, {"/app.js", "text/javascript"}, {"/favicon.svg", "image/svg+xml"},
+		{"/", "text/html"}, {"/app.css", "text/css"}, {"/logic.js", "text/javascript"}, {"/admin.js", "text/javascript"}, {"/app.js", "text/javascript"}, {"/favicon.svg", "image/svg+xml"},
 	}
 	for _, c := range cases {
 		resp, err := http.Get(h.srv.URL + c.path)
@@ -142,6 +144,50 @@ func TestThePageLoadsOnlyItsOwnFilesAndHasNoInlineCode(t *testing.T) {
 	if !strings.Contains(html, `src="/logic.js"`) || strings.Index(html, `src="/logic.js"`) > strings.Index(html, `src="/app.js"`) {
 		t.Error("logic.js must be loaded before app.js")
 	}
+	// app.js builds the screens of the managers from what admin.js defines, at once when it loads.
+	if !strings.Contains(html, `src="/admin.js"`) || strings.Index(html, `src="/admin.js"`) > strings.Index(html, `src="/app.js"`) {
+		t.Error("admin.js must be loaded before app.js")
+	}
+}
+
+func TestEveryFixedMessageOfTheCatalogIsInTheVietnameseDictionary(t *testing.T) {
+	dict := readEmbedded(t, "vi.js")
+	var found []string
+	scan := func(path string, patterns ...*regexp.Regexp) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range patterns {
+			for _, m := range re.FindAllStringSubmatch(string(data), -1) {
+				found = append(found, m[1])
+			}
+		}
+	}
+	scan("../catalog/catalog.go", regexp.MustCompile(`InvalidError\{"([^"%\\]+)"\}`))
+	scan("http_catalog.go", regexp.MustCompile(`InvalidError\{Reason: "([^"%\\]+)"\}`), regexp.MustCompile(`(?m)^\s*body\.Error = "([^"\\]+)"`))
+	// the messages that are built with a number are got by asking for them
+	for _, data := range [][]byte{{}, bytes.Repeat([]byte{1}, catalog.MaxPhotoBytes+1), pngBytes(8, 8)} {
+		var inv *catalog.InvalidError
+		if _, err := catalog.CheckImage(data); errors.As(err, &inv) {
+			found = append(found, inv.Reason)
+		}
+	}
+	// "say who saves" and the kind of document are the service's own business; no person is shown them
+	skip := map[string]bool{"say who saves": true}
+	checked := 0
+	for _, msg := range found {
+		if skip[msg] {
+			continue
+		}
+		checked++
+		if !strings.Contains(dict, `"`+msg+`":`) {
+			t.Errorf("the message %q of the service is not in the server section of vi.js", msg)
+		}
+	}
+	if checked < 10 {
+		t.Fatalf("only %d messages were found in the sources: the patterns no longer match what is written", checked)
+	}
 }
 
 func TestTheStylesheetUsesOnlyFontsTheServiceServes(t *testing.T) {
@@ -181,7 +227,7 @@ func TestTheScriptsPutDataOnThePageAsTextNeverAsHTML(t *testing.T) {
 	// A note that a customer types is shown on the kitchen's screen. Setting it as HTML would let
 	// them run script there; the policy would stop it, and this keeps the code from trying.
 	banned := regexp.MustCompile(`innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new\s+Function|setAttribute\(\s*["']style|srcdoc|javascript:`)
-	for _, name := range []string{"app.js", "logic.js"} {
+	for _, name := range []string{"app.js", "logic.js", "admin.js"} {
 		src := readEmbedded(t, name)
 		if m := banned.FindString(src); m != "" {
 			t.Errorf("%s uses %q", name, m)
@@ -249,7 +295,7 @@ func TestTheScreensLogicPassesItsOwnTests(t *testing.T) {
 	if _, err := os.Stat("web/logic.test.js"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js").CombinedOutput()
+	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js", "web/admin.test.js").CombinedOutput()
 	if err != nil {
 		t.Fatalf("the tests of web/logic.js failed: %v\n%s", err, out)
 	}
