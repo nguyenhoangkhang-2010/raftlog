@@ -7,7 +7,7 @@ topic**. Its orders and its stock are built by reading that topic, so a service 
 and started again, or a new one on another machine, comes back with the same state. The people
 who may use it are accounts in a PostgreSQL database (or, to try it out, a file of tokens). The
 design and its costs are in [ADR 13](../adr/0013-order-service-on-one-log.md) for the orders and
-[ADR 14](../adr/0014-accounts-in-postgresql.md) for the accounts.
+[ADR 14](../adr/0014-accounts-in-postgresql.md) for the accounts, [ADR 15](../adr/0015-menu-in-postgresql.md) for the menu.
 
 ## Run it
 
@@ -71,7 +71,7 @@ resets it on the Users screen, or this does).
 | Flag | Meaning | Default |
 |---|---|---|
 | `-addr` | raftlog nodes, all of them (`RAFTLOG_ADDR`) | required |
-| `-menu`, `-promotions` | the files below (`ORDERSERVICE_MENU`, `_PROMOTIONS`) | menu required |
+| `-menu`, `-promotions` | the files below (`ORDERSERVICE_MENU`, `_PROMOTIONS`). With `-database-url` they only fill the database the first time | menu required, except with a database that already has one |
 | `-database-url` | PostgreSQL that holds the accounts (`ORDERSERVICE_DATABASE_URL`) | one of this and `-users` |
 | `-users` | the file of tokens, for trying the service (`ORDERSERVICE_USERS`) | one of this and `-database-url` |
 | `-session-idle`, `-session-max` | a session ends after this long without use, and this long after sign-in at the latest (`ORDERSERVICE_SESSION_IDLE`, `_MAX`) | `12h`, `168h` |
@@ -82,11 +82,21 @@ resets it on the Users screen, or this does).
 | `-timezone` | the venue's zone; prices by time of day follow its clock (`ORDERSERVICE_TIMEZONE`) | `Local` |
 | `-command-timeout` | time allowed to one command, including the wait for the log | `10s` |
 
-## The files that describe the venue
+## The menu, the promotions and the users
 
-All three are JSON, and a key the service does not know is an error, so a typo is reported at
-start instead of silently doing nothing. None of it is stored in the log: to change it, edit the
-file and restart. An order keeps the names and prices it was taken with.
+The three are JSON documents, and a key the service does not know is an error, so a typo is
+reported instead of silently doing nothing. None of it is in the log. An order keeps the names,
+prices and recipe it was taken with, whatever is changed afterwards.
+
+**With a database, the menu and the promotions live in it** ([ADR 15](../adr/0015-menu-in-postgresql.md)):
+the files are read once, when the database has no menu yet, and saved as version 1; after that they
+are ignored and the managers change the documents on the **Menu** and **Promotions** screens. Every
+save is the next numbered version, checked by the same code that reads the files, in use at once without
+a restart, and kept for good (an old one can be put back, as a new version). Two managers saving at the
+same time do not overwrite each other: the second is told to read again. **In token mode** there is no
+database and the files are read at start, as before.
+
+The documents have the same shape either way:
 
 - **Menu** (`examples/kitchen/menu.json`): items with a station, a price in whole đồng, a recipe
   in the ingredient's base unit (grams, millilitres, pieces), option groups (`min`/`max` choices,
@@ -143,7 +153,12 @@ answer or a timeout, does not do it twice.
 
 | Request | Who | Body (besides `command_id`) |
 |---|---|---|
-| `GET /api/menu` | anyone | the items for sale with today's price, and which are sold out |
+| `GET /api/menu` | anyone | the items for sale with today's price, the address of the photo of an item that has one, and which are sold out |
+| `GET /api/images/{id}?v=` | anyone | the photo of an item: `image/jpeg` or `image/png`, `immutable`, with an `ETag` |
+| `GET /api/admin/menu`, `GET /api/admin/promotions` | `menu.manage`, `promo.manage` (manager) | `{version, doc}`: the version in use and its document; for the menu also the ingredients known and the hash of each photo |
+| `PUT /api/admin/menu`, `PUT /api/admin/promotions` | the same | `base_version`, `note`, `doc`. The document is checked as a file is; `400 invalid_document` with the message of the checks, or `409 stale` if `base_version` is no longer the latest |
+| `GET .../versions`, `GET .../versions/{n}`, `POST .../versions/{n}/restore` | the same | the history (who, when, a note), one version, and putting one back as a new version (`base_version` in the body) |
+| `PUT /api/admin/menu/items/{id}/image`, `DELETE ...` | `menu.manage` | the bytes of a JPEG or PNG (at most 1 MiB, sides of 64 to 4096 pixels); `400` if it is anything else. Not a new version of the menu |
 | `GET /api/auth` | anyone | `{"mode": "password"}` with accounts, `"token"` otherwise |
 | `GET /api/me` | anyone signed in | your ID, name, roles, station, permissions, whether you must change your password, when the session ends |
 | `POST /api/login` | anyone | `username`, `password`; sets the cookie. `401 bad_credentials`, `429 locked` or `rate_limited` |
@@ -236,7 +251,8 @@ data: {"number":2,"offset":13,"order":"ord-demo-order-0003","status":"placed","t
 
 An event says that something changed, not what the screen should show: the screen reads the
 state first (`GET /api/orders`), listens, and asks again for the order or the stock when told.
-There are `stock` events too (`{"offset": n}`), keep-alive comments when idle, and an
+There are `stock` events too (`{"offset": n}`), `menu` events when a manager saved the menu, the
+promotions or a photo (every screen then reads the menu again), keep-alive comments when idle, and an
 `event: reset` before the stream is closed if the reader fell too far behind: read the state again
 and reconnect. The token goes in the `Authorization` header, so a browser reads the stream with
 `fetch`, not `EventSource` (which cannot set it).
@@ -258,12 +274,14 @@ signs out. A browser holds one session per site: two people on one browser profi
 | **Kitchen** | kitchen, for their own station | what is waiting and what is being made, with customer notes. When a cancellation is waiting for the manager, "Done" is held back and the card says so |
 | **Manager** | manager | the day's counts and money (taken, refunded, net), cancellation requests with the refund that the rules allow (from 0 to the total once work began, the whole total before), refunds for completed orders, and a lookup of one order's audit trail |
 | **Stock** | storekeeper (receive, write off, count); kitchen and manager (look) | the quantity of each ingredient, flagged when low or out |
+| **Menu** | manager | the items with a photo, a price and a switch to hide one; an editor for one item (name, category, station, price, recipe, groups of options with their extra price and ingredients, prices by day and time, a photo to upload), combos, the thresholds at which an ingredient is flagged as low, the history of versions with "Put back", and the whole document as text for anything the forms do not cover. A save is in use at once; if another manager saved first, the screen says so instead of overwriting |
+| **Promotions** | manager | the offers with an editor for one (percent off, amount off, buy some and get some free; a code or automatic; least subtotal, dates, categories or items, once for each customer, priority), the history and the text view |
 | **Users** | administrator | the accounts with their state (active, must change password, locked, disabled), a form to create and edit them (roles; a station for kitchen workers), and per account: unlock, disable or enable, reset password, end sessions, history. A temporary password is shown once, with a copy button. Below, the trail of sign-ins and changes. On a phone the table becomes a stack of cards |
 | **Account** | everyone, with accounts | who you are, a form to change your password, and where you are signed in, with a way to end the other sessions |
 
 How it is built, and why it can be trusted with what customers type:
 
-- **Four static files, an icon and two fonts, embedded in the program** (`internal/orderservice/web`):
+- **The page, its stylesheet and its scripts, an icon and the fonts, embedded in the program** (`internal/orderservice/web`):
   no framework, no build step, no network request to anywhere else, so the screens work on a
   venue's network without the internet. They are served with `ETag` and `Cache-Control: no-cache`,
   so a new version of the service is picked up at once.
@@ -280,8 +298,8 @@ How it is built, and why it can be trusted with what customers type:
   Headings are in Barlow Condensed, text in Be Vietnam Pro, which was made with Vietnamese in mind;
   the files, their sources and their licence (SIL OFL 1.1) are in
   [`web/fonts/README.md`](../../internal/orderservice/web/fonts/README.md). The picture of an item is
-  a drawing by kind (drink, food, combo) until the menu carries a photo for it; the card then
-  shows the photo, with no change to the page. Only a card that newly appears, a status label when
+  a drawing by kind (drink, food, combo) until a manager uploads a photo for it; the card then
+  shows the photo. Only a card that newly appears, a status label when
   the status changes, a toast, the live dot, a lifting card on hover and a late ticket's bar move,
   and none of it moves for people who ask the system for less motion. The colours are variables at
   the top of `web/app.css`: changing the look is changing that file.
@@ -291,7 +309,7 @@ How it is built, and why it can be trusted with what customers type:
   (`T("Place order")`), so a sentence with no Vietnamese entry shows in English instead of
   breaking; `web/vi.js` is the dictionary and `web/i18n.js` the mechanism. Three tests keep it
   honest: every `T()` of the scripts has an entry and every entry is used (and both fill in the same
-  `{names}`), and every fixed message of the accounts that the service writes is in the dictionary
+  `{names}`), and every fixed message of the accounts and of the catalog that the service writes is in the dictionary
   as written, read from the Go sources. Times follow the language. **Limits:** the messages of the
   order rules (such as "order: wrong state") are in English; the screen puts a sentence in
   Vietnamese before them. The names of items, categories of a venue's own and ingredients are the
@@ -342,9 +360,9 @@ browser tests yet.
 
 ## What is not here
 
-Shifts and the cash drawer, reports, editing the menu and the promotions without a restart,
-customers who register themselves and points (the accounts are made by an administrator for now),
+Shifts and the cash drawer, reports, a note typed with a save of the menu and a comparison of two
+versions, customers who register themselves and points (the accounts are made by an administrator for now),
 several writers or read-only replicas, snapshots of the state, automated browser tests of the
-screens, and a printed receipt or a display for customers waiting. A language other than English on
-the screens is not done either: the text is in the files, in one place each. The menu, the
-promotions and the stock recipes are still files read at start; the database holds only accounts.
+screens, and a printed receipt or a display for customers waiting. A change of the menu is seen at once
+only by the instance that saved it: with several instances the others keep the old menu until they
+restart ([ADR 15](../adr/0015-menu-in-postgresql.md)).

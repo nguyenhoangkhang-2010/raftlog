@@ -85,16 +85,17 @@ that worked is not reported as forbidden.
 ## Not here yet
 
 The service is done in a reduced form ([service.md](service.md)): events in one topic, roles
-enforced at the API, the menu and promotions read from files, accounts with a login in
+enforced at the API, the menu and promotions kept in PostgreSQL as numbered versions that a manager
+edits on a screen ([ADR 15](../adr/0015-menu-in-postgresql.md)), accounts with a login in
 PostgreSQL ([ADR 14](../adr/0014-accounts-in-postgresql.md)), and the screens for the customer,
 the till, the kitchen, the manager, the storekeeper and the administrator, served by the service
-itself. Not done yet, and planned: editing the menu and promotions on a screen, shifts and the cash
+itself. Not done yet, and planned: shifts and the cash
 drawer, reports, and customers who register and earn points. Not done: automated tests that drive
 the screens in a browser (they were checked by hand), a display for customers who are waiting, and
 printed receipts.
 
 The menu used in the tests, and the sample files in `examples/kitchen`, are invented. Real
-menus are files that the venue provides.
+menus are entered by the venue, on the Menu screen.
 
 One rule of this core was found missing by the service's tests: the table says that a ticket cannot
 be started or finished while a cancellation waits for the manager, and finishing was not checked,

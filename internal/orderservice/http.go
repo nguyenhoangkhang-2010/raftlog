@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/accounts"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/menu"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/money"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/order"
@@ -33,6 +34,9 @@ type API struct {
 	svc    *Service
 	authn  Authenticator
 	logger *slog.Logger
+
+	// Set by WithCatalog: the editing of the menu, with its history and photos.
+	cat *catalog.Store
 
 	// Set by WithAccounts: people who sign in with a password and keep a session.
 	acc   *accounts.Service
@@ -56,6 +60,9 @@ func NewAPI(svc *Service, authn Authenticator, logger *slog.Logger, options ...A
 	mux.HandleFunc("GET /api/menu", a.menu)
 	mux.HandleFunc("GET /api/auth", a.authMode)
 	mux.HandleFunc("GET /api/me", a.identified(a.me))
+	if a.cat != nil {
+		a.catalogRoutes(mux)
+	}
 	if a.acc != nil {
 		a.accountRoutes(mux)
 	}
@@ -592,6 +599,9 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request, id Identity) {
 			var buf bytes.Buffer
 			if ch.Order != "" {
 				writeEvent(&buf, "order", map[string]any{"offset": ch.Offset, "order": ch.Order, "number": ch.Number, "type": ch.Type, "status": ch.Status})
+			}
+			if ch.MenuChanged {
+				writeEvent(&buf, "menu", map[string]any{"offset": ch.Offset})
 			}
 			if ch.StockChanged {
 				writeEvent(&buf, "stock", map[string]any{"offset": ch.Offset})

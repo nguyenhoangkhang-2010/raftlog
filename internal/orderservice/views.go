@@ -189,6 +189,8 @@ type ItemView struct {
 	Price    int64       `json:"price"`
 	Groups   []GroupView `json:"groups,omitempty"`
 	SoldOut  bool        `json:"sold_out,omitempty"`
+	// Image is the address of the photo of the item, when it has one.
+	Image string `json:"image,omitempty"`
 }
 
 // SlotView is a choice inside a combo.
@@ -225,6 +227,9 @@ func (s *Service) Menu() MenuView {
 			continue
 		}
 		iv := ItemView{ID: string(it.ID), Name: it.Name, Category: it.Category, Station: string(it.Station), Price: int64(it.UnitPrice(at)), SoldOut: soldOut(it.ID)}
+		if h := s.images[string(it.ID)]; len(h) >= 12 {
+			iv.Image = "/api/images/" + string(it.ID) + "?v=" + h[:12]
+		}
 		for _, g := range it.Groups {
 			gv := GroupView{ID: string(g.ID), Name: g.Name, Min: g.Min, Max: g.Max}
 			for _, o := range g.Options {

@@ -22,7 +22,7 @@ function sentencesOf(file) {
   return out;
 }
 
-const used = new Set([...sentencesOf("app.js"), ...sentencesOf("logic.js")]);
+const used = new Set([...sentencesOf("app.js"), ...sentencesOf("logic.js"), ...sentencesOf("admin.js")]);
 
 const placeholders = (s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
 

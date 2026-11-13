@@ -62,6 +62,8 @@
     stock: ["M3 8l9-5 9 5v8l-9 5-9-5z", "M3 8l9 5 9-5", "M12 13v8"],
     users: ["M10 4.8a3.2 3.2 0 1 0 0 6.4a3.2 3.2 0 1 0 0-6.4", "M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20", "M17 5a3 3 0 0 1 0 5.8M21 20v-1.5a3.5 3.5 0 0 0-2.5-3.3"],
     account: ["M12 4.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7", "M5 20a7 7 0 0 1 14 0"],
+    menu: ["M6 3v8M9 3v5a3 3 0 0 1-3 3M3 3v5a3 3 0 0 0 3 3", "M6 11v10", "M16 21V3c-2.2 1.2-3.5 4-3.5 7.5 0 1.8 1.2 2.5 3.5 2.5"],
+    promotions: ["M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z", "M8 8.2a.6.6 0 1 0 0 1.2a.6.6 0 1 0 0-1.2"],
   };
   function icon(id) {
     var el = svg(ICONS[id] || [], 24);
@@ -127,7 +129,11 @@
   function api(method, path, body, quiet) {
     var opts = { method: method, headers: {} };
     if (S.token && S.mode === "token") opts.headers.Authorization = "Bearer " + S.token;
-    if (body !== undefined) {
+    if (typeof Blob !== "undefined" && body instanceof Blob) {
+      // a file (a photo) is sent as it is, with the type the browser found for it
+      opts.headers["Content-Type"] = body.type || "application/octet-stream";
+      opts.body = body;
+    } else if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
@@ -219,6 +225,13 @@
       loadStock();
       clearTimeout(menuTimer);
       menuTimer = setTimeout(loadMenu, 300); // what is sold out may have changed
+    }
+    if (ev.event === "menu") {
+      // a manager saved the menu, the promotions or a photo: the menu on every screen follows, and
+      // an editor that is open looks for the new version
+      clearTimeout(menuTimer);
+      menuTimer = setTimeout(loadMenu, 100);
+      if (S.current && S.current.reload && (S.screen === "menu" || S.screen === "promotions")) S.current.reload();
     }
     if (ev.event === "reset") throw new Error("reset");
   }
@@ -466,6 +479,8 @@
       case "kitchen": return T("Kitchen");
       case "manager": return T("Manager");
       case "stock": return T("Stock");
+      case "menu": return T("Menu");
+      case "promotions": return T("Promotions");
       case "users": return T("Users");
       case "account": return T("Account");
     }
@@ -1317,7 +1332,10 @@
     return { update: update, reload: reload };
   }
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, kitchen: screenKitchen, manager: screenManager, stock: screenStock, users: screenUsers, account: screenAccount };
+  // The screens of the managers are in admin.js, which gets from here what it needs to draw and to ask.
+  var admin = window.KitchenAdmin({ h: h, clear: clear, T: T, api: api, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S, loadMenu: loadMenu });
+
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, kitchen: screenKitchen, manager: screenManager, stock: screenStock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 
