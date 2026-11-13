@@ -88,7 +88,7 @@ func TestNothingElseIsServedAsAFile(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/", nil)
 	rec := httptest.NewRecorder()
-	NewAPI(h.svc, testUsers(t), nil).ServeHTTP(rec, req)
+	NewAPI(h.svc, TokenAuth(testUsers(t)), nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /: %d", rec.Code)
 	}

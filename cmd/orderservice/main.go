@@ -46,6 +46,11 @@ const (
 	envPromos   = "ORDERSERVICE_PROMOTIONS"
 	envUsers    = "ORDERSERVICE_USERS"
 	envTimezone = "ORDERSERVICE_TIMEZONE"
+
+	envDatabase      = "ORDERSERVICE_DATABASE_URL"
+	envSessionIdle   = "ORDERSERVICE_SESSION_IDLE"
+	envSessionMax    = "ORDERSERVICE_SESSION_MAX"
+	envSecureCookies = "ORDERSERVICE_SECURE_COOKIES"
 )
 
 // Built-in defaults, used only when neither a flag nor a variable is given.
@@ -58,6 +63,8 @@ const (
 	defaultShutdownWait = 10 * time.Second
 	defaultHeaderTime   = 10 * time.Second
 	defaultReadBatch    = 500
+	defaultSessionIdle  = 12 * time.Hour
+	defaultSessionMax   = 7 * 24 * time.Hour
 )
 
 type config struct {
@@ -73,11 +80,26 @@ type config struct {
 	readBatch  int
 	jsonLogs   bool
 	timezoneIn string
+
+	// Accounts in PostgreSQL, instead of the tokens of the users file.
+	databaseURL   string
+	noMigrate     bool
+	sessionIdle   time.Duration
+	sessionMax    time.Duration
+	secureCookies bool
 }
+
+// withAccounts reports whether people sign in with a password (a database) instead of a token.
+func (c config) withAccounts() bool { return c.databaseURL != "" }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	err := run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr)
+	var err error
+	if len(os.Args) > 1 && os.Args[1] == "user" {
+		err = runUser(ctx, os.Args[2:], os.Getenv, terminalPassword(os.Stdin, os.Stderr), os.Stdout, os.Stderr)
+	} else {
+		err = run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr)
+	}
 	stop()
 	if errors.Is(err, flag.ErrHelp) {
 		os.Exit(0)
@@ -102,6 +124,23 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	topic := orDefault(getenv(envTopic), defaultTopic)
 	menuFile, promoFile, usersFile := getenv(envMenu), getenv(envPromos), getenv(envUsers)
 	tz := orDefault(getenv(envTimezone), defaultTimezone)
+	cfg.databaseURL = getenv(envDatabase)
+	cfg.sessionIdle, cfg.sessionMax = defaultSessionIdle, defaultSessionMax
+	if v := getenv(envSessionIdle); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return config{}, fmt.Errorf("%s: %w", envSessionIdle, err)
+		}
+		cfg.sessionIdle = d
+	}
+	if v := getenv(envSessionMax); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return config{}, fmt.Errorf("%s: %w", envSessionMax, err)
+		}
+		cfg.sessionMax = d
+	}
+	cfg.secureCookies = getenv(envSecureCookies) == "true" || getenv(envSecureCookies) == "1"
 
 	fs := flag.NewFlagSet("orderservice", flag.ContinueOnError)
 	fs.SetOutput(out)
@@ -110,7 +149,12 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	fs.StringVar(&topic, "topic", topic, "raftlog topic that holds the orders; created with one partition if missing ["+envTopic+"]")
 	fs.StringVar(&menuFile, "menu", menuFile, "the menu file (see examples/kitchen/menu.json) ["+envMenu+"]")
 	fs.StringVar(&promoFile, "promotions", promoFile, "the promotions file; none if empty ["+envPromos+"]")
-	fs.StringVar(&usersFile, "users", usersFile, "the users file: who may call the service, with which role ["+envUsers+"]")
+	fs.StringVar(&usersFile, "users", usersFile, "the users file: tokens and roles, for trying the service without a database ["+envUsers+"]")
+	fs.StringVar(&cfg.databaseURL, "database-url", cfg.databaseURL, "PostgreSQL that holds the accounts: people sign in with a password. Prefer the variable ["+envDatabase+"]: a flag shows in the process list")
+	fs.BoolVar(&cfg.noMigrate, "no-migrate", false, "do not bring the database schema up to date at start")
+	fs.DurationVar(&cfg.sessionIdle, "session-idle", cfg.sessionIdle, "a session that is not used this long ends ["+envSessionIdle+"]")
+	fs.DurationVar(&cfg.sessionMax, "session-max", cfg.sessionMax, "a session ends this long after sign-in at the latest ["+envSessionMax+"]")
+	fs.BoolVar(&cfg.secureCookies, "secure-cookies", cfg.secureCookies, "mark the session cookie Secure although the service listens on plain HTTP: set it behind a proxy that does TLS ["+envSecureCookies+"]")
 	fs.StringVar(&tz, "timezone", tz, "the venue's time zone, such as Asia/Ho_Chi_Minh: prices by time of day follow its clock ["+envTimezone+"]")
 	fs.DurationVar(&cfg.commandTO, "command-timeout", defaultCommandTime, "time allowed to one command, including the wait for the log")
 	fs.DurationVar(&cfg.startTO, "start-timeout", defaultStartTime, "time allowed to connect and read the whole log at start")
@@ -132,10 +176,14 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		return config{}, errors.New("no raftlog nodes: give -addr")
 	case menuFile == "":
 		return config{}, errors.New("no menu: give -menu")
-	case usersFile == "":
-		return config{}, errors.New("nobody could use the service: give -users")
+	case usersFile == "" && cfg.databaseURL == "":
+		return config{}, errors.New("nobody could use the service: give -database-url (people sign in with a password) or -users (tokens, for trying it out)")
+	case usersFile != "" && cfg.databaseURL != "":
+		return config{}, errors.New("-users and -database-url are two ways to sign in: give one")
 	case cfg.commandTO <= 0 || cfg.startTO <= 0 || cfg.readBatch < 1:
 		return config{}, errors.New("-command-timeout, -start-timeout and -read-batch must be positive")
+	case cfg.sessionIdle <= 0 || cfg.sessionMax <= 0 || cfg.sessionIdle > cfg.sessionMax:
+		return config{}, errors.New("-session-idle and -session-max must be positive, and a session cannot be idle for longer than it can last")
 	case topic == "":
 		return config{}, errors.New("the topic needs a name")
 	}
@@ -170,9 +218,29 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	if err != nil {
 		return err
 	}
-	users, err := orderservice.LoadUsers(cfg.usersFile)
-	if err != nil {
-		return err
+	var authn orderservice.Authenticator
+	if !cfg.withAccounts() {
+		users, err := orderservice.LoadUsers(cfg.usersFile)
+		if err != nil {
+			return err
+		}
+		authn = orderservice.TokenAuth(users)
+		logger.Warn("people sign in with the tokens of a file, which never expire: this is for trying the service; give -database-url to have accounts")
+	}
+
+	// The database is opened first: a wrong address or a migration that cannot run is a mistake
+	// of the setup, and is better reported at once than after the whole log has been read.
+	startCtx, cancel := context.WithTimeout(ctx, cfg.startTO)
+	defer cancel()
+	var apiOptions []orderservice.APIOption
+	if cfg.withAccounts() {
+		pool, acc, err := openAccounts(startCtx, cfg, logger)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		go purgeSessions(ctx, acc, logger)
+		apiOptions = append(apiOptions, orderservice.WithAccounts(acc, orderservice.AccountsOptions{SecureCookies: cfg.secureCookies, MaxLifetime: cfg.sessionMax}))
 	}
 
 	cl, err := client.New(cfg.addrs, client.WithRetryPause(50*time.Millisecond))
@@ -181,8 +249,6 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	}
 	defer cl.Close()
 
-	startCtx, cancel := context.WithTimeout(ctx, cfg.startTO)
-	defer cancel()
 	l := orderservice.NewRaftLog(cl, cfg.topic)
 	if err := l.Ensure(startCtx); err != nil {
 		return err
@@ -206,7 +272,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.listen, err)
 	}
-	srv := &http.Server{Handler: orderservice.NewAPI(svc, users, logger), ReadHeaderTimeout: defaultHeaderTime}
+	srv := &http.Server{Handler: orderservice.NewAPI(svc, authn, logger, apiOptions...), ReadHeaderTimeout: defaultHeaderTime}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(lis) }()
 	fmt.Fprintf(out, "orderservice %s listening on http://%s, log %q at %s, time zone %s\n", version, lis.Addr(), cfg.topic, strings.Join(cfg.addrs, ","), cfg.timezoneIn)

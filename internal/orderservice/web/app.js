@@ -43,7 +43,10 @@
   // ---- state ----------------------------------------------------------------------------
 
   var S = {
-    token: null, me: null, menu: null, stock: null,
+    // mode is how people sign in here: "password" (an account and a session cookie) or "token"
+    // (the tokens of a file). token is the bearer in token mode; in password mode it only marks
+    // that someone is signed in, since the session itself is in a cookie.
+    mode: "token", token: null, me: null, menu: null, stock: null,
     orders: new Map(), screens: [], screen: null, current: null,
     live: "off", stream: null,
     cart: [], draft: null, placed: null, codes: "", counterCustomer: "",
@@ -73,9 +76,12 @@
     this.message = L.describeError(status, body);
   }
 
-  function api(method, path, body) {
+  // With accounts, the browser holds the session in a cookie that the page cannot read and sends
+  // it by itself; with the tokens of a file, the token is sent as a bearer. quiet says that a 401
+  // is an answer to this request (a wrong password), not the end of the session.
+  function api(method, path, body, quiet) {
     var opts = { method: method, headers: {} };
-    if (S.token) opts.headers.Authorization = "Bearer " + S.token;
+    if (S.token && S.mode === "token") opts.headers.Authorization = "Bearer " + S.token;
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
@@ -84,7 +90,7 @@
       return r.text().then(function (text) {
         var data = null;
         try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
-        if (r.status === 401) { signOut("Your token was not accepted. Sign in again."); }
+        if (r.status === 401 && !quiet) { signOut(S.mode === "password" ? "Your session has ended. Sign in again." : "Your token was not accepted. Sign in again."); }
         if (!r.ok) throw new ApiError(r.status, data);
         return data;
       });
@@ -140,6 +146,8 @@
     return api("GET", "/api/stock").then(function (s) { S.stock = s; changed(); });
   }
   function loadOrders() {
+    // An administrator manages accounts and has no orders to read.
+    if (!S.me.permissions["order.view_all"] && !S.me.permissions["order.view_own"]) { S.orders = new Map(); return Promise.resolve(); }
     var path = isStaff() ? "/api/orders?status=placed,paid,preparing,ready&limit=500" : "/api/orders?limit=200";
     var jobs = [api("GET", path)];
     if (S.me.permissions["order.approve_cancel"] || S.me.permissions["order.issue_refund"]) {
@@ -189,10 +197,14 @@
       var ctl = new AbortController(), last = Date.now(), dog = null;
       S.stream = ctl;
       setLive("wait");
-      fetch("/api/stream", { headers: { Authorization: "Bearer " + token }, signal: ctl.signal }).then(function (r) {
+      var headers = S.mode === "token" ? { Authorization: "Bearer " + token } : {};
+      fetch("/api/stream", { headers: headers, signal: ctl.signal }).then(function (r) {
+        if (r.status === 401) { signOut(S.mode === "password" ? "Your session has ended. Sign in again." : "Your token was not accepted. Sign in again."); return; }
         if (!r.ok) throw new Error("status " + r.status);
         setLive("live");
         backoff = 500;
+        // A stream that ended with "reset" may have done so because the roles changed.
+        if (S.mode === "password") refreshMe();
         refreshAll().catch(function () {});
         dog = setInterval(function () { if (Date.now() - last > 45000) ctl.abort(); }, 5000); // keep-alives come every 15 s
         var reader = r.body.getReader(), dec = new TextDecoder(), buf = "";
@@ -219,22 +231,59 @@
 
   // ---- signing in and out ---------------------------------------------------------------
 
+  // begin shows the screens of a person who is signed in, whichever way they did it.
+  function begin(me) {
+    S.me = me;
+    S.screens = L.screensFor(me.permissions);
+    if (S.mode === "password") S.screens.push("account");
+    var name = me.display_name && me.display_name !== me.id ? me.display_name + " (" + me.id + ")" : me.id;
+    $("who").textContent = name + " · " + me.roles.join(", ") + (me.station ? " · station " + me.station : "");
+    $("signout").hidden = false;
+    if (me.must_change_password) {
+      // A temporary password opens nothing but the page that replaces it.
+      S.screens = []; S.screen = null;
+      clear($("tabs"));
+      renderMustChange();
+      return Promise.resolve();
+    }
+    var saved = load("kitchen.screen");
+    S.screen = S.screens.indexOf(saved) >= 0 ? saved : S.screens[0] || null;
+    return refreshAll().then(function () {
+      streamLoop(S.token);
+      render();
+      setTimeout(function () { settled = true; }, 700);
+    });
+  }
+
+  // start signs in with a token of the users file.
   function start(token) {
     S.token = token;
     return api("GET", "/api/me").then(function (me) {
-      S.me = me;
       store("kitchen.token", token);
-      S.screens = L.screensFor(me.permissions);
-      $("who").textContent = me.id + " · " + me.roles.join(", ") + (me.station ? " · station " + me.station : "");
-      $("signout").hidden = false;
-      var saved = load("kitchen.screen");
-      S.screen = S.screens.indexOf(saved) >= 0 ? saved : S.screens[0] || null;
-      return refreshAll().then(function () {
-        streamLoop(token);
-        render();
-        setTimeout(function () { settled = true; }, 700);
-      });
+      return begin(me);
     });
+  }
+
+  // startSession picks up the session that the cookie holds, or signs in with a password.
+  function startSession(me) {
+    S.token = "session";
+    return begin(me);
+  }
+
+  // refreshMe asks again who the person is: after a stream was cut, their roles may have changed,
+  // and the tabs and what the screens offer have to follow.
+  function refreshMe() {
+    return api("GET", "/api/me").then(function (me) {
+      var before = JSON.stringify([S.me && S.me.permissions, S.me && S.me.must_change_password]);
+      if (before === JSON.stringify([me.permissions, me.must_change_password])) return;
+      S.me = me;
+      S.screens = L.screensFor(me.permissions);
+      if (S.mode === "password") S.screens.push("account");
+      if (me.must_change_password) { begin(me); return; }
+      if (S.screens.indexOf(S.screen) < 0) S.screen = S.screens[0] || null;
+      refreshAll().catch(function () {});
+      render();
+    }, function () { /* the stream will try again */ });
   }
 
   function signOut(message) {
@@ -251,7 +300,15 @@
     renderSignIn(message);
   }
 
+  // userSignOut is the person asking to leave: with accounts the session ends on the server too,
+  // so that a copy of the cookie is of no use.
+  function userSignOut() {
+    if (S.mode !== "password") { signOut(""); return; }
+    api("POST", "/api/logout", {}, true).then(null, function () { /* the cookie goes with the tab's state anyway */ }).then(function () { signOut(""); });
+  }
+
   function renderSignIn(message) {
+    if (S.mode === "password") { renderPasswordSignIn(message); return; }
     var input = h("input", { type: "password", id: "token", autocomplete: "off", spellcheck: "false", "aria-describedby": "signin-err" });
     var err = h("p", { class: "problem", id: "signin-err", role: "alert" }, message || "");
     var btn = h("button", { type: "submit", class: "primary" }, "Sign in");
@@ -274,9 +331,80 @@
     input.focus();
   }
 
+  function fieldOf(id, label, input) { return h("div", { class: "field" }, h("label", { for: id }, label), input); }
+
+  function renderPasswordSignIn(message) {
+    var user = h("input", { type: "text", id: "username", autocomplete: "username", autocapitalize: "none", spellcheck: "false", maxlength: "32", "aria-describedby": "signin-err" });
+    var pass = h("input", { type: "password", id: "password", autocomplete: "current-password", "aria-describedby": "signin-err" });
+    var err = h("p", { class: "problem", id: "signin-err", role: "alert" }, message || "");
+    var btn = h("button", { type: "submit", class: "primary" }, "Sign in");
+    var form = h("form", { class: "card signin", onsubmit: function (e) {
+      e.preventDefault();
+      if (!user.value.trim() || !pass.value) { err.textContent = "Enter your login name and password."; return; }
+      btn.disabled = true; err.textContent = "";
+      // quiet: a 401 here is "wrong password", not an ended session
+      api("POST", "/api/login", { username: user.value.trim(), password: pass.value }, true).then(function (me) {
+        pass.value = "";
+        return startSession(me);
+      }).catch(function (ex) {
+        pass.value = "";
+        err.textContent = ex && ex.body && ex.body.error ? ex.body.error : "Could not reach the kitchen system. Try again.";
+        pass.focus();
+      }).then(function () { btn.disabled = false; });
+    } },
+      h("h1", {}, "Sign in"),
+      fieldOf("username", "Login name", user),
+      fieldOf("password", "Password", pass),
+      err, btn,
+      h("p", { class: "fine" }, "Forgot your password? Ask an administrator to reset it."));
+    clear($("view")).appendChild(form);
+    (message ? pass : user).focus();
+  }
+
+  // passwordForm changes the password of the person signed in. forced is the page that a
+  // temporary password leads to, where it is the only thing to do.
+  function passwordForm(onChanged, forced) {
+    var cur = h("input", { type: "password", id: "pw-current", autocomplete: "current-password" });
+    var nw = h("input", { type: "password", id: "pw-new", autocomplete: "new-password" });
+    var again = h("input", { type: "password", id: "pw-again", autocomplete: "new-password" });
+    var err = h("p", { class: "problem", role: "alert" });
+    var btn = h("button", { type: "submit", class: forced ? "primary" : "" }, "Change password");
+    var form = h("form", { class: forced ? "stack" : "card stack", onsubmit: function (e) {
+      e.preventDefault();
+      var problem = !cur.value ? "Enter your current password." : L.passwordProblem(nw.value, again.value, S.me.id);
+      if (problem) { err.textContent = problem; return; }
+      err.textContent = "";
+      btn.disabled = true;
+      api("POST", "/api/me/password", { current: cur.value, new: nw.value }).then(function (me) {
+        cur.value = nw.value = again.value = "";
+        toast(forced ? "Password set." : "Password changed. Your other sessions have ended.", "ok");
+        return onChanged(me);
+      }, function (ex) {
+        err.textContent = ex && ex.body && ex.body.error ? ex.body.error : "Could not reach the kitchen system. Try again.";
+      }).then(function () { btn.disabled = false; });
+    } },
+      forced ? null : h("h2", {}, "Change your password"),
+      fieldOf("pw-current", forced ? "Temporary password" : "Current password", cur),
+      fieldOf("pw-new", "New password", nw),
+      fieldOf("pw-again", "New password again", again),
+      h("p", { class: "fine" }, "At least 10 characters, not your login name. A phrase of several words is easier to remember than a jumble."),
+      err, btn);
+    return { form: form, focus: function () { cur.focus(); } };
+  }
+
+  // renderMustChange is the only page for an account whose password is a temporary one.
+  function renderMustChange() {
+    var pf = passwordForm(function (me) { return begin(me); }, true);
+    clear($("view")).appendChild(h("div", { class: "card signin" },
+      h("h1", {}, "Choose your own password"),
+      h("p", {}, "The password you were given is temporary. Choose one that only you know before you go on."),
+      pf.form));
+    pf.focus();
+  }
+
   // ---- the frame: tabs and the current screen -------------------------------------------
 
-  var TITLES = { order: "Order", myorders: "My orders", till: "Till", kitchen: "Kitchen", manager: "Manager", stock: "Stock" };
+  var TITLES = { order: "Order", myorders: "My orders", till: "Till", kitchen: "Kitchen", manager: "Manager", stock: "Stock", users: "Users", account: "Account" };
 
   function renderTabs() {
     var tabs = clear($("tabs"));
@@ -876,18 +1004,245 @@
     return { update: update };
   }
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, kitchen: screenKitchen, manager: screenManager, stock: screenStock };
+  // ---- your account ---------------------------------------------------------------------
+
+  function when(iso) { return new Date(iso).toLocaleString(); }
+  function kv(rows) {
+    return h("dl", { class: "kv" }, rows.filter(Boolean).map(function (r) { return [h("dt", {}, r[0]), h("dd", {}, r[1])]; }));
+  }
+
+  // twoStep makes a button that needs a second click within a few seconds, for what is not easy to undo.
+  function twoStep(btn, label, go) {
+    var armed = false, timer = null;
+    function reset() { armed = false; btn.textContent = label; btn.classList.remove("danger"); }
+    btn.addEventListener("click", function () {
+      if (!armed) { armed = true; btn.textContent = "Sure?"; btn.classList.add("danger"); timer = setTimeout(reset, 4000); return; }
+      clearTimeout(timer); reset(); go(btn);
+    });
+    return btn;
+  }
+
+  function screenAccount(root) {
+    var sessBox = h("div", { class: "card" });
+    var sessions = null;
+    function loadSessions() {
+      return api("GET", "/api/me/sessions").then(function (r) { sessions = r.sessions; changed(); }, function () { /* shown as it was */ });
+    }
+    var pf = passwordForm(function (me) { S.me = me; return loadSessions(); }, false);
+    var me = S.me;
+    root.appendChild(h("h1", {}, "Your account"));
+    root.appendChild(h("div", { class: "cols two" },
+      h("div", { class: "stack" },
+        h("div", { class: "card stack" }, h("h2", {}, "Who you are"), kv([
+          ["Login name", me.id], ["Name", me.display_name || me.id], ["Roles", me.roles.join(", ")],
+          me.station ? ["Station", me.station] : null,
+          me.session_expires_at ? ["This session ends", when(me.session_expires_at) + " if it is not used"] : null,
+        ])),
+        pf.form),
+      sessBox));
+    loadSessions();
+
+    function update() {
+      clear(sessBox);
+      sessBox.appendChild(h("h2", {}, "Where you are signed in"));
+      if (!sessions) { sessBox.appendChild(h("p", { class: "empty" }, "Loading…")); return; }
+      var others = sessions.filter(function (s) { return !s.current; });
+      sessBox.appendChild(h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Browser"), h("th", {}, "Last used"), h("th", {}, ""))),
+        h("tbody", {}, sessions.map(function (s) {
+          var end = s.current ? h("span", { class: "chip ready" }, "this one") : twoStep(h("button", { type: "button", class: "small ghost" }, "End"), "End", function (btn) {
+            run("revoke:" + s.id, btn, function () { return api("POST", "/api/me/sessions/" + s.id + "/revoke", {}); }).then(function (v) { if (v) { toast("Session ended.", "ok"); loadSessions(); } });
+          });
+          return h("tr", {}, h("td", {}, L.shortAgent(s.user_agent), h("small", { class: "fine" }, " " + s.ip)), h("td", {}, L.ageText(s.last_seen_at)), h("td", {}, end));
+        }))));
+      if (others.length) {
+        sessBox.appendChild(twoStep(h("button", { type: "button", class: "small ghost" }, "End all other sessions"), "End all other sessions", function (btn) {
+          run("revoke-others", btn, function () { return api("POST", "/api/me/sessions/revoke-others", {}); }).then(function (v) { if (v) { toast(v.revoked + " session(s) ended.", "ok"); loadSessions(); } });
+        }));
+      }
+      sessBox.appendChild(h("p", { class: "fine" }, "A session ends after a period without use, or at the latest after a few days. Changing your password ends all the others."));
+    }
+    return { update: update, reload: loadSessions };
+  }
+
+  // ---- users (the administrator) --------------------------------------------------------
+
+  function screenUsers(root) {
+    var st = { users: null, roles: null, events: null, subject: "", editing: null, temp: null };
+    var tempBox = h("div"), listBox = h("div", { class: "card scroll" }), eventsBox = h("div", { class: "card" });
+
+    // the form: one for creating and for editing
+    var idIn = h("input", { type: "text", id: "nu-id", maxlength: "32", autocomplete: "off", autocapitalize: "none", spellcheck: "false" });
+    var nameIn = h("input", { type: "text", id: "nu-name", maxlength: "60", autocomplete: "off" });
+    var stationIn = h("input", { type: "text", id: "nu-station", maxlength: "20", autocomplete: "off", autocapitalize: "none", placeholder: "drinks" });
+    var stationField = fieldOf("nu-station", "Station (kitchen workers)", stationIn);
+    stationField.hidden = true;
+    var roleBox = h("div", { class: "opts" });
+    var checks = {};
+    var formErr = h("p", { class: "problem", role: "alert" });
+    var formTitle = h("h2", {}, "New user");
+    var submit = h("button", { type: "submit", class: "primary" }, "Create user");
+    var cancel = h("button", { type: "button", class: "ghost", hidden: true, onclick: function () { edit(null); } }, "Cancel");
+    var form = h("form", { class: "card stack", onsubmit: function (e) {
+      e.preventDefault();
+      var roles = Object.keys(checks).filter(function (r) { return checks[r].checked; });
+      var body = { display_name: nameIn.value.trim(), roles: roles, station: stationField.hidden ? "" : stationIn.value.trim() };
+      if (!st.editing) body.id = idIn.value.trim();
+      formErr.textContent = !st.editing && !body.id ? "Choose a login name." : !body.display_name ? "Give a name." : !roles.length ? "Choose at least one role." : "";
+      if (formErr.textContent) return;
+      run("user-save:" + (st.editing || body.id), submit, function () {
+        return api(st.editing ? "PUT" : "POST", "/api/admin/users" + (st.editing ? "/" + encodeURIComponent(st.editing) : ""), body);
+      }).then(function (v) {
+        if (!v) return;
+        if (v.temporary_password) st.temp = { id: v.user.id, password: v.temporary_password };
+        toast(st.editing ? "Saved." : "User created.", "ok");
+        edit(null);
+        reload();
+      });
+    } },
+      formTitle,
+      fieldOf("nu-id", "Login name", idIn),
+      fieldOf("nu-name", "Name", nameIn),
+      h("fieldset", {}, h("legend", {}, "Roles"), roleBox),
+      stationField,
+      formErr,
+      h("div", { class: "row" }, submit, cancel),
+      h("p", { class: "fine" }, "A new user gets a temporary password, shown once, and chooses their own at the first sign-in."));
+
+    function syncStation() { stationField.hidden = !(checks.kitchen && checks.kitchen.checked); }
+    function buildRoles() {
+      clear(roleBox);
+      checks = {};
+      st.roles.forEach(function (r) {
+        var input = h("input", { type: "checkbox", value: r.role, onchange: syncStation });
+        checks[r.role] = input;
+        roleBox.appendChild(h("label", { class: "opt", title: r.permissions.join(", ") }, input, r.role));
+      });
+    }
+    function edit(id) {
+      st.editing = id;
+      var u = id && (st.users || []).filter(function (x) { return x.id === id; })[0];
+      idIn.value = u ? u.id : ""; idIn.disabled = !!u;
+      nameIn.value = u ? u.display_name : "";
+      stationIn.value = u ? u.station : "";
+      Object.keys(checks).forEach(function (r) { checks[r].checked = !!u && u.roles.indexOf(r) >= 0; });
+      syncStation();
+      formTitle.textContent = u ? "Edit " + u.id : "New user";
+      submit.textContent = u ? "Save changes" : "Create user";
+      cancel.hidden = !u;
+      formErr.textContent = "";
+      if (u) { form.scrollIntoView({ block: "nearest" }); nameIn.focus(); }
+    }
+
+    function reload() {
+      var jobs = [api("GET", "/api/admin/users"), api("GET", "/api/admin/events?limit=60" + (st.subject ? "&subject=" + encodeURIComponent(st.subject) : ""))];
+      if (!st.roles) jobs.push(api("GET", "/api/admin/roles"));
+      return Promise.all(jobs).then(function (rs) {
+        st.users = rs[0].users; st.events = rs[1].events;
+        if (rs[2]) { st.roles = rs[2].roles; buildRoles(); }
+        changed();
+      }, function () { /* shown as it was */ });
+    }
+
+    // an action on an account: POST to its path, show what came back
+    function act(user, path, key, ok) {
+      return function (btn) {
+        run(key + ":" + user.id, btn, function () { return api("POST", "/api/admin/users/" + encodeURIComponent(user.id) + path, {}); }).then(function (v) {
+          if (!v) return;
+          if (v.temporary_password) st.temp = { id: user.id, password: v.temporary_password };
+          toast(typeof ok === "function" ? ok(v) : ok, "ok");
+          reload();
+        });
+      };
+    }
+
+    function drawTemp() {
+      clear(tempBox);
+      if (!st.temp) return;
+      var pw = h("code", { class: "temp-pw", id: "temp-pw" }, st.temp.password);
+      tempBox.appendChild(h("div", { class: "card temp stack", role: "status" },
+        h("h2", {}, "Temporary password for " + st.temp.id),
+        pw,
+        h("p", { class: "fine" }, "This is shown once and is not kept anywhere in the clear. Give it to them in person; they must choose their own when they sign in."),
+        h("div", { class: "row" },
+          h("button", { type: "button", class: "small", onclick: function () {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(st.temp.password).then(function () { toast("Copied.", "ok"); }, function () { toast("Could not copy: select it and copy by hand.", "bad"); });
+            } else {
+              var r = document.createRange(); r.selectNodeContents(pw); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+              toast("Selected: copy it by hand.", "ok");
+            }
+          } }, "Copy"),
+          h("button", { type: "button", class: "small ghost", onclick: function () { st.temp = null; changed(); } }, "Hide"))));
+    }
+
+    function drawList() {
+      clear(listBox);
+      listBox.appendChild(h("h2", {}, "Users"));
+      if (!st.users) { listBox.appendChild(h("p", { class: "empty" }, "Loading…")); return; }
+      listBox.appendChild(h("table", { class: "stackrows" }, h("thead", {}, h("tr", {}, h("th", {}, "User"), h("th", {}, "Roles"), h("th", {}, "State"), h("th", {}, "Last sign-in"), h("th", {}, ""))),
+        h("tbody", {}, st.users.map(function (u) {
+          var s = L.userState(u);
+          var mine = u.id === S.me.id;
+          var acts = [h("button", { type: "button", class: "small ghost", onclick: function () { edit(u.id); } }, "Edit")];
+          if (u.locked_until && s.key === "locked") acts.push(h("button", { type: "button", class: "small ghost", onclick: function (e) { act(u, "/unlock", "unlock", "Unlocked.")(e.currentTarget); } }, "Unlock"));
+          if (!mine) {
+            acts.push(twoStep(h("button", { type: "button", class: "small ghost" }, u.disabled ? "Enable" : "Disable"), u.disabled ? "Enable" : "Disable", act(u, u.disabled ? "/enable" : "/disable", u.disabled ? "enable" : "disable", u.disabled ? "Enabled." : "Disabled. Their sessions have ended.")));
+            acts.push(twoStep(h("button", { type: "button", class: "small ghost" }, "Reset password"), "Reset password", act(u, "/reset-password", "reset", "Password reset. Their sessions have ended.")));
+          }
+          if (u.active_sessions > 0) acts.push(twoStep(h("button", { type: "button", class: "small ghost" }, "End sessions"), "End sessions", act(u, "/revoke-sessions", "revoke", function (v) { return v.revoked + " session(s) ended."; })));
+          acts.push(h("button", { type: "button", class: "small ghost", onclick: function () { st.subject = u.id; reload(); } }, "History"));
+          return h("tr", {},
+            h("td", {}, h("b", {}, u.display_name), h("small", { class: "fine" }, " " + u.id + (mine ? " (you)" : ""))),
+            h("td", { "data-label": "Roles" }, u.roles.join(", "), u.station ? h("small", { class: "fine" }, " · " + u.station) : null),
+            h("td", { "data-label": "State" }, h("span", { class: "badge " + (s.key === "active" ? "ready" : s.key === "change" ? "placed" : "cancelled") }, s.label), u.active_sessions ? h("small", { class: "fine" }, " " + u.active_sessions + " signed in") : null),
+            h("td", { "data-label": "Last sign-in" }, u.last_login_at ? L.ageText(u.last_login_at) + (L.ageText(u.last_login_at) === "just now" ? "" : " ago") : "never"),
+            h("td", {}, h("div", { class: "acts" }, acts)));
+        }))));
+    }
+
+    function drawEvents() {
+      clear(eventsBox);
+      eventsBox.appendChild(h("div", { class: "row" }, h("h2", { class: "grow" }, st.subject ? "Activity of " + st.subject : "Activity"),
+        st.subject ? h("button", { type: "button", class: "small ghost", onclick: function () { st.subject = ""; reload(); } }, "Show everyone") : null));
+      if (!st.events) { eventsBox.appendChild(h("p", { class: "empty" }, "Loading…")); return; }
+      if (!st.events.length) { eventsBox.appendChild(h("p", { class: "empty" }, "Nothing yet.")); return; }
+      eventsBox.appendChild(h("ul", { class: "events" }, st.events.map(function (e) {
+        return h("li", {}, h("span", { class: "when" }, when(e.at)), " " + L.describeEvent(e), e.ip ? h("small", { class: "fine" }, " · " + e.ip) : null);
+      })));
+    }
+
+    root.appendChild(h("h1", {}, "Users"));
+    root.appendChild(h("div", { class: "cols two" }, h("div", { class: "stack" }, tempBox, listBox, eventsBox), h("div", { class: "stack" }, form)));
+    reload();
+    function update() { drawTemp(); drawList(); drawEvents(); }
+    return { update: update, reload: reload };
+  }
+
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, kitchen: screenKitchen, manager: screenManager, stock: screenStock, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 
-  $("signout").addEventListener("click", function () { signOut(""); });
-  // ages and the late marks change with time, not only with events
-  setInterval(function () { if (S.current && S.token) S.current.update(); }, 20000);
+  $("signout").addEventListener("click", userSignOut);
+  // ages and the late marks change with time, not only with events; screens that read their own
+  // data (accounts) read it again
+  setInterval(function () {
+    if (!S.current || !S.token) return;
+    S.current.update();
+    if (S.current.reload) S.current.reload();
+  }, 20000);
 
-  var saved = load("kitchen.token");
-  if (saved) {
-    start(saved).catch(function () { signOut(""); });
-  } else {
-    renderSignIn("");
-  }
+  // How do people sign in here? With accounts, a session cookie may already be there.
+  fetch("/api/auth").then(function (r) { return r.json(); }).then(function (a) { return a.mode; }, function () { return "token"; }).then(function (mode) {
+    S.mode = mode === "password" ? "password" : "token";
+    if (S.mode === "password") {
+      api("GET", "/api/me", undefined, true).then(startSession, function () { renderSignIn(""); });
+      return;
+    }
+    var saved = load("kitchen.token");
+    if (saved) {
+      start(saved).catch(function () { signOut(""); });
+    } else {
+      renderSignIn("");
+    }
+  });
 })();

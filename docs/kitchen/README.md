@@ -85,11 +85,13 @@ that worked is not reported as forbidden.
 ## Not here yet
 
 The service is done in a reduced form ([service.md](service.md)): events in one topic, roles
-enforced at the API, the menu, promotions and users read from files, and the screens for the
-customer, the till, the kitchen, the manager and the storekeeper, served by the service itself.
-Not done: automated tests that drive the screens in a browser (they were checked by hand), a
-display for customers who are waiting, and printed receipts. Left out on purpose: a database,
-accounts and login, shifts, and editing the menu without a restart.
+enforced at the API, the menu and promotions read from files, accounts with a login in
+PostgreSQL ([ADR 14](../adr/0014-accounts-in-postgresql.md)), and the screens for the customer,
+the till, the kitchen, the manager, the storekeeper and the administrator, served by the service
+itself. Not done yet, and planned: editing the menu and promotions on a screen, shifts and the cash
+drawer, reports, and customers who register and earn points. Not done: automated tests that drive
+the screens in a browser (they were checked by hand), a display for customers who are waiting, and
+printed receipts.
 
 The menu used in the tests, and the sample files in `examples/kitchen`, are invented. Real
 menus are files that the venue provides.
