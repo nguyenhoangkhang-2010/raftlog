@@ -63,7 +63,8 @@ cluster acknowledged is there. [docs/observability.md](docs/observability.md) de
 - [x] Long-poll `Fetch`: a reader waits for the next message instead of polling (`-wait`, `client.WaitUpTo`, `-max-fetch-wait`)
 - [x] Client library (`client`) that follows the leader and rides through failover
 - [x] Demo application: a virtual waiting room for course registration, whose whole state is two raftlog topics ([docs/waitingroom.md](docs/waitingroom.md))
-- [x] Kitchen system, the service: orders, payments, kitchen tickets, cancellations and stock as events in one raftlog topic, a JSON API with roles and a stream of changes, and the state rebuilt from the log at start ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 13](docs/adr/0013-order-service-on-one-log.md)); the screens are next
+- [x] Kitchen system, the service: orders, payments, kitchen tickets, cancellations and stock as events in one raftlog topic, a JSON API with roles and a stream of changes, and the state rebuilt from the log at start ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 13](docs/adr/0013-order-service-on-one-log.md))
+- [x] Kitchen system, the screens: order, my orders, till, kitchen board, manager and stock, served by the service itself as embedded files (a "canteen ticket" look, two fonts included) with no framework and no outside request, live through the stream, under a strict content security policy (`http://127.0.0.1:8100/`; [the screens](docs/kitchen/service.md#the-screens))
 - [x] Benchmark tool (`raftlogbench`): write throughput and latency, and failover time with a check of every node's log; measured results and their limits in [bench/README.md](bench/README.md)
 - [x] Group commit: requests that arrive together share their fsyncs, the journal write and the replication round, 3.4 to 5.2 times the throughput with 16 concurrent producers on the test laptop ([ADR 12](docs/adr/0012-group-commit.md))
 - [x] Prometheus metrics (`-metrics-listen`), `raftlogctl topics` and `groups`, and a cluster console that kills nodes, writes under load and verifies that no acknowledged write was lost ([docs/observability.md](docs/observability.md))
@@ -194,7 +195,7 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 | `cmd/waitingroom`, `internal/waitingroom` | Demo application: virtual waiting room (web page, API, admission controller) |
 | `cmd/wrsim` | Simulates a crowd arriving at the waiting room |
 | `internal/kitchen` | Domain core of the kitchen system: money, roles, menu, promotions, stock, event-sourced orders ([docs/kitchen](docs/kitchen/README.md)) |
-| `cmd/orderservice`, `internal/orderservice` | The kitchen service on raftlog: commands, the state built from the log, the HTTP API |
+| `cmd/orderservice`, `internal/orderservice` | The kitchen service on raftlog: commands, the state built from the log, the HTTP API, and the screens (`web/`) |
 | `examples/kitchen` | Sample menu, promotions and users for trying the service (invented, not a real venue) |
 | `internal/storage` | Segments, index, crash recovery |
 | `internal/raft` | Raft consensus implementation |

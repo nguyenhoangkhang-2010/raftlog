@@ -41,6 +41,7 @@ func NewAPI(svc *Service, users *Users, logger *slog.Logger) http.Handler {
 	}
 	a := &API{svc: svc, users: users, logger: logger}
 	mux := http.NewServeMux()
+	registerAssets(mux)
 	mux.HandleFunc("GET /healthz", a.health)
 	mux.HandleFunc("GET /api/menu", a.menu)
 	mux.HandleFunc("GET /api/me", a.auth(a.me))
@@ -65,7 +66,7 @@ func NewAPI(svc *Service, users *Users, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/stock/count", a.auth(a.moveStock(stock.Count)))
 
 	mux.HandleFunc("GET /api/stream", a.auth(a.stream))
-	return a.recoverer(mux)
+	return secure(a.recoverer(mux))
 }
 
 func (a *API) recoverer(next http.Handler) http.Handler {

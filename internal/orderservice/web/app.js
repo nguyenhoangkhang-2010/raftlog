@@ -1,0 +1,893 @@
+// The screens of the kitchen system. Everything that is shown is put on the page with textContent
+// and element creation, never as HTML, because a note that a customer typed is shown on the
+// kitchen's screen. The page keeps the token in the tab (sessionStorage) and sends it in a header.
+(function () {
+  "use strict";
+  var L = window.KitchenLogic;
+
+  // ---- small helpers --------------------------------------------------------------------
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // h makes an element: h("div", {class: "x", onclick: fn}, child, "text", ...). A child that is
+  // a string becomes a text node, an array is flattened, null and false are skipped.
+  function h(tag, attrs) {
+    var el = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k.slice(0, 2) === "on" && typeof v === "function") el.addEventListener(k.slice(2), v);
+      else if (k === "class") el.className = v;
+      else if (k === "value") el.value = v;
+      else if (v === true) el.setAttribute(k, "");
+      else el.setAttribute(k, v);
+    });
+    for (var i = 2; i < arguments.length; i++) add(el, arguments[i]);
+    return el;
+  }
+  function add(el, c) {
+    if (c === null || c === undefined || c === false) return;
+    if (Array.isArray(c)) c.forEach(function (x) { add(el, x); });
+    else el.appendChild(typeof c === "object" ? c : document.createTextNode(String(c)));
+  }
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+  function money(n) { return L.formatMoney(n); }
+  function randBytes(n) { var a = new Uint8Array(n); (window.crypto || window.msCrypto).getRandomValues(a); return a; }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function store(key, v) {
+    try { if (v === null) sessionStorage.removeItem(key); else sessionStorage.setItem(key, v); } catch (e) { /* storage may be blocked */ }
+  }
+  function load(key) { try { return sessionStorage.getItem(key); } catch (e) { return null; } }
+
+  // ---- state ----------------------------------------------------------------------------
+
+  var S = {
+    token: null, me: null, menu: null, stock: null,
+    orders: new Map(), screens: [], screen: null, current: null,
+    live: "off", stream: null,
+    cart: [], draft: null, placed: null, codes: "", counterCustomer: "",
+    ui: { payFor: null, reasonFor: null, refundFor: null, station: null, audit: null },
+    pending: {}, // command IDs of actions that were sent and not yet answered, by action
+  };
+
+  // ---- motion ---------------------------------------------------------------------------
+
+  // The lists are drawn again whenever something changes, so a card must not play its entrance
+  // each time. motion remembers the state in which each card was last drawn and says what is
+  // new: "enter" for a card that was not on the screen, "stamp" for one whose status changed,
+  // and "" for the rest. Nothing moves for what is drawn when the screens first load.
+  var shown = {}, settled = false;
+  function motion(key, state) {
+    var before = shown[key];
+    shown[key] = state;
+    if (!settled) return "";
+    return before === undefined ? "enter" : before !== state ? "stamp" : "";
+  }
+
+  // ---- the service ----------------------------------------------------------------------
+
+  function ApiError(status, body) {
+    this.status = status;
+    this.body = body || {};
+    this.message = L.describeError(status, body);
+  }
+
+  function api(method, path, body) {
+    var opts = { method: method, headers: {} };
+    if (S.token) opts.headers.Authorization = "Bearer " + S.token;
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(path, opts).then(function (r) {
+      return r.text().then(function (text) {
+        var data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+        if (r.status === 401) { signOut("Your token was not accepted. Sign in again."); }
+        if (!r.ok) throw new ApiError(r.status, data);
+        return data;
+      });
+    });
+  }
+
+  // cmd gives the ID of a command. The same action keeps the same ID until it is answered, so
+  // pressing a button again after a timeout does not do the thing twice.
+  function cmd(key) {
+    if (!S.pending[key]) S.pending[key] = L.newCommandID(key.split(":")[0], randBytes);
+    return S.pending[key];
+  }
+
+  // run sends a command for an action. The button shows that it is busy. A definite refusal
+  // ends the action; no answer, or a server that could not, keeps its ID for the next press.
+  function run(key, btn, send) {
+    if (btn && btn.disabled) return Promise.resolve(null);
+    if (btn) btn.disabled = true;
+    return send(cmd(key)).then(function (res) {
+      delete S.pending[key];
+      return res;
+    }, function (err) {
+      if (err && err.status >= 400 && err.status < 500) delete S.pending[key];
+      toast(err && err.message ? err.message : "The request did not get an answer. Press again to retry.", "bad");
+      return null;
+    }).then(function (res) {
+      if (btn) btn.disabled = false;
+      return res;
+    });
+  }
+
+  function putOrder(o) {
+    if (!o || !o.id) return;
+    S.orders.set(o.id, o);
+    changed();
+  }
+
+  // ---- toasts ---------------------------------------------------------------------------
+
+  function toast(msg, kind) {
+    var el = h("div", { class: "toast " + (kind || ""), role: kind === "bad" ? "alert" : "status" }, msg);
+    $("toasts").appendChild(el);
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, kind === "bad" ? 9000 : 4500);
+  }
+
+  // ---- loading --------------------------------------------------------------------------
+
+  var isStaff = function () { return !!(S.me && S.me.permissions["order.view_all"]); };
+
+  function loadMenu() { return api("GET", "/api/menu").then(function (m) { S.menu = m; changed(); }); }
+  function loadStock() {
+    if (!S.me || !S.me.permissions["stock.view"]) return Promise.resolve();
+    return api("GET", "/api/stock").then(function (s) { S.stock = s; changed(); });
+  }
+  function loadOrders() {
+    var path = isStaff() ? "/api/orders?status=placed,paid,preparing,ready&limit=500" : "/api/orders?limit=200";
+    var jobs = [api("GET", path)];
+    if (S.me.permissions["order.approve_cancel"] || S.me.permissions["order.issue_refund"]) {
+      jobs.push(api("GET", "/api/orders?status=completed,cancelled&limit=300"));
+    }
+    return Promise.all(jobs).then(function (rs) {
+      var fresh = new Map();
+      rs.forEach(function (r) { r.orders.forEach(function (o) { fresh.set(o.id, o); }); });
+      S.orders = fresh;
+      changed();
+    });
+  }
+  function refreshAll() { return Promise.all([loadMenu(), loadOrders(), loadStock()]); }
+  function refreshOrder(id) {
+    return api("GET", "/api/orders/" + encodeURIComponent(id)).then(putOrder, function () { /* not for this person */ });
+  }
+
+  var menuTimer = null;
+  function onEvent(ev) {
+    var data = {};
+    try { data = JSON.parse(ev.data); } catch (e) { return; }
+    if (ev.event === "order" && data.order) refreshOrder(data.order);
+    if (ev.event === "stock") {
+      loadStock();
+      clearTimeout(menuTimer);
+      menuTimer = setTimeout(loadMenu, 300); // what is sold out may have changed
+    }
+    if (ev.event === "reset") throw new Error("reset");
+  }
+
+  // ---- the stream of changes ------------------------------------------------------------
+
+  function setLive(state) {
+    S.live = state;
+    var el = $("live");
+    el.hidden = !S.token;
+    el.className = "pill " + (state === "live" ? "live" : state === "wait" ? "wait" : "off");
+    el.textContent = state === "live" ? "live" : state === "wait" ? "reconnecting…" : "offline";
+  }
+
+  // streamLoop listens for changes with fetch, because EventSource cannot send a header. After
+  // every (re)connection it reads the state first: an event only says that something changed.
+  function streamLoop(token) {
+    var backoff = 500;
+    (function again() {
+      if (S.token !== token) return;
+      var ctl = new AbortController(), last = Date.now(), dog = null;
+      S.stream = ctl;
+      setLive("wait");
+      fetch("/api/stream", { headers: { Authorization: "Bearer " + token }, signal: ctl.signal }).then(function (r) {
+        if (!r.ok) throw new Error("status " + r.status);
+        setLive("live");
+        backoff = 500;
+        refreshAll().catch(function () {});
+        dog = setInterval(function () { if (Date.now() - last > 45000) ctl.abort(); }, 5000); // keep-alives come every 15 s
+        var reader = r.body.getReader(), dec = new TextDecoder(), buf = "";
+        return (function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) return;
+            last = Date.now();
+            buf += dec.decode(chunk.value, { stream: true });
+            var parsed = L.parseStream(buf);
+            buf = parsed.rest;
+            parsed.events.forEach(onEvent);
+            return pump();
+          });
+        })();
+      }).catch(function () { /* reconnect below */ }).then(function () {
+        clearInterval(dog);
+        if (S.token !== token) return;
+        setLive("wait");
+        setTimeout(again, backoff);
+        backoff = Math.min(backoff * 2, 8000);
+      });
+    })();
+  }
+
+  // ---- signing in and out ---------------------------------------------------------------
+
+  function start(token) {
+    S.token = token;
+    return api("GET", "/api/me").then(function (me) {
+      S.me = me;
+      store("kitchen.token", token);
+      S.screens = L.screensFor(me.permissions);
+      $("who").textContent = me.id + " · " + me.roles.join(", ") + (me.station ? " · station " + me.station : "");
+      $("signout").hidden = false;
+      var saved = load("kitchen.screen");
+      S.screen = S.screens.indexOf(saved) >= 0 ? saved : S.screens[0] || null;
+      return refreshAll().then(function () {
+        streamLoop(token);
+        render();
+        setTimeout(function () { settled = true; }, 700);
+      });
+    });
+  }
+
+  function signOut(message) {
+    if (S.stream) S.stream.abort();
+    S.token = null; S.me = null; S.orders = new Map(); S.menu = null; S.stock = null; S.cart = []; S.draft = null;
+    shown = {}; settled = false;
+    S.pending = {}; S.current = null; S.ui = { payFor: null, reasonFor: null, refundFor: null, station: null, audit: null };
+    store("kitchen.token", null);
+    $("who").textContent = "not signed in";
+    $("signout").hidden = true;
+    setLive("off");
+    $("live").hidden = true;
+    clear($("tabs"));
+    renderSignIn(message);
+  }
+
+  function renderSignIn(message) {
+    var input = h("input", { type: "password", id: "token", autocomplete: "off", spellcheck: "false", "aria-describedby": "signin-err" });
+    var err = h("p", { class: "problem", id: "signin-err", role: "alert" }, message || "");
+    var btn = h("button", { type: "submit", class: "primary" }, "Sign in");
+    var form = h("form", { class: "card signin", onsubmit: function (e) {
+      e.preventDefault();
+      var token = input.value.trim();
+      if (!token) { err.textContent = "Enter your token."; return; }
+      btn.disabled = true;
+      start(token).catch(function (ex) {
+        S.token = null;
+        err.textContent = ex && ex.status === 401 ? "That token was not accepted." : "Could not reach the kitchen system. Try again.";
+      }).then(function () { btn.disabled = false; });
+    } },
+      h("h1", {}, "Sign in"),
+      h("div", { class: "field" }, h("label", { for: "token" }, "Your token"), input),
+      err,
+      btn,
+      h("p", { class: "fine" }, "Ask the manager for your token. It is kept in this tab only, and goes away when you close it."));
+    clear($("view")).appendChild(form);
+    input.focus();
+  }
+
+  // ---- the frame: tabs and the current screen -------------------------------------------
+
+  var TITLES = { order: "Order", myorders: "My orders", till: "Till", kitchen: "Kitchen", manager: "Manager", stock: "Stock" };
+
+  function renderTabs() {
+    var tabs = clear($("tabs"));
+    S.screens.forEach(function (id) {
+      tabs.appendChild(h("button", { type: "button", "aria-current": id === S.screen ? "page" : null, onclick: function () { go(id); } }, TITLES[id]));
+    });
+  }
+
+  function go(id) {
+    if (S.screen === "order" && id !== "order") S.placed = null; // the "order placed" banner belongs to the visit that placed it
+    S.screen = id;
+    store("kitchen.screen", id);
+    render();
+  }
+
+  function render() {
+    renderTabs();
+    var view = clear($("view"));
+    if (!S.screen) {
+      view.appendChild(h("div", { class: "card signin" }, h("h1", {}, "Nothing here for you"), h("p", { class: "fine" }, "This account has no screen in the kitchen system.")));
+      return;
+    }
+    S.current = SCREENS[S.screen](view);
+    S.current.update();
+  }
+
+  var pendingFrame = false;
+  function changed() {
+    if (pendingFrame) return;
+    pendingFrame = true;
+    window.requestAnimationFrame(function () {
+      pendingFrame = false;
+      if (S.current) S.current.update();
+    });
+  }
+
+  // ---- pieces shared by the screens -----------------------------------------------------
+
+  function orderList() {
+    var list = [];
+    S.orders.forEach(function (o) { list.push(o); });
+    return list;
+  }
+
+  // orderCard shows an order. actions is a list of elements for its footer.
+  function orderCard(o, actions, extra) {
+    var tickets = (o.tickets || []).map(function (t) {
+      return h("span", { class: "chip " + t.status }, t.station + ": " + t.status);
+    });
+    var move = motion("o:" + o.id, o.status);
+    var cls = "order" + (o.cancel_request ? " attention" : "") + (move === "enter" ? " enter" : "");
+    return h("article", { class: cls, "aria-label": "Order " + o.number },
+      h("div", { class: "head" },
+        h("span", { class: "num" }, "#" + o.number),
+        h("span", { class: "badge " + o.status + (move === "stamp" ? " stamp" : "") }, o.status),
+        o.channel === "counter" ? h("span", { class: "chip" }, "counter") : null,
+        h("span", { class: "age", title: o.placed_at }, L.ageText(o.placed_at))),
+      h("ul", { class: "lines" }, (o.lines || []).map(function (l) {
+        return h("li", {}, h("span", {}, l.quantity + " × " + l.name,
+          // A combo lists what is in it; any other line lists its chosen options.
+          (l.pieces && l.pieces.length > 1) ? h("small", {}, l.pieces.map(function (p) { return p.name; }).join(" + "))
+            : (l.options && l.options.length) ? h("small", {}, l.options.join(", ")) : null,
+          l.note ? h("small", { class: "note" }, "“" + l.note + "”") : null),
+          h("span", { class: "money" }, money(l.total)));
+      })),
+      (o.discounts || []).map(function (d) {
+        return h("div", { class: "row" }, h("span", { class: "fine" }, d.name), h("span", { class: "grow" }), h("span", { class: "money fine" }, "−" + money(d.amount)));
+      }),
+      h("div", { class: "row" }, h("b", {}, "Total"), h("span", { class: "grow" }), h("b", { class: "money" }, money(o.total))),
+      tickets.length ? h("div", { class: "tickets" }, tickets) : null,
+      o.payment ? h("div", { class: "fine" }, "Paid by " + o.payment.method + (o.payment.change ? ", change " + money(o.payment.change) : "") + (o.payment.reference ? " · " + o.payment.reference : "")) : null,
+      o.cancel_request ? h("div", { class: "banner warn" }, "Cancellation requested by " + o.cancel_request.by + ": " + o.cancel_request.reason) : null,
+      o.status === "cancelled" ? h("div", { class: "banner bad" }, "Cancelled" + (o.cancel_reason ? ": " + o.cancel_reason : "") + (o.refunded ? " · refunded " + money(o.refunded) : "")) : null,
+      o.status === "completed" && o.refunded ? h("div", { class: "banner warn" }, "Refunded " + money(o.refunded)) : null,
+      extra || null,
+      actions && actions.length ? h("div", { class: "row" }, actions) : null);
+  }
+
+  // ask asks for a reason in the card, and calls send(reason, button) when it is given.
+  function reasonForm(key, label, send) {
+    var input = h("input", { type: "text", maxlength: "200", placeholder: label, "aria-label": label });
+    var go = h("button", { type: "submit", class: "small" }, "Send");
+    return h("form", { class: "row", onsubmit: function (e) {
+      e.preventDefault();
+      if (!input.value.trim()) { input.focus(); return; }
+      send(input.value.trim(), go);
+    } }, input, go, h("button", { type: "button", class: "small ghost", onclick: function () { S.ui.reasonFor = null; changed(); } }, "Back"));
+  }
+
+
+  // cancelAction offers the right way to cancel: directly while unpaid, as a request afterwards.
+  function cancelActions(o) {
+    var acts = [];
+    var key = (o.status === "placed" ? "cancel:" : "cancel-request:") + o.id;
+    // The button is replaced by its form while the form is open; "Back" in the form brings it back.
+    if (S.ui.reasonFor !== key && (o.status === "placed" || ((o.status === "paid" || o.status === "preparing" || o.status === "ready") && !o.cancel_request))) {
+      acts.push(h("button", { type: "button", class: "small ghost", onclick: function () { S.ui.reasonFor = key; changed(); } },
+        o.status === "placed" ? "Cancel order" : "Ask to cancel"));
+    }
+    var form = S.ui.reasonFor === key ? reasonForm(key, "Why?", function (reason, btn) {
+      var ep = o.status === "placed" ? "cancel" : "cancel-request";
+      run(key, btn, function (id) { return api("POST", "/api/orders/" + encodeURIComponent(o.id) + "/" + ep, { command_id: id, reason: reason }); }).then(function (v) {
+        if (v) { S.ui.reasonFor = null; putOrder(v); toast(o.status === "placed" ? "Order cancelled." : "Cancellation requested. A manager will decide.", "ok"); }
+      });
+    }) : null;
+    return { buttons: acts, form: form };
+  }
+
+  // ---- the order screen (customer, and the cashier at the counter) ----------------------
+
+  function cartSame(a, b) {
+    return JSON.stringify([a.item, a.combo, a.options, a.picks, a.note || ""]) === JSON.stringify([b.item, b.combo, b.options, b.picks, b.note || ""]);
+  }
+  function addToCart(line) {
+    for (var i = 0; i < S.cart.length; i++) {
+      if (cartSame(S.cart[i], line)) { S.cart[i].quantity += line.quantity; cartChanged(); return; }
+    }
+    S.cart.push(line);
+    cartChanged();
+  }
+  function cartChanged() { delete S.pending.place; S.placed = null; changed(); }
+
+  function findItem(id) { return (S.menu.items || []).filter(function (i) { return i.id === id; })[0]; }
+
+  function lineTitle(l) {
+    if (l.item) {
+      var it = findItem(l.item);
+      return it ? it.name : l.item;
+    }
+    var c = (S.menu.combos || []).filter(function (x) { return x.id === l.combo; })[0];
+    return c ? c.name : l.combo;
+  }
+  function lineDetail(l) {
+    if (l.item) {
+      var it = findItem(l.item);
+      return it ? L.optionNames(it, l.options).join(", ") : "";
+    }
+    return (l.picks || []).map(function (p) {
+      var pit = findItem(p.item);
+      if (!pit) return p.item;
+      var names = L.optionNames(pit, p.options);
+      return pit.name + (names.length ? " (" + names.join(", ") + ")" : "");
+    }).join(" + ");
+  }
+
+  // optionGroups draws the choices of an item. onchange gets the new choice.
+  function optionGroups(item, choice, onchange) {
+    return (item.groups || []).map(function (g) {
+      var picked = (choice && choice[g.id]) || [];
+      var problem = L.groupProblem(g, choice);
+      return h("fieldset", {},
+        h("legend", {}, g.name + (g.min > 0 ? " (required)" : "")),
+        h("div", { class: "opts" }, g.options.map(function (o) {
+          var on = picked.indexOf(o.id) >= 0;
+          var input = h("input", { type: g.max === 1 ? "radio" : "checkbox", name: "g-" + item.id + "-" + g.id, checked: on || null,
+            onclick: function () { onchange(L.toggleOption(choice, g, o.id)); } });
+          return h("label", { class: "opt" + (on ? " on" : "") }, input, o.name + (o.delta ? " (" + (o.delta > 0 ? "+" : "") + money(o.delta) + ")" : ""));
+        })),
+        problem ? h("div", { class: "problem" }, problem) : null);
+    });
+  }
+
+  function itemCard(item) {
+    var open = S.draft && S.draft.item === item.id;
+    var kids = [h("div", { class: "row" }, h("span", { class: "name" }, item.name), h("span", { class: "grow" }), h("span", { class: "price" }, money(item.price)))];
+    if (item.sold_out) kids.push(h("div", {}, h("span", { class: "badge soldout" }, "sold out")));
+    var needsChoice = (item.groups || []).length > 0;
+    var addBtn = h("button", { type: "button", class: "small", disabled: item.sold_out || null, onclick: function () {
+      if (!needsChoice) { addToCart({ item: item.id, options: {}, quantity: 1, note: "" }); return; }
+      S.draft = open ? null : { item: item.id, choice: {}, quantity: 1, note: "" };
+      changed();
+    } }, needsChoice ? (open ? "Close" : "Choose…") : "Add");
+    kids.push(h("div", { class: "row" }, addBtn));
+    if (open) {
+      var d = S.draft;
+      var problems = L.itemProblems(item, d.choice);
+      kids.push(h("div", { class: "panel" },
+        optionGroups(item, d.choice, function (c) { d.choice = c; changed(); }),
+        h("div", { class: "row" }, quantityStepper(d.quantity, function (q) { d.quantity = q; changed(); }),
+          h("span", { class: "grow" }), h("b", { class: "money" }, money(L.unitPrice(item, d.choice) * d.quantity))),
+        h("button", { type: "button", disabled: problems.length ? true : null, onclick: function () {
+          addToCart({ item: item.id, options: d.choice, quantity: d.quantity, note: "" });
+          S.draft = null;
+          changed();
+        } }, "Add to cart")));
+    }
+    return h("div", { class: "item" + (item.sold_out ? " soldout" : "") }, kids);
+  }
+
+  function quantityStepper(q, set) {
+    return h("span", { class: "stepper" },
+      h("button", { type: "button", class: "small ghost", "aria-label": "One less", disabled: q <= 1 || null, onclick: function () { set(q - 1); } }, "−"),
+      h("b", { "aria-live": "polite" }, String(q)),
+      h("button", { type: "button", class: "small ghost", "aria-label": "One more", disabled: q >= 99 || null, onclick: function () { set(q + 1); } }, "+"));
+  }
+
+  function comboCard(combo) {
+    var open = S.draft && S.draft.combo === combo.id;
+    var kids = [h("div", { class: "row" }, h("span", { class: "name" }, combo.name), h("span", { class: "grow" }), h("span", { class: "price" }, money(combo.price)))];
+    kids.push(h("div", { class: "row" }, h("button", { type: "button", class: "small", onclick: function () {
+      S.draft = open ? null : { combo: combo.id, picks: combo.slots.map(function (s, i) { return { slot: i, item: s.items[0], options: {} }; }), quantity: 1 };
+      changed();
+    } }, open ? "Close" : "Choose…")));
+    if (open) {
+      var d = S.draft, problems = [];
+      var slots = combo.slots.map(function (slot, i) {
+        var pick = d.picks[i], item = findItem(pick.item);
+        if (item) L.itemProblems(item, pick.options).forEach(function (p) { problems.push(p); });
+        return h("fieldset", {},
+          h("legend", {}, slot.name),
+          h("div", { class: "opts" }, slot.items.map(function (id) {
+            var it = findItem(id);
+            if (!it) return null;
+            var on = pick.item === id;
+            return h("label", { class: "opt" + (on ? " on" : "") },
+              h("input", { type: "radio", name: "slot-" + combo.id + "-" + i, checked: on || null, disabled: it.sold_out || null,
+                onclick: function () { pick.item = id; pick.options = {}; changed(); } }),
+              it.name + (it.sold_out ? " (sold out)" : ""));
+          })),
+          item ? optionGroups(item, pick.options, function (c) { pick.options = c; changed(); }) : null);
+      });
+      kids.push(h("div", { class: "panel" }, slots,
+        h("div", { class: "row" }, quantityStepper(d.quantity, function (q) { d.quantity = q; changed(); }),
+          h("span", { class: "grow" }), h("b", { class: "money" }, money(L.cartEstimate(S.menu, [{ combo: combo.id, picks: d.picks, quantity: d.quantity }])))),
+        h("button", { type: "button", disabled: problems.length ? true : null, onclick: function () {
+          addToCart({ combo: combo.id, picks: d.picks, quantity: d.quantity, note: "" });
+          S.draft = null;
+          changed();
+        } }, "Add to cart")));
+    }
+    return h("div", { class: "item" }, kids);
+  }
+
+  function screenOrder(root) {
+    var menuBox = h("div", {}), cartBox = h("div", { class: "card" });
+    root.appendChild(h("h1", {}, S.me.permissions["order.view_all"] ? "New order at the counter" : "Order"));
+    root.appendChild(h("div", { class: "cols two" }, menuBox, cartBox));
+
+    function update() {
+      if (!S.menu) { clear(menuBox).appendChild(h("p", { class: "empty" }, "Loading the menu…")); return; }
+      // The menu and the cart are drawn again; what is typed in the cart's fields is kept.
+      var keep = document.activeElement && cartBox.contains(document.activeElement) ? document.activeElement.id : null;
+      clear(menuBox);
+      (S.menu.categories || []).forEach(function (cat) {
+        var items = S.menu.items.filter(function (i) { return i.category === cat; });
+        if (!items.length) return;
+        menuBox.appendChild(h("section", { class: "menu-cat" }, h("h2", {}, cat), h("div", { class: "items" }, items.map(itemCard))));
+      });
+      if ((S.menu.combos || []).length) {
+        menuBox.appendChild(h("section", { class: "menu-cat" }, h("h2", {}, "combos"), h("div", { class: "items" }, S.menu.combos.map(comboCard))));
+      }
+      drawCart();
+      if (keep && $(keep)) $(keep).focus();
+    }
+
+    function drawCart() {
+      clear(cartBox);
+      cartBox.appendChild(h("h2", {}, "Cart"));
+      if (S.placed) {
+        var o = S.placed;
+        cartBox.appendChild(h("div", { class: "banner ok", role: "status" }, "Order #" + o.order.number + " placed. Total " + money(o.order.total) + "."));
+        (o.order.discounts || []).forEach(function (d) { cartBox.appendChild(h("p", { class: "fine" }, d.name + ": −" + money(d.amount))); });
+        (o.rejected_codes || []).forEach(function (r) { cartBox.appendChild(h("p", { class: "problem" }, r)); });
+        var next = [];
+        if (S.me.permissions["order.record_payment"]) {
+          next.push(h("button", { type: "button", onclick: function () { S.ui.payFor = o.order.id; go("till"); } }, "Take payment"));
+        } else if (!S.me.permissions["order.view_all"]) {
+          next.push(h("button", { type: "button", onclick: function () { go("myorders"); } }, "Follow my order"));
+        }
+        next.push(h("button", { type: "button", class: "ghost", onclick: function () { S.placed = null; changed(); } }, "New order"));
+        cartBox.appendChild(h("div", { class: "row" }, next));
+        return;
+      }
+      if (!S.cart.length) { cartBox.appendChild(h("p", { class: "empty" }, "Nothing in the cart yet.")); return; }
+      S.cart.forEach(function (l, i) {
+        var estimate = L.cartEstimate(S.menu, [l]);
+        cartBox.appendChild(h("div", { class: "cart-line" },
+          h("div", { class: "top2" }, h("div", {}, h("b", {}, lineTitle(l)), h("div", { class: "fine" }, lineDetail(l))), h("b", { class: "money" }, money(estimate))),
+          h("div", { class: "row" }, quantityStepper(l.quantity, function (q) { l.quantity = q; cartChanged(); }),
+            h("button", { type: "button", class: "small ghost", onclick: function () { S.cart.splice(i, 1); cartChanged(); } }, "Remove")),
+          h("input", { type: "text", id: "note-" + i, maxlength: "200", placeholder: "Note for the kitchen", "aria-label": "Note for " + lineTitle(l), value: l.note || "",
+            oninput: function (e) { l.note = e.target.value; delete S.pending.place; } })));
+      });
+      cartBox.appendChild(h("div", { class: "total" }, h("span", {}, "Estimate"), h("span", {}, money(L.cartEstimate(S.menu, S.cart)))));
+      cartBox.appendChild(h("p", { class: "fine" }, "The kitchen system works out the price, with any offer, when the order is placed."));
+      cartBox.appendChild(h("div", { class: "field" }, h("label", { for: "codes" }, "Promotion code"),
+        h("input", { type: "text", id: "codes", value: S.codes, autocomplete: "off", oninput: function (e) { S.codes = e.target.value; delete S.pending.place; } })));
+      if (S.me.permissions["order.view_all"]) {
+        cartBox.appendChild(h("div", { class: "field" }, h("label", { for: "cust" }, "Customer ID (optional)"),
+          h("input", { type: "text", id: "cust", value: S.counterCustomer, autocomplete: "off", oninput: function (e) { S.counterCustomer = e.target.value; delete S.pending.place; } })));
+      }
+      var btn = h("button", { type: "button", class: "big primary", onclick: function () {
+        var codes = S.codes.split(/[\s,]+/).filter(Boolean);
+        run("place", btn, function (id) { return api("POST", "/api/orders", L.cartBody(id, S.cart, codes, S.counterCustomer.trim())); }).then(function (res) {
+          if (!res) return;
+          S.placed = res;
+          S.cart = []; S.codes = ""; S.counterCustomer = "";
+          putOrder(res.order);
+        });
+      } }, "Place order");
+      cartBox.appendChild(btn);
+    }
+    return { update: update };
+  }
+
+  // ---- my orders (customer) -------------------------------------------------------------
+
+  function screenMyOrders(root) {
+    var box = h("div", { class: "stack" });
+    root.appendChild(h("h1", {}, "My orders"));
+    root.appendChild(box);
+    function update() {
+      clear(box);
+      var list = orderList().sort(function (a, b) { return b.number - a.number; });
+      if (!list.length) { box.appendChild(h("p", { class: "empty" }, "You have no orders yet.")); return; }
+      list.forEach(function (o) {
+        var c = (o.status === "completed" || o.status === "cancelled") ? { buttons: [], form: null } : cancelActions(o);
+        var note = null;
+        if (o.status === "placed") note = h("div", { class: "banner warn" }, "Show this number at the till to pay: #" + o.number);
+        else if (o.status === "ready") note = h("div", { class: "banner ok" }, "Your order is ready.");
+        box.appendChild(orderCard(o, c.buttons, [note, c.form]));
+      });
+    }
+    return { update: update };
+  }
+
+  // ---- the till -------------------------------------------------------------------------
+
+  function payForm(o) {
+    var method = h("select", { id: "method-" + o.id, "aria-label": "Payment method" },
+      h("option", { value: "cash" }, "Cash"), h("option", { value: "card" }, "Card"), h("option", { value: "transfer" }, "Transfer"));
+    var tendered = h("input", { type: "number", id: "tendered-" + o.id, min: String(o.total), step: "1000", value: String(o.total), "aria-label": "Cash handed over" });
+    var reference = h("input", { type: "text", id: "ref-" + o.id, maxlength: "60", placeholder: "Card slip or transfer reference", "aria-label": "Reference" });
+    var change = h("b", { class: "money", "aria-live": "polite" });
+    var cashBox = h("div", { class: "stack" }, h("div", { class: "row" }, h("label", { for: tendered.id }, "Handed over"), tendered, h("span", {}, "Change:"), change),
+      h("div", { class: "quick" }, L.quickAmounts(o.total).map(function (a) {
+        return h("button", { type: "button", class: "small ghost", onclick: function () { tendered.value = String(a); show(); } }, money(a));
+      })));
+    var refBox = h("div", { class: "row" }, h("label", { for: reference.id }, "Reference"), reference);
+    var confirm = h("button", { type: "button", class: "ok" }, "Confirm payment of " + money(o.total));
+    function show() {
+      var cash = method.value === "cash";
+      cashBox.hidden = !cash; refBox.hidden = cash;
+      var ch = L.cashChange(o.total, parseInt(tendered.value, 10) || 0);
+      change.textContent = ch === null ? "not enough" : money(ch);
+      confirm.disabled = cash ? ch === null : !reference.value.trim();
+    }
+    method.addEventListener("change", show); tendered.addEventListener("input", show); reference.addEventListener("input", show);
+    confirm.addEventListener("click", function () {
+      var cash = method.value === "cash";
+      var body = { method: method.value };
+      if (cash) body.tendered = parseInt(tendered.value, 10); else body.reference = reference.value.trim();
+      run("pay:" + o.id, confirm, function (id) { body.command_id = id; return api("POST", "/api/orders/" + encodeURIComponent(o.id) + "/pay", body); }).then(function (v) {
+        if (v) { S.ui.payFor = null; putOrder(v); toast("Order #" + v.number + " paid.", "ok"); }
+      });
+    });
+    show();
+    return h("div", { class: "pay" }, h("div", { class: "row" }, h("label", { for: method.id }, "Method"), method), cashBox, refBox,
+      h("div", { class: "row" }, confirm, h("button", { type: "button", class: "ghost", onclick: function () { S.ui.payFor = null; changed(); } }, "Back")));
+  }
+
+  function tillCard(o) {
+    var acts = [], extra = [];
+    // While the payment form is open it is the only thing on the card; "Back" returns to the buttons.
+    if (S.ui.payFor === o.id && o.status === "placed" && S.me.permissions["order.record_payment"]) return orderCard(o, [], [payForm(o)]);
+    if (o.status === "placed" && S.me.permissions["order.record_payment"]) {
+      acts.push(h("button", { type: "button", onclick: function () { S.ui.payFor = S.ui.payFor === o.id ? null : o.id; changed(); } }, "Take payment"));
+    }
+    if (o.status === "ready" && S.me.permissions["order.hand_over"]) {
+      var btn = h("button", { type: "button", class: "ok", onclick: function () {
+        run("handover:" + o.id, btn, function (id) { return api("POST", "/api/orders/" + encodeURIComponent(o.id) + "/handover", { command_id: id }); }).then(function (v) {
+          if (v) { putOrder(v); toast("Order #" + v.number + " handed over.", "ok"); }
+        });
+      } }, "Hand over");
+      acts.push(btn);
+    }
+    if (S.me.permissions["order.cancel_unpaid"] || S.me.permissions["order.request_cancel"]) {
+      var c = cancelActions(o);
+      acts = acts.concat(c.buttons);
+      if (c.form) extra.push(c.form);
+    }
+    if (S.ui.payFor === o.id && o.status === "placed") extra.push(payForm(o));
+    return orderCard(o, acts, extra);
+  }
+
+  function screenTill(root) {
+    var toPay = h("div", { class: "stack" }), inKitchen = h("div", { class: "stack" }), ready = h("div", { class: "stack" });
+    var canPay = S.me.permissions["order.record_payment"];
+    root.appendChild(h("div", { class: "row" }, h("h1", {}, canPay ? "Till" : "Hand over"), h("span", { class: "grow" }),
+      S.me.permissions["order.place"] ? h("button", { type: "button", onclick: function () { go("order"); } }, "New counter order") : null));
+    root.appendChild(h("div", { class: "cols three" },
+      canPay ? h("section", {}, h("h2", {}, "To pay"), toPay) : null,
+      canPay ? h("section", {}, h("h2", {}, "In the kitchen"), inKitchen) : null,
+      h("section", {}, h("h2", {}, "Ready to hand over"), ready)));
+    function fill(box, list, empty) {
+      clear(box);
+      if (!list.length) box.appendChild(h("p", { class: "empty" }, empty));
+      list.forEach(function (o) { box.appendChild(tillCard(o)); });
+    }
+    function update() {
+      var cols = L.groupForTill(orderList());
+      fill(toPay, cols.toPay, "Nothing waiting for payment.");
+      fill(inKitchen, cols.inKitchen, "Nothing in the kitchen.");
+      fill(ready, cols.ready, "Nothing ready.");
+    }
+    return { update: update };
+  }
+
+  // ---- the kitchen board ----------------------------------------------------------------
+
+  function ticketCard(w, station) {
+    var o = w.order, cooking = w.ticket.status === "started";
+    var key = (cooking ? "finish:" : "start:") + o.id + ":" + station;
+    var btn = h("button", { type: "button", class: "big " + (cooking ? "ok" : ""), disabled: w.cancelling || null, onclick: function () {
+      run(key, btn, function (id) {
+        return api("POST", "/api/orders/" + encodeURIComponent(o.id) + "/tickets/" + encodeURIComponent(station) + "/" + (cooking ? "finish" : "start"), { command_id: id });
+      }).then(function (v) { if (v) putOrder(v); });
+    } }, cooking ? "Done" : "Start");
+    var minutes = (Date.now() - Date.parse(w.since)) / 60000;
+    var move = motion("t:" + o.id + ":" + station, cooking ? "started" : "pending");
+    return h("article", { class: "order ticket" + (move ? " enter" : "") + (cooking ? " cooking" : "") + (w.cancelling ? " cancelling" : "") + (minutes > 10 ? " late" : ""), "aria-label": "Order " + o.number },
+      h("div", { class: "head" }, h("span", { class: "num" }, "#" + o.number), o.channel === "counter" ? h("span", { class: "chip" }, "counter") : null,
+        h("span", { class: "age" }, (cooking ? "started " : "waiting ") + L.ageText(w.since))),
+      h("ul", { class: "pieces" }, w.pieces.map(function (p) { return h("li", {}, h("b", {}, p.quantity + "×"), p.name); })),
+      w.notes.map(function (n) { return h("div", { class: "note" }, "“" + n + "”"); }),
+      w.cancelling ? h("div", { class: "banner warn" }, "A cancellation is waiting for the manager. Hold on.") : null,
+      h("div", { class: "row" }, btn));
+  }
+
+  function screenKitchen(root) {
+    var waiting = h("div", { class: "stack" }), cooking = h("div", { class: "stack" });
+    var head = h("div", { class: "row" });
+    root.appendChild(head);
+    root.appendChild(h("div", { class: "cols board" }, h("section", {}, h("h2", { id: "wh" }, "Waiting"), waiting), h("section", {}, h("h2", { id: "ch" }, "Being made"), cooking)));
+    function update() {
+      var orders = orderList();
+      var stations = L.stationsOf(orders);
+      var mine = S.me.station;
+      var station = mine || S.ui.station || stations[0];
+      clear(head);
+      head.appendChild(h("h1", {}, mine ? "Station: " + mine : "Kitchen board"));
+      head.appendChild(h("span", { class: "grow" }));
+      if (!mine && stations.length) {
+        var sel = h("select", { "aria-label": "Station", onchange: function (e) { S.ui.station = e.target.value; changed(); } },
+          stations.map(function (s) { return h("option", { value: s, selected: s === station || null }, s); }));
+        head.appendChild(sel);
+        head.appendChild(h("span", { class: "fine" }, "You can look at any station; only its own staff can start or finish a ticket."));
+      }
+      var work = L.stationWork(orders, station || "");
+      clear(waiting); clear(cooking);
+      if (!work.waiting.length) waiting.appendChild(h("p", { class: "empty" }, "Nothing waiting."));
+      if (!work.cooking.length) cooking.appendChild(h("p", { class: "empty" }, "Nothing being made."));
+      work.waiting.forEach(function (w) { waiting.appendChild(ticketCard(w, station)); });
+      work.cooking.forEach(function (w) { cooking.appendChild(ticketCard(w, station)); });
+      $("wh").textContent = "Waiting (" + work.waiting.length + ")";
+      $("ch").textContent = "Being made (" + work.cooking.length + ")";
+    }
+    return { update: update };
+  }
+
+  // ---- the manager ----------------------------------------------------------------------
+
+  function decisionCard(o) {
+    var policy = L.refundPolicy(o);
+    var refund = h("input", { type: "number", id: "refund-" + o.id, min: String(policy.min), max: String(policy.max), step: "1000", value: String(policy.suggested), disabled: policy.fixed || null, "aria-label": "Refund" });
+    var approve = h("button", { type: "button", class: "danger", onclick: function () {
+      run("approve:" + o.id, approve, function (id) {
+        return api("POST", "/api/orders/" + encodeURIComponent(o.id) + "/cancel-approve", { command_id: id, refund: parseInt(refund.value, 10) || 0 });
+      }).then(function (v) { if (v) { putOrder(v); toast("Order #" + v.number + " cancelled.", "ok"); } });
+    } }, "Approve and cancel");
+    var rejectKey = "reject:" + o.id;
+    var extra = [h("div", { class: "pay" },
+      h("div", { class: "row" }, h("label", { for: refund.id }, "Refund"), refund,
+        h("span", { class: "fine" }, policy.fixed ? "No station has started: the whole amount goes back and the ingredients return to the stock." : "Work has started: set what goes back, from 0 to " + money(policy.max) + ". The ingredients stay used.")),
+      h("div", { class: "row" }, approve, h("button", { type: "button", class: "ghost", onclick: function () { S.ui.reasonFor = S.ui.reasonFor === rejectKey ? null : rejectKey; changed(); } }, "Reject…")))];
+    if (S.ui.reasonFor === rejectKey) {
+      extra.push(reasonForm(rejectKey, "Why not?", function (reason, btn) {
+        run(rejectKey, btn, function (id) { return api("POST", "/api/orders/" + encodeURIComponent(o.id) + "/cancel-reject", { command_id: id, reason: reason }); }).then(function (v) {
+          if (v) { S.ui.reasonFor = null; putOrder(v); toast("Request rejected. The order goes on.", "ok"); }
+        });
+      }));
+    }
+    return orderCard(o, [], extra);
+  }
+
+  function refundCard(o) {
+    var key = "refund:" + o.id;
+    var extra = null;
+    if (S.ui.refundFor === o.id) {
+      var amount = h("input", { type: "number", min: "1", max: String(o.total - (o.refunded || 0)), step: "1000", "aria-label": "Amount" });
+      var reason = h("input", { type: "text", maxlength: "200", placeholder: "Why?", "aria-label": "Reason" });
+      var send = h("button", { type: "submit", class: "small danger" }, "Refund");
+      extra = h("form", { class: "row", onsubmit: function (e) {
+        e.preventDefault();
+        run(key, send, function (id) { return api("POST", "/api/orders/" + encodeURIComponent(o.id) + "/refund", { command_id: id, amount: parseInt(amount.value, 10) || 0, reason: reason.value.trim() }); }).then(function (v) {
+          if (v) { S.ui.refundFor = null; putOrder(v); toast("Refund recorded.", "ok"); }
+        });
+      } }, amount, reason, send, h("button", { type: "button", class: "small ghost", onclick: function () { S.ui.refundFor = null; changed(); } }, "Back"));
+    }
+    var open = h("button", { type: "button", class: "small ghost", onclick: function () { S.ui.refundFor = S.ui.refundFor === o.id ? null : o.id; changed(); } }, "Refund…");
+    return orderCard(o, o.status === "completed" && (o.refunded || 0) < o.total ? [open] : [], extra);
+  }
+
+  function screenManager(root) {
+    var tiles = h("div", { class: "tiles" }), queue = h("div", { class: "stack" }), recent = h("div", { class: "stack" });
+    var lookup = h("input", { type: "text", id: "lookup", placeholder: "Order number", inputmode: "numeric", "aria-label": "Order number" });
+    var auditBox = h("div", { class: "card" });
+    root.appendChild(h("h1", {}, "Manager"));
+    root.appendChild(tiles);
+    root.appendChild(h("div", { class: "cols two" },
+      h("section", {}, h("h2", {}, "Cancellation requests"), queue, h("h2", {}, "Completed orders (refunds)"), recent),
+      h("section", {}, h("h2", {}, "Look up an order"),
+        h("form", { class: "row", onsubmit: function (e) {
+          e.preventDefault();
+          var n = parseInt(lookup.value, 10), found = null;
+          S.orders.forEach(function (o) { if (o.number === n) found = o; });
+          if (!found) { toast("No order with that number among the ones loaded.", "bad"); return; }
+          api("GET", "/api/orders/" + encodeURIComponent(found.id) + "/events").then(function (r) { S.ui.audit = { order: found, events: r.events }; changed(); }, function (ex) { toast(ex.message, "bad"); });
+        } }, lookup, h("button", { type: "submit" }, "Show")),
+        auditBox)));
+    function update() {
+      var all = orderList();
+      var s = L.summary(all);
+      clear(tiles);
+      [["Orders", s.orders], ["In progress", s.active], ["Handed over", s.completed], ["Cancelled", s.cancelled], ["Taken", money(s.takings)], ["Refunded", money(s.refunded)], ["Net", money(s.net)]].forEach(function (t) {
+        tiles.appendChild(h("div", { class: "tile" }, h("div", { class: "k" }, t[0]), h("div", { class: "v" }, String(t[1]))));
+      });
+      var q = L.cancelQueue(all);
+      clear(queue);
+      if (!q.length) queue.appendChild(h("p", { class: "empty" }, "No cancellation is waiting."));
+      q.forEach(function (o) { queue.appendChild(decisionCard(o)); });
+      clear(recent);
+      var done = all.filter(function (o) { return o.status === "completed"; }).sort(function (a, b) { return b.number - a.number; }).slice(0, 8);
+      if (!done.length) recent.appendChild(h("p", { class: "empty" }, "No order has been handed over yet."));
+      done.forEach(function (o) { recent.appendChild(refundCard(o)); });
+      clear(auditBox);
+      if (S.ui.audit) {
+        auditBox.appendChild(h("h3", {}, "Order #" + S.ui.audit.order.number + " · " + S.ui.audit.order.status));
+        auditBox.appendChild(h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "#"), h("th", {}, "Event"), h("th", {}, "By"), h("th", {}, "When"))),
+          h("tbody", {}, S.ui.audit.events.map(function (e) {
+            return h("tr", {}, h("td", { class: "n" }, String(e.seq)), h("td", {}, e.type), h("td", {}, e.by + " (" + e.roles + ")"), h("td", {}, new Date(e.at).toLocaleTimeString()));
+          }))));
+      } else {
+        auditBox.appendChild(h("p", { class: "fine" }, "Type an order number to see who did what, and when."));
+      }
+    }
+    return { update: update };
+  }
+
+  // ---- the stock ------------------------------------------------------------------------
+
+  function stockForm(kind, title, withReason) {
+    var ing = h("select", { id: kind + "-ing", "aria-label": "Ingredient" });
+    var qty = h("input", { type: "number", id: kind + "-qty", min: kind === "count" ? "0" : "1", step: "1", "aria-label": "Quantity" });
+    var reason = withReason ? h("input", { type: "text", id: kind + "-reason", maxlength: "200", placeholder: "Reason", "aria-label": "Reason" }) : null;
+    var btn = h("button", { type: "submit" }, title);
+    var form = h("form", { class: "card stack", onsubmit: function (e) {
+      e.preventDefault();
+      var key = kind + ":" + ing.value + ":" + qty.value + ":" + (reason ? reason.value : "");
+      run("stock:" + key, btn, function (id) {
+        var body = { command_id: id, ingredient: ing.value, qty: parseInt(qty.value, 10) || 0 };
+        if (reason) body.reason = reason.value.trim();
+        return api("POST", "/api/stock/" + kind, body);
+      }).then(function (v) { if (v) { S.stock = v; qty.value = ""; if (reason) reason.value = ""; toast("Stock updated.", "ok"); changed(); } });
+    } }, h("h2", {}, title), h("div", { class: "row" }, ing, qty, reason, btn));
+    form.fill = function () {
+      var cur = ing.value;
+      clear(ing);
+      ((S.stock && S.stock.levels) || []).forEach(function (l) { ing.appendChild(h("option", { value: l.ingredient, selected: l.ingredient === cur || null }, l.ingredient)); });
+    };
+    return form;
+  }
+
+  function screenStock(root) {
+    var table = h("div", { class: "card" });
+    var forms = [];
+    var perms = S.me.permissions;
+    root.appendChild(h("h1", {}, "Stock"));
+    root.appendChild(h("div", { class: "cols two" }, table, h("div", { class: "stack" },
+      perms["stock.receive"] ? (forms[forms.length] = stockForm("receive", "Receive goods", false)) : null,
+      perms["stock.adjust"] ? (forms[forms.length] = stockForm("write-off", "Write off", true)) : null,
+      perms["stock.adjust"] ? (forms[forms.length] = stockForm("count", "Stocktake (set the real quantity)", true)) : null,
+      (!perms["stock.receive"] && !perms["stock.adjust"]) ? h("p", { class: "fine" }, "You can look at the stock; the storekeeper changes it.") : null)));
+    var filled = false;
+    function update() {
+      clear(table);
+      table.appendChild(h("h2", {}, "Ingredients"));
+      var levels = (S.stock && S.stock.levels) || [];
+      if (!levels.length) { table.appendChild(h("p", { class: "empty" }, "Loading the stock…")); return; }
+      table.appendChild(h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Ingredient"), h("th", { class: "n" }, "Quantity"), h("th", {}, ""))),
+        h("tbody", {}, levels.map(function (l) {
+          return h("tr", {}, h("td", {}, l.ingredient), h("td", { class: "n" }, String(l.qty)), h("td", {}, l.qty === 0 ? h("span", { class: "badge soldout" }, "none") : l.low ? h("span", { class: "badge low" }, "low") : null));
+        }))));
+      // the ingredient lists of the forms are filled when the stock arrives, and kept after
+      if (!filled) { forms.forEach(function (f) { f.fill(); }); filled = true; }
+    }
+    return { update: update };
+  }
+
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, kitchen: screenKitchen, manager: screenManager, stock: screenStock };
+
+  // ---- start ----------------------------------------------------------------------------
+
+  $("signout").addEventListener("click", function () { signOut(""); });
+  // ages and the late marks change with time, not only with events
+  setInterval(function () { if (S.current && S.token) S.current.update(); }, 20000);
+
+  var saved = load("kitchen.token");
+  if (saved) {
+    start(saved).catch(function () { signOut(""); });
+  } else {
+    renderSignIn("");
+  }
+})();
