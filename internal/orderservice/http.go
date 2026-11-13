@@ -15,6 +15,7 @@ import (
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/accounts"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/inventory"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/menu"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/money"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/order"
@@ -37,6 +38,9 @@ type API struct {
 
 	// Set by WithCatalog: the editing of the menu, with its history and photos.
 	cat *catalog.Store
+
+	// Set by WithInventory: suppliers, ingredient names and units, and stocktakes.
+	inv *inventory.Store
 
 	// Set by WithAccounts: people who sign in with a password and keep a session.
 	acc   *accounts.Service
@@ -65,6 +69,10 @@ func NewAPI(svc *Service, authn Authenticator, logger *slog.Logger, options ...A
 	}
 	if a.acc != nil {
 		a.accountRoutes(mux)
+	}
+	a.warehouseRoutes(mux)
+	if a.inv != nil {
+		a.inventoryRoutes(mux)
 	}
 
 	mux.HandleFunc("POST /api/orders", a.auth(a.placeOrder))
@@ -189,7 +197,9 @@ func status(err error) (int, string) {
 		return http.StatusConflict, "out_of_stock"
 	case errors.Is(err, ErrBadCommandID), errors.Is(err, order.ErrInvalid), errors.Is(err, order.ErrAmount),
 		errors.Is(err, order.ErrReasonRequired), errors.Is(err, ErrUnknownIngredient),
-		errors.Is(err, stock.ErrQuantity), errors.Is(err, stock.ErrReason), errors.Is(err, stock.ErrNegative):
+		errors.Is(err, stock.ErrQuantity), errors.Is(err, stock.ErrReason), errors.Is(err, stock.ErrNegative),
+		errors.Is(err, stock.ErrCost), errors.Is(err, stock.ErrExpiry), errors.Is(err, stock.ErrCause), errors.Is(err, stock.ErrNoLot),
+		errors.Is(err, ErrBadStockInput):
 		return http.StatusBadRequest, "invalid"
 	case errors.Is(err, order.ErrNotAllowed), errors.Is(err, order.ErrNotYours), errors.Is(err, order.ErrWrongStation),
 		errors.Is(err, order.ErrSelfApproval), errors.Is(err, ErrNotAllowed):
@@ -535,12 +545,25 @@ func (a *API) moveStock(kind stock.Kind) func(http.ResponseWriter, *http.Request
 			Ingredient string `json:"ingredient"`
 			Qty        int64  `json:"qty"`
 			Reason     string `json:"reason"`
+			// for goods received
+			Expires   string `json:"expires"`
+			TotalCost int64  `json:"total_cost"`
+			Supplier  string `json:"supplier"`
+			Document  string `json:"document"`
+			// for a write-off
+			Lot   string `json:"lot"`
+			Cause string `json:"cause"`
 		}
 		if err := decode(w, r, &b); err != nil {
 			a.fail(w, err)
 			return
 		}
-		v, err := a.svc.MoveStock(r.Context(), actor, b.Command, kind, b.Ingredient, b.Qty, b.Reason)
+		if err := a.checkSupplier(r, b.Supplier); err != nil {
+			a.failInventory(w, err)
+			return
+		}
+		v, err := a.svc.MoveStockWith(r.Context(), actor, b.Command, StockInput{Kind: kind, Ingredient: b.Ingredient, Qty: b.Qty, Reason: b.Reason,
+			Expires: b.Expires, TotalCost: b.TotalCost, Supplier: b.Supplier, Document: b.Document, Lot: b.Lot, Cause: b.Cause})
 		if err != nil {
 			a.fail(w, err)
 			return

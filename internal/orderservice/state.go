@@ -56,6 +56,13 @@ type State struct {
 	redeemed  map[redeemKey]bool
 	maxNumber int
 
+	// takes are the parts of lots that each paid order used, so that a cancelled order gives them
+	// back to the same lots; an order's entry goes when it is handed over or cancelled.
+	takes map[order.ID][]stock.Take
+	// ledger is the history of each ingredient (see ledger.go).
+	ledger        map[stock.Ingredient][]LedgerEntry
+	ledgerDropped map[stock.Ingredient]bool
+
 	next    uint64 // the offset of the next record to apply
 	skipped int
 }
@@ -78,6 +85,8 @@ func NewState(m *menu.Menu, p *promo.Set, lowAt map[stock.Ingredient]int64) (*St
 		events:   map[order.ID][]order.Event{},
 		moveSeen: map[string]bool{},
 		redeemed: map[redeemKey]bool{},
+		takes:    map[order.ID][]stock.Take{},
+		ledger:   map[stock.Ingredient][]LedgerEntry{}, ledgerDropped: map[stock.Ingredient]bool{},
 	}, nil
 }
 
@@ -139,11 +148,14 @@ func (s *State) applyMove(ch Change, m StockMove) (Change, error) {
 	if s.moveSeen[m.ID] {
 		return Change{Offset: ch.Offset}, nil // a repeat of a command that was applied
 	}
-	if err := s.stock.Apply(m.Movement()); err != nil {
+	before := map[stock.Ingredient]int64{stock.Ingredient(m.Ingredient): s.stock.Qty(stock.Ingredient(m.Ingredient))}
+	res, err := s.stock.Do(m.Movement())
+	if err != nil {
 		return ch, fmt.Errorf("stock movement %s: %w", m.ID, err)
 	}
 	s.moveSeen[m.ID] = true
 	ch.StockChanged = true
+	s.noteResult(ch.Offset, m.At, m.Kind, m.ID, m.By, m.Reason, m.Cause, before, res, LedgerEntry{Lot: res.Lot + m.Lot, Supplier: m.Supplier, Document: m.Document})
 	return ch, nil
 }
 
@@ -182,7 +194,14 @@ func (s *State) applyEvent(ch Change, rec Record) (Change, error) {
 			}
 		}
 	case order.EvPaid:
-		if err := s.stock.Apply(stock.Movement{Kind: stock.Consume, Needs: o.Needs(), Ref: string(o.ID)}); err != nil {
+		needs := o.Needs()
+		before := s.beforeOf(needs)
+		res, err := s.stock.Do(stock.Movement{Kind: stock.Consume, Needs: needs, Ref: string(o.ID), At: ev.At})
+		if err == nil {
+			s.takes[o.ID] = res.Takes
+			s.noteResult(ch.Offset, ev.At, stock.Consume, string(o.ID), ev.By, "", "", before, res, LedgerEntry{})
+		}
+		if err != nil {
 			// The order took the payment but the stock cannot cover it. The service checks
 			// before it writes the payment, so this is a log that was written by something
 			// else; the event is undone by not applying it to anything else.
@@ -191,11 +210,20 @@ func (s *State) applyEvent(ch Change, rec Record) (Change, error) {
 		ch.StockChanged = true
 	case order.EvCancelled:
 		if ev.Cancelled.Restock && hadStock {
-			if err := s.stock.Apply(stock.Movement{Kind: stock.Release, Needs: o.Needs(), Ref: string(o.ID)}); err != nil {
+			needs := o.Needs()
+			before := s.beforeOf(needs)
+			takes := s.takes[o.ID]
+			res, err := s.stock.Do(stock.Movement{Kind: stock.Release, Needs: needs, Ref: string(o.ID), At: ev.At, Takes: takes})
+			if err != nil {
 				return ch, fmt.Errorf("giving back the stock of %s: %w", o.ID, err)
 			}
+			res.Takes = takes
+			s.noteResult(ch.Offset, ev.At, stock.Release, string(o.ID), ev.By, "", "", before, res, LedgerEntry{})
 			ch.StockChanged = true
 		}
+		delete(s.takes, o.ID)
+	case order.EvHandedOver:
+		delete(s.takes, o.ID)
 	}
 	s.events[ev.Order] = append(s.events[ev.Order], ev)
 	ch.Order, ch.Number, ch.Type, ch.Status, ch.Customer = o.ID, o.Number, ev.Type, o.Status, o.Customer
@@ -251,4 +279,13 @@ func (s *State) setCatalog(m *menu.Menu, p *promo.Set, lowAt map[stock.Ingredien
 	}
 	s.menu, s.promos = m, p
 	return nil
+}
+
+// beforeOf reads the quantity of each ingredient of a recipe, to see afterwards what changed.
+func (s *State) beforeOf(r stock.Recipe) map[stock.Ingredient]int64 {
+	out := make(map[stock.Ingredient]int64, len(r))
+	for ing := range r {
+		out[ing] = s.stock.Qty(ing)
+	}
+	return out
 }

@@ -23,6 +23,8 @@ The test that compares this file with the code fails when they differ.
 | `stock.adjust` |  |  |  |  | ✓ | ✓ |  |
 | `stock.receive` |  |  |  |  |  | ✓ |  |
 | `stock.view` |  |  | ✓ |  | ✓ | ✓ |  |
+| `stock.view_cost` |  |  |  |  | ✓ | ✓ |  |
 | `ticket.finish` |  |  | ✓ |  |  |  |  |
 | `ticket.start` |  |  | ✓ |  |  |  |  |
 | `user.manage` |  |  |  |  |  |  | ✓ |
+| `warehouse.manage` |  |  |  |  | ✓ | ✓ |  |

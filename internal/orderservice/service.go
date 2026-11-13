@@ -77,6 +77,8 @@ type Options struct {
 	CommandTimeout time.Duration
 	// ReadBatch is how many log entries are read at a time; 500 if zero.
 	ReadBatch int
+	// ExpiryWarning is how long before a lot expires the screens warn about it; 72 hours if zero.
+	ExpiryWarning time.Duration
 }
 
 // Service decides commands and keeps the state of the kitchen, built from the log.
@@ -94,6 +96,8 @@ type Service struct {
 	logger  *slog.Logger
 	batch   int
 	timeout time.Duration
+	// expiryWarn is how long before it expires a lot is flagged.
+	expiryWarn time.Duration
 
 	ingredients map[stock.Ingredient]bool
 	// stale is set when a write to the log failed with an unknown outcome: before the next
@@ -219,6 +223,10 @@ func Open(ctx context.Context, l Log, o Options) (*Service, error) {
 	}
 	if s.batch <= 0 {
 		s.batch = 500
+	}
+	s.expiryWarn = o.ExpiryWarning
+	if s.expiryWarn <= 0 {
+		s.expiryWarn = 72 * time.Hour
 	}
 	s.ingredients = ingredientsOf(o.Menu)
 	if err := s.catchUp(ctx); err != nil {
@@ -463,7 +471,7 @@ func (s *Service) Place(ctx context.Context, actor rbac.Actor, req PlaceRequest)
 		channel, customer = order.ChannelCounter, req.Customer
 	}
 	at := s.at()
-	lines, errs := s.st.menu.PriceCart(req.Selections, menu.PriceOptions{At: at, SoldOut: s.st.stock.SoldOut(s.st.menu)})
+	lines, errs := s.st.menu.PriceCart(req.Selections, menu.PriceOptions{At: at, SoldOut: s.st.stock.SoldOutAt(s.st.menu, at)})
 	if len(errs) > 0 {
 		return Placed{}, &CartError{Lines: errs}
 	}
@@ -533,7 +541,7 @@ func (s *Service) Pay(ctx context.Context, actor rbac.Actor, id order.ID, cmd st
 		if err != nil || ev == nil {
 			return ev, err
 		}
-		if ok, short := s.st.stock.CanMake(o.Needs()); !ok {
+		if ok, short := s.st.stock.CanMakeAt(o.Needs(), m.At); !ok {
 			return nil, &OutOfStockError{Shortages: short}
 		}
 		return ev, nil
@@ -580,50 +588,6 @@ func (s *Service) IssueRefund(ctx context.Context, actor rbac.Actor, id order.ID
 	return s.command(ctx, actor, id, cmd, func(o *order.Order, m order.Meta) (*order.Event, error) {
 		return o.IssueRefund(m, amount, reason)
 	})
-}
-
-// MoveStock records goods received, something written off, or a stocktake. ID is the ID of
-// the command. The movement is tried on a copy of the stock first, so that one the stock
-// would refuse is never written to the log.
-func (s *Service) MoveStock(ctx context.Context, actor rbac.Actor, cmd string, kind stock.Kind, ingredient string, qty int64, reason string) (StockView, error) {
-	if err := validCommand(cmd); err != nil {
-		return StockView{}, err
-	}
-	need := rbac.AdjustStock
-	if kind == stock.Receive {
-		need = rbac.ReceiveStock
-	}
-	if err := actor.Validate(); err != nil {
-		return StockView{}, err
-	}
-	if !actor.Can(need) {
-		return StockView{}, fmt.Errorf("%w: needs %s", order.ErrNotAllowed, need)
-	}
-	if kind != stock.Receive && kind != stock.WriteOff && kind != stock.Count {
-		return StockView{}, fmt.Errorf("orderservice: %q is not a movement a person can make", kind)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureFresh(ctx); err != nil {
-		return StockView{}, err
-	}
-	if s.st.moveSeen[cmd] {
-		return s.stockView(), nil // a repeat of a command that worked
-	}
-	if !s.ingredients[stock.Ingredient(ingredient)] {
-		return StockView{}, fmt.Errorf("%w: %q", ErrUnknownIngredient, ingredient)
-	}
-	mv := StockMove{ID: cmd, By: actor.ID, Roles: append([]rbac.Role(nil), actor.Roles...), At: s.at(), Kind: kind, Ingredient: ingredient, Qty: qty, Reason: reason}
-	if err := s.st.stock.Clone().Apply(mv.Movement()); err != nil {
-		return StockView{}, err
-	}
-	if err := s.appendRecord(ctx, Record{Stock: &mv}); err != nil {
-		return StockView{}, err
-	}
-	return s.stockView(), nil
 }
 
 // Health says how the service is doing.

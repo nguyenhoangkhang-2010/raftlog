@@ -93,7 +93,7 @@
     // mode is how people sign in here: "password" (an account and a session cookie) or "token"
     // (the tokens of a file). token is the bearer in token mode; in password mode it only marks
     // that someone is signed in, since the session itself is in a cookie.
-    mode: "token", token: null, me: null, menu: null, stock: null,
+    mode: "token", token: null, me: null, menu: null,
     orders: new Map(), screens: [], screen: null, current: null,
     live: "off", stream: null,
     cart: [], draft: null, placed: null, codes: "", counterCustomer: "",
@@ -192,10 +192,6 @@
   var isStaff = function () { return !!(S.me && S.me.permissions["order.view_all"]); };
 
   function loadMenu() { return api("GET", "/api/menu").then(function (m) { S.menu = m; changed(); }); }
-  function loadStock() {
-    if (!S.me || !S.me.permissions["stock.view"]) return Promise.resolve();
-    return api("GET", "/api/stock").then(function (s) { S.stock = s; changed(); });
-  }
   function loadOrders() {
     // An administrator manages accounts and has no orders to read.
     if (!S.me.permissions["order.view_all"] && !S.me.permissions["order.view_own"]) { S.orders = new Map(); return Promise.resolve(); }
@@ -211,7 +207,7 @@
       changed();
     });
   }
-  function refreshAll() { return Promise.all([loadMenu(), loadOrders(), loadStock()]); }
+  function refreshAll() { return Promise.all([loadMenu(), loadOrders()]); }
   function refreshOrder(id) {
     return api("GET", "/api/orders/" + encodeURIComponent(id)).then(putOrder, function () { /* not for this person */ });
   }
@@ -222,9 +218,9 @@
     try { data = JSON.parse(ev.data); } catch (e) { return; }
     if (ev.event === "order" && data.order) refreshOrder(data.order);
     if (ev.event === "stock") {
-      loadStock();
       clearTimeout(menuTimer);
       menuTimer = setTimeout(loadMenu, 300); // what is sold out may have changed
+      if (S.current && S.current.reload && S.screen === "stock") S.current.reload();
     }
     if (ev.event === "menu") {
       // a manager saved the menu, the promotions or a photo: the menu on every screen follows, and
@@ -353,7 +349,7 @@
 
   function signOut(message) {
     if (S.stream) S.stream.abort();
-    S.token = null; S.me = null; S.orders = new Map(); S.menu = null; S.stock = null; S.cart = []; S.draft = null;
+    S.token = null; S.me = null; S.orders = new Map(); S.menu = null; S.cart = []; S.draft = null;
     shown = {}; settled = false;
     S.pending = {}; S.current = null; S.ui = { payFor: null, reasonFor: null, refundFor: null, station: null, audit: null };
     store("kitchen.token", null);
@@ -1067,56 +1063,6 @@
     return { update: update };
   }
 
-  // ---- the stock ------------------------------------------------------------------------
-
-  function stockForm(kind, title, withReason) {
-    var ing = h("select", { id: kind + "-ing", "aria-label": T("Ingredient") });
-    var qty = h("input", { type: "number", id: kind + "-qty", min: kind === "count" ? "0" : "1", step: "1", "aria-label": T("Quantity") });
-    var reason = withReason ? h("input", { type: "text", id: kind + "-reason", maxlength: "200", placeholder: T("Reason"), "aria-label": T("Reason") }) : null;
-    var btn = h("button", { type: "submit" }, title);
-    var form = h("form", { class: "card stack", onsubmit: function (e) {
-      e.preventDefault();
-      var key = kind + ":" + ing.value + ":" + qty.value + ":" + (reason ? reason.value : "");
-      run("stock:" + key, btn, function (id) {
-        var body = { command_id: id, ingredient: ing.value, qty: parseInt(qty.value, 10) || 0 };
-        if (reason) body.reason = reason.value.trim();
-        return api("POST", "/api/stock/" + kind, body);
-      }).then(function (v) { if (v) { S.stock = v; qty.value = ""; if (reason) reason.value = ""; toast(T("Stock updated."), "ok"); changed(); } });
-    } }, h("h2", {}, title), h("div", { class: "row" }, ing, qty, reason, btn));
-    form.fill = function () {
-      var cur = ing.value;
-      clear(ing);
-      ((S.stock && S.stock.levels) || []).forEach(function (l) { ing.appendChild(h("option", { value: l.ingredient, selected: l.ingredient === cur || null }, l.ingredient)); });
-    };
-    return form;
-  }
-
-  function screenStock(root) {
-    var table = h("div", { class: "card" });
-    var forms = [];
-    var perms = S.me.permissions;
-    root.appendChild(h("h1", {}, T("Stock")));
-    root.appendChild(h("div", { class: "cols two" }, table, h("div", { class: "stack" },
-      perms["stock.receive"] ? (forms[forms.length] = stockForm("receive", T("Receive goods"), false)) : null,
-      perms["stock.adjust"] ? (forms[forms.length] = stockForm("write-off", T("Write off"), true)) : null,
-      perms["stock.adjust"] ? (forms[forms.length] = stockForm("count", T("Stocktake (set the real quantity)"), true)) : null,
-      (!perms["stock.receive"] && !perms["stock.adjust"]) ? h("p", { class: "fine" }, T("You can look at the stock; the storekeeper changes it.")) : null)));
-    var filled = false;
-    function update() {
-      clear(table);
-      table.appendChild(h("h2", {}, T("Ingredients")));
-      var levels = (S.stock && S.stock.levels) || [];
-      if (!levels.length) { table.appendChild(h("p", { class: "empty" }, T("Loading the stock…"))); return; }
-      table.appendChild(h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, T("Ingredient")), h("th", { class: "n" }, T("Quantity")), h("th", {}, ""))),
-        h("tbody", {}, levels.map(function (l) {
-          return h("tr", {}, h("td", {}, l.ingredient), h("td", { class: "n" }, String(l.qty)), h("td", {}, l.qty === 0 ? h("span", { class: "badge soldout" }, T("none")) : l.low ? h("span", { class: "badge low" }, T("low")) : null));
-        }))));
-      // the ingredient lists of the forms are filled when the stock arrives, and kept after
-      if (!filled) { forms.forEach(function (f) { f.fill(); }); filled = true; }
-    }
-    return { update: update };
-  }
-
   // ---- your account ---------------------------------------------------------------------
 
   function when(iso) { return new Date(iso).toLocaleString(I18N.locale()); }
@@ -1333,9 +1279,10 @@
   }
 
   // The screens of the managers are in admin.js, which gets from here what it needs to draw and to ask.
-  var admin = window.KitchenAdmin({ h: h, clear: clear, T: T, api: api, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S, loadMenu: loadMenu });
+  var admin = window.KitchenAdmin({ h: h, clear: clear, T: T, api: api, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S, loadMenu: loadMenu, run: run });
+  var warehouse = window.KitchenWarehouse({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, kitchen: screenKitchen, manager: screenManager, stock: screenStock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 

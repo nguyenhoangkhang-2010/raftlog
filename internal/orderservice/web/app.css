@@ -101,7 +101,7 @@ body { margin: 0; color: var(--tx); background: var(--bg); min-height: 100vh; fo
   .top { padding-block: .5rem; gap: .6rem; }
   /* the name takes the room that is left, and is cut with an ellipsis, so the bar stays one line */
   .top .grow { display: none; }
-  .brand { flex: 1 1 0; min-width: 0; }
+  .brand { flex: 1 1 7rem; min-width: 7rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .brand small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #signout { min-height: 32px; padding: .2rem .65rem; font-size: 12px; }
   #tabs { order: 5; width: 100%; margin: 0; overflow-x: auto; gap: 1rem; padding-top: .2rem; }
@@ -269,6 +269,7 @@ td.n, th.n { text-align: right; }
   .stackrows thead { display: none; }
   .stackrows tr { padding: .7rem 0; border-bottom: 1px solid var(--bd); }
   .stackrows td { border: 0; padding: .15rem 0; }
+  .stackrows td.n, .stackrows th.n { text-align: left; }
   .stackrows td[data-label]::before { content: attr(data-label); display: inline-block; min-width: 7.5rem; color: var(--mu); font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .05em; } }
 
 /* the front door: the name of the system beside the form */
@@ -329,6 +330,15 @@ code.code { font: 700 12px var(--mono); padding: .1rem .45rem; border: 1px dashe
   .erow.c4 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
   .rowitem { flex-wrap: wrap; }
 }
+
+/* the warehouse: a row of tabs under the title, and a table row that is open */
+.subnav { display: flex; gap: .3rem; flex-wrap: wrap; border-bottom: 1px solid var(--bd); }
+.subnav button { background: none; color: var(--mu); border: 0; border-bottom: 3px solid transparent; border-radius: 0; min-height: 0; padding: .5rem .8rem; font: 500 13.5px var(--sans); }
+.subnav button:hover { color: var(--tx); filter: none; }
+.subnav button[aria-selected="true"] { color: var(--tx); border-bottom-color: var(--ac); font-weight: 600; }
+.ok-text { color: var(--ok); font-weight: 600; }
+tr.open > td { background: var(--sf2); }
+.row.tight input { width: 7rem; }
 
 /* People who ask for less motion get none: a late ticket keeps its steady red bar. */
 @media (prefers-reduced-motion: reduce) {
