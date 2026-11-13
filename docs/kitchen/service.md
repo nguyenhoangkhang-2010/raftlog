@@ -165,13 +165,16 @@ and reconnect. The token goes in the `Authorization` header, so a browser reads 
   order is placed, from the state, so unlike an offset they cannot be known before the write: this
   is why there must be one writer.
 - **A write whose answer is lost.** If the log does not answer, the service says `503` and marks
-  its state as possibly behind. Before the next command it reads the log again; if the command is
-  there it is not done twice, because its ID is the event's ID. If the node that answers the read is
-  itself behind, the command may be written a second time; applying the same event twice changes
-  nothing.
+  its state as possibly behind. It then writes a *barrier* (a record that changes nothing) and reads
+  until it sees it, which puts everything written before it, including the command whose answer was
+  lost, into the state: a plain read could be answered by a cluster node that is behind and would
+  prove nothing. If the command is there it is not done twice, because its ID is the event's ID. A
+  background loop does this without waiting for the next command, and the same barrier is written
+  once when the service starts, so the log shows a barrier at every start.
 - **A record that does not fit** (garbage, or an event written by something else that the order
   cannot take) is skipped by every reader in the same way and counted; `/healthz` shows the count
-  and the service logs each one.
+  and the service logs each one. A command of this service that turns out not to fit when it is
+  applied in the order of the log is answered `409`, never as a success.
 - **Starting** reads the whole log, so the start takes longer as the history grows. There are no
   snapshots of the service's state yet.
 

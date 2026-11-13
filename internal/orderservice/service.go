@@ -98,6 +98,8 @@ type Service struct {
 	// stale is set when a write to the log failed with an unknown outcome: before the next
 	// command the state is brought up to date from the log.
 	stale bool
+	// barriers counts the barrier records this service has written, to name each of them.
+	barriers uint64
 
 	hub *hub
 }
@@ -140,8 +142,13 @@ func Open(ctx context.Context, l Log, o Options) (*Service, error) {
 			}
 		}
 	}
-	if err := s.catchUp(ctx, 0); err != nil {
+	if err := s.catchUp(ctx); err != nil {
 		return nil, fmt.Errorf("reading the log: %w", err)
+	}
+	// The node that answered those reads may be behind the log: mark the log and read up to the
+	// mark, so that the state is complete before the first command is decided on it.
+	if err := s.barrier(ctx); err != nil {
+		return nil, fmt.Errorf("making the state complete: %w", err)
 	}
 	return s, nil
 }
@@ -149,19 +156,16 @@ func Open(ctx context.Context, l Log, o Options) (*Service, error) {
 // at is the current time in the venue's time zone.
 func (s *Service) at() time.Time { return s.now().In(s.loc) }
 
-// catchUp reads the log from where the state is up to its end, or, if upTo is not zero,
-// until the record at upTo has been applied. It returns the change that record made.
-// The caller holds the write lock (or is Open).
-func (s *Service) catchUp(ctx context.Context, upTo uint64) error {
+// catchUp reads the log from where the state is up to the end that the node answering the
+// reads shows. That node may be behind the log: see barrier. The caller holds the write lock
+// (or is Open).
+func (s *Service) catchUp(ctx context.Context) error {
 	for {
 		ents, err := s.log.Read(ctx, s.st.Next(), s.batch, 0)
 		if err != nil {
 			return err
 		}
 		if len(ents) == 0 {
-			if upTo != 0 && s.st.Next() <= upTo {
-				return fmt.Errorf("the log ends at %d, before the record at %d that was stored", s.st.Next(), upTo)
-			}
 			return nil
 		}
 		for _, e := range ents {
@@ -170,10 +174,58 @@ func (s *Service) catchUp(ctx context.Context, upTo uint64) error {
 			}
 			s.applyEntry(e)
 		}
-		if upTo != 0 && s.st.Next() > upTo {
-			return nil
+	}
+}
+
+// catchUpTo reads until the record at off has been applied, and returns what applying it did.
+// The record is known to be stored, so a node that does not show it yet is behind: the read is
+// repeated until it does, or the context ends.
+func (s *Service) catchUpTo(ctx context.Context, off uint64) (Change, error) {
+	var at Change
+	for s.st.Next() <= off {
+		ents, err := s.log.Read(ctx, s.st.Next(), s.batch, 200*time.Millisecond)
+		if err != nil {
+			return Change{}, err
+		}
+		if len(ents) == 0 {
+			select {
+			case <-ctx.Done():
+				return Change{}, fmt.Errorf("the log shows nothing past offset %d, and the record at %d was stored: %w", s.st.Next(), off, ctx.Err())
+			case <-time.After(20 * time.Millisecond):
+			}
+			continue
+		}
+		for _, e := range ents {
+			if e.Offset != s.st.Next() {
+				return Change{}, fmt.Errorf("the log returned offset %d where %d was expected", e.Offset, s.st.Next())
+			}
+			if ch := s.applyEntry(e); e.Offset == off {
+				at = ch
+			}
 		}
 	}
+	return at, nil
+}
+
+// barrier makes the state complete: it writes a barrier record and reads on until it sees it.
+// Everything written before the barrier is then in the state, including a write of this service
+// whose answer was lost, and records that a node which answered a read was too far behind to show.
+// Without it a decision could be made on a state that lacks something the log already holds,
+// and an order could get a number that another order has.
+func (s *Service) barrier(ctx context.Context) error {
+	s.barriers++
+	data, err := Record{Barrier: fmt.Sprintf("b-%d-%d", s.now().UnixNano(), s.barriers)}.Encode()
+	if err != nil {
+		return err
+	}
+	off, err := s.log.Append(ctx, data)
+	if err != nil {
+		return fmt.Errorf("%w: writing a barrier: %v", ErrUnavailable, err)
+	}
+	if _, err := s.catchUpTo(ctx, off); err != nil {
+		return fmt.Errorf("%w: reading up to the barrier: %v", ErrUnavailable, err)
+	}
+	return nil
 }
 
 func (s *Service) applyEntry(e Entry) Change {
@@ -192,19 +244,47 @@ func (s *Service) applyEntry(e Entry) Change {
 	return ch
 }
 
-// ensureFresh brings the state up to date after a write whose outcome was not known.
+// ensureFresh makes the state complete again after a write whose outcome was not known, with a
+// barrier (see barrier): a plain read could be answered by a node that is behind, and would say
+// nothing about whether the write is in the log.
 func (s *Service) ensureFresh(ctx context.Context) error {
 	if !s.stale {
 		return nil
 	}
-	if err := s.catchUp(ctx, 0); err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	if err := s.barrier(ctx); err != nil {
+		return err
 	}
 	s.stale = false
 	return nil
 }
 
-// appendRecord writes the record and applies it. The caller holds the write lock.
+// Reconcile brings the state up to date whenever a write left it possibly behind, until ctx
+// ends. Without it a service that lost the answer of a write would stay behind, and answer reads
+// from old state, until the next command.
+func (s *Service) Reconcile(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		s.mu.Lock()
+		if s.stale {
+			cctx, cancel := context.WithTimeout(ctx, s.timeout)
+			if err := s.ensureFresh(cctx); err != nil {
+				s.logger.Warn("the state could not be brought up to date yet", "err", err)
+			}
+			cancel()
+		}
+		s.mu.Unlock()
+	}
+}
+
+// appendRecord writes the record and applies it. The caller holds the write lock. It reports
+// ErrConflict if the record, once it was in the log, did not fit the state as the log has it:
+// the command was decided on a state that was not current, and nothing happened.
 func (s *Service) appendRecord(ctx context.Context, rec Record) error {
 	data, err := rec.Encode()
 	if err != nil {
@@ -212,20 +292,21 @@ func (s *Service) appendRecord(ctx context.Context, rec Record) error {
 	}
 	off, err := s.log.Append(ctx, data)
 	if err != nil {
-		s.stale = true // it may have been stored; the next command reads the log first
+		s.stale = true // it may have been stored; the next command makes the state complete first
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
+	var ch Change
 	if off == s.st.Next() {
-		ch := s.applyEntry(Entry{Offset: off, Value: data})
-		if ch.Skipped != nil {
-			return fmt.Errorf("%w: %v", ErrConflict, ch.Skipped)
+		ch = s.applyEntry(Entry{Offset: off, Value: data})
+	} else {
+		// Something else came before ours (or this node was behind): read up to ours.
+		if ch, err = s.catchUpTo(ctx, off); err != nil {
+			s.stale = true
+			return fmt.Errorf("%w: stored at offset %d but not confirmed: %v", ErrUnavailable, off, err)
 		}
-		return nil
 	}
-	// Something else came before ours (or this node was behind): read up to ours.
-	if err := s.catchUp(ctx, off); err != nil {
-		s.stale = true
-		return fmt.Errorf("%w: stored at offset %d but not confirmed: %v", ErrUnavailable, off, err)
+	if ch.Skipped != nil {
+		return fmt.Errorf("%w: %v", ErrConflict, ch.Skipped)
 	}
 	return nil
 }

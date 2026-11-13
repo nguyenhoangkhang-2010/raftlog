@@ -118,6 +118,8 @@ func (s *State) ApplyRecord(offset uint64, rec Record) (Change, error) {
 	ch := Change{Offset: offset}
 	var err error
 	switch {
+	case rec.Barrier != "":
+		return ch, nil // a mark in the log; it changes nothing and is not a record that was skipped
 	case rec.Stock != nil:
 		ch, err = s.applyMove(ch, *rec.Stock)
 	default:
@@ -215,4 +217,13 @@ func (s *State) skip(offset uint64) {
 		s.next++
 		s.skipped++
 	}
+}
+
+// StockLevels returns the quantity of every ingredient the state has seen, by name.
+func (s *State) StockLevels() map[string]int64 {
+	out := map[string]int64{}
+	for ing, q := range s.stock.Snapshot() {
+		out[string(ing)] = q
+	}
+	return out
 }
