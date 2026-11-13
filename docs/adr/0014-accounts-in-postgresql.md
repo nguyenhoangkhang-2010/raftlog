@@ -65,7 +65,9 @@ database for the first, and keeps the log for the second.
   applied once each in order, each in a transaction, under an advisory lock so that instances starting
   together take turns. The checksum of each file is recorded: a file edited after it was applied is
   an error, and so is a database newer than the program. There is no "down": a mistake is fixed by
-  a new migration.
+  a new migration. The checksum is taken after line ends are made LF: the first version hashed the
+  bytes, and the same file checked out with CRLF on Windows (git's autocrlf) was refused as "edited"
+  by a database that a Linux build had migrated. A test now holds the two to the same checksum.
 - **The token file stays**, as a second way to sign in, for the tests (including the chaos test, which
   starts real processes) and for trying the service without a database. The two cannot be used
   together; with `-database-url`, bearer tokens are not accepted anywhere.
