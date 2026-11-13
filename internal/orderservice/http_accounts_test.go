@@ -142,7 +142,6 @@ func (b *browser) cookie(name string) *http.Cookie {
 	return nil
 }
 
-
 func TestTheScreenIsToldHowPeopleSignInHere(t *testing.T) {
 	a := newAccRig(t, AccountsOptions{})
 	var m struct{ Mode string }
@@ -437,7 +436,7 @@ func TestFiveWrongPasswordsOverHTTPLockTheAccount(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		code, hdr = b.do("POST", "/api/login", map[string]string{"username": "cash-1", "password": "wrong password number " + string(rune('a'+i))}, &e)
 	}
-	if code != 429 || e.Code != "locked" || hdr.Get("Retry-After") == "" {
+	if code != 429 || e.Code != "locked" || hdr.Get("Retry-After") == "" || e.RetryAfter < 800 || e.RetryAfter > 920 { // about 15 minutes, in seconds
 		t.Fatalf("the fifth wrong password: %d %+v retry-after %q", code, e, hdr.Get("Retry-After"))
 	}
 	if code, _ := b.do("POST", "/api/login", map[string]string{"username": "cash-1", "password": goodPassword}, &e); code != 429 {
@@ -456,7 +455,7 @@ func TestSignInAttemptsFromOneAddressAreLimited(t *testing.T) {
 	}
 	var e errAnswer
 	code, hdr := b.do("POST", "/api/login", map[string]string{"username": "nobody-d", "password": "x"}, &e)
-	if code != 429 || e.Code != "rate_limited" || hdr.Get("Retry-After") == "" {
+	if code != 429 || e.Code != "rate_limited" || hdr.Get("Retry-After") == "" || e.RetryAfter < 1 {
 		t.Fatalf("the fourth attempt in a minute: %d %+v", code, e)
 	}
 }

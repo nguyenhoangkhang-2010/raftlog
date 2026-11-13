@@ -16,11 +16,17 @@
   <nav id="tabs" aria-label="Screens"></nav>
   <div class="grow"></div>
   <div class="pill" id="live" role="status" hidden>offline</div>
+  <div class="langsw" id="langsw" role="group" aria-label="Language">
+    <button type="button" data-lang="vi" lang="vi" title="Tiếng Việt">VI</button>
+    <button type="button" data-lang="en" lang="en" title="English">EN</button>
+  </div>
   <button type="button" class="ghost" id="signout" hidden>Sign out</button>
 </header>
 <main id="view" tabindex="-1"></main>
 <div id="toasts" aria-live="polite" aria-atomic="false"></div>
-<noscript><p class="fine pad">This page needs JavaScript.</p></noscript>
+<noscript><p class="fine pad">This page needs JavaScript. Trang này cần JavaScript.</p></noscript>
+<script src="/i18n.js"></script>
+<script src="/vi.js"></script>
 <script src="/logic.js"></script>
 <script src="/app.js"></script>
 </body>

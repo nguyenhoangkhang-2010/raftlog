@@ -6,6 +6,9 @@
   else root.KitchenLogic = factory();
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
+  // The sentences are English, and the language of the moment decides what a person reads (i18n.js).
+  var I18N = typeof KitchenI18n !== "undefined" ? KitchenI18n : require("./i18n.js");
+  var T = I18N.t;
 
   // formatMoney writes a whole number of dong like the service does: 89100 is "89.100đ".
   function formatMoney(n) {
@@ -28,9 +31,9 @@
   function groupProblem(group, choice) {
     var n = chosen(choice, group).length;
     if (n < group.min) {
-      return group.min === 1 && group.max === 1 ? "Choose one: " + group.name : "Choose at least " + group.min + ": " + group.name;
+      return group.min === 1 && group.max === 1 ? T("Choose one: {name}", { name: group.name }) : T("Choose at least {n}: {name}", { n: group.min, name: group.name });
     }
-    if (n > group.max) return "Choose at most " + group.max + ": " + group.name;
+    if (n > group.max) return T("Choose at most {n}: {name}", { n: group.max, name: group.name });
     return "";
   }
 
@@ -139,20 +142,45 @@
     return body;
   }
 
-  // describeError turns the service's answer into a sentence for a person.
+  // describeError turns the service's answer into a sentence for a person. The fixed messages of
+  // the service are in the dictionary and are shown in the person's language; one that is not
+  // there is shown in English, with a short sentence in the person's language before it.
   function describeError(status, body) {
     body = body || {};
-    var msg = body.error || "Something went wrong (" + status + ")";
-    if (body.code === "out_of_stock" && body.shortages && body.shortages.length) {
-      msg = "Not enough in stock: " + body.shortages.map(function (s) {
-        return s.ingredient + " (needs " + s.need + ", has " + s.have + ")";
-      }).join(", ");
-    } else if (body.code === "cart" && body.lines && body.lines.length) {
-      msg = body.lines.map(function (l) { return "Line " + l.line + ": " + l.error.replace(/^menu: /, ""); }).join("; ");
-    } else if (body.code === "unavailable") {
-      msg = "The kitchen system could not reach its log. Try again in a moment.";
-    } else if (body.code === "unauthorized") {
-      msg = "The token was not accepted.";
+    var msg = body.error ? T(body.error) : T("Something went wrong ({status})", { status: status });
+    var untranslated = !!body.error && !I18N.has(body.error);
+    switch (body.code) {
+      case "out_of_stock":
+        if (body.shortages && body.shortages.length) {
+          msg = T("Not enough in stock: {list}", { list: body.shortages.map(function (s) {
+            return T("{ingredient} (needs {need}, has {have})", { ingredient: s.ingredient, need: s.need, have: s.have });
+          }).join(", ") });
+        }
+        break;
+      case "cart":
+        if (body.lines && body.lines.length) {
+          msg = body.lines.map(function (l) {
+            var why = l.error.replace(/^menu: /, "");
+            var sold = /^sold out: (.*)$/.exec(why);
+            return T("Line {n}: {error}", { n: l.line, error: sold ? T("sold out: {name}", { name: sold[1] }) : why });
+          }).join("; ");
+        }
+        break;
+      case "unavailable": msg = T("The kitchen system could not reach its log. Try again in a moment."); break;
+      case "unauthorized": msg = T("The token was not accepted."); break;
+      case "bad_credentials": msg = T("Wrong login name or password."); break;
+      case "wrong_password": msg = T("The current password is wrong."); break;
+      case "rate_limited": msg = T("Too many attempts from this address. Wait a moment and try again."); break;
+      case "password_change_required": msg = T("Change your temporary password first."); break;
+      case "cross_site": msg = T("This request was made by another site."); break;
+      case "locked":
+        if (body.retry_after) msg = T("Too many wrong passwords. Try again in {n} minutes, or ask an administrator to unlock the account.", { n: Math.max(1, Math.ceil(body.retry_after / 60)) });
+        break;
+      case "forbidden": if (untranslated) msg = T("You may not do that.") + " (" + body.error + ")"; break;
+      case "not_found": if (untranslated) msg = T("That was not found.") + " (" + body.error + ")"; break;
+      case "conflict": if (untranslated) msg = T("That cannot be done now.") + " (" + body.error + ")"; break;
+      case "invalid": if (untranslated) msg = T("That is not valid.") + " (" + body.error + ")"; break;
+      case "weak_password": if (untranslated) msg = T("That password is not accepted.") + " (" + body.error + ")"; break;
     }
     return msg;
   }
@@ -252,18 +280,31 @@
   // ageText says how long ago something happened.
   function ageText(iso, now) {
     var secs = Math.max(0, Math.round(((now || Date.now()) - Date.parse(iso)) / 1000));
-    if (secs < 60) return "just now";
+    if (secs < 60) return T("just now");
     var mins = Math.floor(secs / 60);
-    if (mins < 60) return mins + " min";
+    if (mins < 60) return T("{n} min", { n: mins });
     var h = Math.floor(mins / 60);
-    return h + " h " + (mins % 60) + " min";
+    return T("{h} h {m} min", { h: h, m: mins % 60 });
   }
 
-  var STATUS = {
-    placed: "Waiting for payment", paid: "Paid, waiting for the kitchen", preparing: "Being made",
-    ready: "Ready", completed: "Handed over", cancelled: "Cancelled",
-  };
-  function statusLabel(s) { return STATUS[s] || s; }
+  // agoText is ageText as a time in the past: "5 min ago", or "just now".
+  function agoText(iso, now) {
+    var secs = Math.max(0, Math.round(((now || Date.now()) - Date.parse(iso)) / 1000));
+    return secs < 60 ? T("just now") : T("{age} ago", { age: ageText(iso, now) });
+  }
+
+  // statusLabel says in words where an order is.
+  function statusLabel(s) {
+    switch (s) {
+      case "placed": return T("Waiting for payment");
+      case "paid": return T("Paid, waiting for the kitchen");
+      case "preparing": return T("Being made");
+      case "ready": return T("Ready");
+      case "completed": return T("Handed over");
+      case "cancelled": return T("Cancelled");
+    }
+    return s;
+  }
 
   // cashChange is the change due, or null when the amount handed over does not cover the total.
   function cashChange(total, tendered) {
@@ -330,48 +371,48 @@
   // userState says in one word what is the matter with an account, if anything: the most serious
   // thing first. now is a time in milliseconds, for a lock that has run out.
   function userState(u, now) {
-    if (u.disabled) return { key: "disabled", label: "disabled" };
-    if (u.locked_until && Date.parse(u.locked_until) > (now === undefined ? Date.now() : now)) return { key: "locked", label: "locked" };
-    if (u.must_change_password) return { key: "change", label: "must change password" };
-    return { key: "active", label: "active" };
+    if (u.disabled) return { key: "disabled", label: T("disabled") };
+    if (u.locked_until && Date.parse(u.locked_until) > (now === undefined ? Date.now() : now)) return { key: "locked", label: T("locked") };
+    if (u.must_change_password) return { key: "change", label: T("must change password") };
+    return { key: "active", label: T("active") };
   }
 
   // passwordProblem checks a new password before it is sent, to say at once what the service
   // would say. The service decides; this only saves a round trip. It returns "" when nothing is
   // wrong that can be seen here.
   function passwordProblem(pw, again, loginName) {
-    if (Array.from(pw).length < 10) return "Use at least 10 characters.";
-    if (new TextEncoder().encode(pw).length > 128) return "Use at most 128 bytes.";
-    if (loginName && loginName.length >= 3 && pw.toLowerCase().indexOf(loginName.toLowerCase()) >= 0) return "The password cannot contain your login name.";
-    if (new Set(Array.from(pw)).size < 5) return "Use at least 5 different characters.";
-    if (again !== undefined && pw !== again) return "The two passwords differ.";
+    if (Array.from(pw).length < 10) return T("Use at least 10 characters.");
+    if (new TextEncoder().encode(pw).length > 128) return T("Use at most 128 bytes.");
+    if (loginName && loginName.length >= 3 && pw.toLowerCase().indexOf(loginName.toLowerCase()) >= 0) return T("The password cannot contain your login name.");
+    if (new Set(Array.from(pw)).size < 5) return T("Use at least 5 different characters.");
+    if (again !== undefined && pw !== again) return T("The two passwords differ.");
     return "";
   }
 
   // One sentence for each kind of line of the trail. actor is who did it (empty when nobody was
   // signed in) and subject is the account it was done to.
   var EVENTS = {
-    "login.success": function (e) { return e.subject + " signed in"; },
-    "login.failure": function (e) { return "Wrong password for " + e.subject; },
-    "login.locked": function (e) { return e.subject + " was locked after wrong passwords"; },
-    "login.blocked": function (e) { return "Sign-in to " + e.subject + " refused: the account is locked"; },
-    "login.disabled": function (e) { return "Sign-in to " + e.subject + " refused: the account is disabled"; },
+    "login.success": function (e) { return T("{subject} signed in", e); },
+    "login.failure": function (e) { return T("Wrong password for {subject}", e); },
+    "login.locked": function (e) { return T("{subject} was locked after wrong passwords", e); },
+    "login.blocked": function (e) { return T("Sign-in to {subject} refused: the account is locked", e); },
+    "login.disabled": function (e) { return T("Sign-in to {subject} refused: the account is disabled", e); },
     "login.unknown": function (e) {
       var tried = (e.detail && e.detail.login) || e.subject;
-      return "Sign-in with a login name that does not exist" + (tried ? ": " + tried : "");
+      return tried ? T("Sign-in with a login name that does not exist: {name}", { name: tried }) : T("Sign-in with a login name that does not exist");
     },
-    "logout": function (e) { return e.subject + " signed out"; },
-    "password.change": function (e) { return e.subject + " changed their password"; },
-    "password.wrong_current": function (e) { return e.subject + " gave a wrong current password"; },
-    "user.create": function (e) { return e.actor + " created " + e.subject; },
-    "user.update": function (e) { return e.actor + " changed " + e.subject; },
-    "user.disable": function (e) { return e.actor + " disabled " + e.subject; },
-    "user.enable": function (e) { return e.actor + " enabled " + e.subject; },
-    "user.unlock": function (e) { return e.actor + " unlocked " + e.subject; },
-    "user.reset_password": function (e) { return e.actor + " reset the password of " + e.subject; },
-    "user.set_password": function (e) { return "The password of " + e.subject + " was set at the command line"; },
-    "session.revoke": function (e) { return e.actor + " ended a session of " + e.subject; },
-    "session.revoke_all": function (e) { return e.actor + " ended all sessions of " + e.subject; },
+    "logout": function (e) { return T("{subject} signed out", e); },
+    "password.change": function (e) { return T("{subject} changed their password", e); },
+    "password.wrong_current": function (e) { return T("{subject} gave a wrong current password", e); },
+    "user.create": function (e) { return T("{actor} created {subject}", e); },
+    "user.update": function (e) { return T("{actor} changed {subject}", e); },
+    "user.disable": function (e) { return T("{actor} disabled {subject}", e); },
+    "user.enable": function (e) { return T("{actor} enabled {subject}", e); },
+    "user.unlock": function (e) { return T("{actor} unlocked {subject}", e); },
+    "user.reset_password": function (e) { return T("{actor} reset the password of {subject}", e); },
+    "user.set_password": function (e) { return T("The password of {subject} was set at the command line", e); },
+    "session.revoke": function (e) { return T("{actor} ended a session of {subject}", e); },
+    "session.revoke_all": function (e) { return T("{actor} ended all sessions of {subject}", e); },
   };
 
   // describeEvent turns a line of the trail into a sentence. An action that is not known is shown
@@ -384,12 +425,12 @@
   // shortAgent makes a browser's long user-agent into "Chrome on Windows". It is a convenience
   // for reading a list of sessions, not a way to identify anything.
   function shortAgent(ua) {
-    if (!ua) return "unknown browser";
+    if (!ua) return T("unknown browser");
     var browser = /Edg\//.test(ua) ? "Edge" : /OPR\/|Opera/.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" :
-      /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : /curl\//.test(ua) ? "curl" : "browser";
+      /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : /curl\//.test(ua) ? "curl" : T("browser");
     var os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" :
       /Mac OS X/.test(ua) ? "macOS" : /Linux/.test(ua) ? "Linux" : "";
-    return os ? browser + " on " + os : browser;
+    return os ? T("{browser} on {os}", { browser: browser, os: os }) : browser;
   }
 
   return {
@@ -397,7 +438,7 @@
     optionNames: optionNames, toggleOption: toggleOption, cartEstimate: cartEstimate, cartBody: cartBody,
     describeError: describeError, groupForTill: groupForTill, stationWork: stationWork, stationsOf: stationsOf,
     cancelQueue: cancelQueue, refundPolicy: refundPolicy, workStarted: workStarted, summary: summary,
-    ageText: ageText, statusLabel: statusLabel, cashChange: cashChange, quickAmounts: quickAmounts,
+    ageText: ageText, agoText: agoText, statusLabel: statusLabel, cashChange: cashChange, quickAmounts: quickAmounts,
     newCommandID: newCommandID, parseStream: parseStream, screensFor: screensFor, ACTIVE: ACTIVE,
     userState: userState, passwordProblem: passwordProblem, describeEvent: describeEvent, shortAgent: shortAgent,
   };

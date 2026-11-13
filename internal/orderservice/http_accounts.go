@@ -106,7 +106,7 @@ func (a *API) failAccounts(w http.ResponseWriter, err error) {
 			wait = time.Second
 		}
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		body.Code, code = "locked", http.StatusTooManyRequests
+		body.Code, code, body.RetryAfter = "locked", http.StatusTooManyRequests, int(wait.Seconds())+1
 		body.Error = fmt.Sprintf("Too many wrong passwords. Try again in %d minutes, or ask an administrator to unlock the account.", int(wait.Minutes())+1)
 	case errors.Is(err, accounts.ErrBadCredentials):
 		body.Code, code = "bad_credentials", http.StatusUnauthorized
@@ -154,7 +154,7 @@ func (a *API) signIn(w http.ResponseWriter, r *http.Request) {
 	c := clientOf(r)
 	if ok, wait := a.login.allow(c.IP); !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		writeJSON(w, http.StatusTooManyRequests, errorBody{Error: "Too many attempts from this address. Wait a moment and try again.", Code: "rate_limited"})
+		writeJSON(w, http.StatusTooManyRequests, errorBody{Error: "Too many attempts from this address. Wait a moment and try again.", Code: "rate_limited", RetryAfter: int(wait.Seconds()) + 1})
 		return
 	}
 	var b signInBody

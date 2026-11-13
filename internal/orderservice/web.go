@@ -12,7 +12,7 @@ import (
 // with a content security policy that allows only these files, so a page cannot run a script or
 // load a style that is not one of them; the notes that customers type are put on the page as text.
 
-//go:embed web/index.html web/app.css web/logic.js web/app.js web/favicon.svg web/fonts/*.woff2
+//go:embed web/index.html web/app.css web/i18n.js web/vi.js web/logic.js web/app.js web/favicon.svg web/fonts/*.woff2
 var webFS embed.FS
 
 // contentSecurityPolicy lets the page load its own script, style, fonts and icon, and talk to the
@@ -31,12 +31,14 @@ var assets = func() map[string]asset {
 	files := map[string]string{
 		"/":            "web/index.html",
 		"/app.css":     "web/app.css",
+		"/i18n.js":     "web/i18n.js",
+		"/vi.js":       "web/vi.js",
 		"/logic.js":    "web/logic.js",
 		"/app.js":      "web/app.js",
 		"/favicon.svg": "web/favicon.svg",
 	}
 	types := map[string]string{
-		"/": "text/html; charset=utf-8", "/app.css": "text/css; charset=utf-8", "/logic.js": "text/javascript; charset=utf-8",
+		"/": "text/html; charset=utf-8", "/app.css": "text/css; charset=utf-8", "/i18n.js": "text/javascript; charset=utf-8", "/vi.js": "text/javascript; charset=utf-8", "/logic.js": "text/javascript; charset=utf-8",
 		"/app.js": "text/javascript; charset=utf-8", "/favicon.svg": "image/svg+xml",
 	}
 	// The fonts are files of web/fonts, each served at /fonts/<name>.

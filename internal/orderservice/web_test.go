@@ -1,13 +1,17 @@
 package orderservice
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/accounts"
 )
 
 func TestTheScreensAreServedWithTheRightTypesAndASecurityPolicy(t *testing.T) {
@@ -185,6 +189,58 @@ func TestTheScriptsPutDataOnThePageAsTextNeverAsHTML(t *testing.T) {
 	}
 }
 
+func TestEveryFixedMessageOfTheAccountsIsInTheVietnameseDictionary(t *testing.T) {
+	// A message that the service writes in English and a screen shows in Vietnamese must be in the
+	// dictionary, as written. The messages are read from the sources that write them, so that
+	// changing a sentence there without changing the dictionary fails here.
+	dict := readEmbedded(t, "vi.js")
+	var found []string
+	scan := func(path string, patterns ...*regexp.Regexp) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range patterns {
+			for _, m := range re.FindAllStringSubmatch(string(data), -1) {
+				found = append(found, m[1])
+			}
+		}
+	}
+	invalid := regexp.MustCompile(`invalid\("([^"%\\]+)"\)`)
+	password := regexp.MustCompile(`PasswordError\{"([^"\\]+)"\}`)
+	sentinel := regexp.MustCompile(`errors\.New\("accounts: ([^"\\]+)"\)`)
+	files, _ := filepath.Glob("../accounts/*.go")
+	for _, f := range files {
+		if !strings.HasSuffix(f, "_test.go") {
+			scan(f, invalid, password, sentinel)
+		}
+	}
+	scan("http_accounts.go", regexp.MustCompile(`InvalidError\{Reason: "([^"\\]+)"\}`))
+	// the messages that are built with a number are got by asking for them
+	for _, pw := range []string{"short", strings.Repeat("x1y2z3", 30)} {
+		var pe *accounts.PasswordError
+		if err := accounts.CheckPassword(pw, "an-id", ""); errors.As(err, &pe) {
+			found = append(found, pe.Reason)
+		}
+	}
+	// two sentinels are not shown to a person: a wrong login is told by its code, and the stored
+	// hash is the service's own problem
+	skip := map[string]bool{"wrong login name or password": true, "no such session": true, "the stored password hash is not an argon2id hash this program understands": true}
+	checked := 0
+	for _, msg := range found {
+		if skip[msg] {
+			continue
+		}
+		checked++
+		if !strings.Contains(dict, `"`+msg+`":`) {
+			t.Errorf("the message %q of the service is not in the server section of vi.js", msg)
+		}
+	}
+	if checked < 20 {
+		t.Fatalf("only %d messages were found in the sources: the patterns no longer match what is written", checked)
+	}
+}
+
 func TestTheScreensLogicPassesItsOwnTests(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -193,7 +249,7 @@ func TestTheScreensLogicPassesItsOwnTests(t *testing.T) {
 	if _, err := os.Stat("web/logic.test.js"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(node, "--test", "web/logic.test.js").CombinedOutput()
+	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js").CombinedOutput()
 	if err != nil {
 		t.Fatalf("the tests of web/logic.js failed: %v\n%s", err, out)
 	}
