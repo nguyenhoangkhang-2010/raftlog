@@ -285,6 +285,17 @@ How it is built, and why it can be trusted with what customers type:
   the status changes, a toast, the live dot, a lifting card on hover and a late ticket's bar move,
   and none of it moves for people who ask the system for less motion. The colours are variables at
   the top of `web/app.css`: changing the look is changing that file.
+- **Two languages, Vietnamese and English**, with a switch (VI | EN) in the top bar. The language is
+  the person's choice, kept in their browser; before they choose, it is the browser's own language
+  if that is Vietnamese, else English. The text in the code is English and is also the key
+  (`T("Place order")`), so a sentence with no Vietnamese entry shows in English instead of
+  breaking; `web/vi.js` is the dictionary and `web/i18n.js` the mechanism. Three tests keep it
+  honest: every `T()` of the scripts has an entry and every entry is used (and both fill in the same
+  `{names}`), and every fixed message of the accounts that the service writes is in the dictionary
+  as written, read from the Go sources. Times follow the language. **Limits:** the messages of the
+  order rules (such as "order: wrong state") are in English; the screen puts a sentence in
+  Vietnamese before them. The names of items, categories of a venue's own and ingredients are the
+  venue's data and show as written. The documentation stays in English.
 - **Live without polling**: the screen reads the state, then listens to `GET /api/stream` (with
   `fetch`, because `EventSource` cannot send the token) and asks again for what changed. It
   reconnects with a growing pause, treats 45 seconds of silence as a dead connection, and refreshes

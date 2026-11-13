@@ -147,6 +147,9 @@ type errorBody struct {
 	Lines []lineProblem `json:"lines,omitempty"`
 	// Shortages lists the ingredients that were short.
 	Shortages []shortage `json:"shortages,omitempty"`
+	// RetryAfter is how many seconds to wait, for an answer that says to try later: a screen
+	// writes "try again in 15 minutes" itself, in the language of the person.
+	RetryAfter int `json:"retry_after,omitempty"`
 }
 
 type lineProblem struct {

@@ -85,6 +85,12 @@ body { margin: 0; color: var(--tx); background: var(--bg); min-height: 100vh; fo
 #tabs .ico { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 #tabs button:hover { color: var(--tx); filter: none; }
 #tabs button[aria-current="page"] { color: var(--tx); border-bottom-color: var(--ac); font-weight: 600; }
+/* the language switch: two buttons side by side, the one in use filled */
+.langsw { display: inline-flex; border: 1px solid var(--bd); border-radius: 4px; overflow: hidden; }
+.langsw button { min-height: 28px; padding: .1rem .55rem; border: 0; border-radius: 0; background: transparent; color: var(--mu); font: 600 11.5px var(--sans); letter-spacing: .04em; }
+.langsw button + button { border-left: 1px solid var(--bd); }
+.langsw button[aria-pressed="true"] { background: var(--btn); color: var(--btn-ink); }
+.langsw button:hover:not([aria-pressed="true"]) { background: var(--sf2); color: var(--tx); filter: none; }
 .pill { display: inline-flex; align-items: center; gap: .4rem; padding: .15rem .6rem; border-radius: 999px; font: 600 11.5px var(--sans); background: var(--sf2); color: var(--mu); border: 1px solid var(--bd); }
 .pill::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
 .pill.live { background: var(--ok-s); color: var(--ok); border-color: transparent; }

@@ -102,10 +102,11 @@ func (h *httpRig) cid() string {
 }
 
 type errAnswer struct {
-	Error     string `json:"error"`
-	Code      string `json:"code"`
-	Lines     []struct{ Line int }
-	Shortages []struct {
+	Error      string `json:"error"`
+	Code       string `json:"code"`
+	Lines      []struct{ Line int }
+	RetryAfter int `json:"retry_after"`
+	Shortages  []struct {
 		Ingredient string
 		Need, Have int64
 	}
