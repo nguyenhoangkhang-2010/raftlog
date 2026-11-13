@@ -272,15 +272,19 @@ How it is built, and why it can be trusted with what customers type:
   the kitchen's screen, so the code puts all data on the page as text (`textContent`), never as
   HTML; a test fails the build if the scripts use `innerHTML`, `eval` and the like, and another
   if the page has an inline script or style.
-- **The look is a canteen ticket**: warm paper and ink-black rules in the light scheme, chalk on a
-  dark board in the dark one; hard offset shadows, buttons that press down onto the page, order
-  cards cut like tickets with a dashed tear line, and the status stamped on them (the stamp is
-  struck again only when the status changes). Names and text are in Bricolage Grotesque, numbers,
-  money and labels in Space Mono; the files, their sources and their licence (SIL OFL 1.1) are in
-  [`web/fonts/README.md`](../../internal/orderservice/web/fonts/README.md). Only the status stamp,
-  a card that newly appears, a toast, the live dot and a late ticket's blinking frame move, and
-  none of it moves for people who ask the system for less motion. The colours are tokens at the
-  top of `web/app.css`: changing the look is changing that file.
+- **The look is that of a company's site**: a white bar at the top with the screens as its menu
+  (the one in use underlined in orange), a navy banner with a title in tall capitals on the two
+  pages that a customer lives on, menu cards with a picture, one orange accent, navy buttons with an
+  orange one for the main action of a view, and a light and a dark scheme. An order is a card with a
+  bar of the colour of its state; the kitchen's tickets are bigger, and a late one has a red bar.
+  Headings are in Barlow Condensed, text in Be Vietnam Pro, which was made with Vietnamese in mind;
+  the files, their sources and their licence (SIL OFL 1.1) are in
+  [`web/fonts/README.md`](../../internal/orderservice/web/fonts/README.md). The picture of an item is
+  a drawing by kind (drink, food, combo) until the menu carries a photo for it; the card then
+  shows the photo, with no change to the page. Only a card that newly appears, a status label when
+  the status changes, a toast, the live dot, a lifting card on hover and a late ticket's bar move,
+  and none of it moves for people who ask the system for less motion. The colours are variables at
+  the top of `web/app.css`: changing the look is changing that file.
 - **Live without polling**: the screen reads the state, then listens to `GET /api/stream` (with
   `fetch`, because `EventSource` cannot send the token) and asks again for what changed. It
   reconnects with a growing pause, treats 45 seconds of silence as a dead connection, and refreshes

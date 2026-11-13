@@ -31,6 +31,32 @@
     else el.appendChild(typeof c === "object" ? c : document.createTextNode(String(c)));
   }
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+
+  // svg builds an inline drawing. Nothing is loaded from elsewhere, and what is drawn is not data.
+  var SVGNS = "http://www.w3.org/2000/svg";
+  function svg(paths) {
+    var el = document.createElementNS(SVGNS, "svg");
+    el.setAttribute("viewBox", "0 0 48 48");
+    el.setAttribute("aria-hidden", "true");
+    paths.forEach(function (d) {
+      var p = document.createElementNS(SVGNS, "path");
+      p.setAttribute("d", d);
+      el.appendChild(p);
+    });
+    return el;
+  }
+  var ART = {
+    drink: ["M10 14h24l-3 24a3 3 0 0 1-3 2H16a3 3 0 0 1-3-2z", "M34 18h3a4 4 0 0 1 0 8h-4", "M16 8c0 2 2 2 2 4M22 8c0 2 2 2 2 4"],
+    food: ["M8 20c0-8 7-12 16-12s16 4 16 12v18a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z", "M8 24h32M16 32h16"],
+    combo: ["M6 18h22l-2 20a3 3 0 0 1-3 2H11a3 3 0 0 1-3-2z", "M30 24c8-4 14 0 12 8s-8 8-12 6", "M12 10c0 2 2 2 2 4M18 10c0 2 2 2 2 4"],
+  };
+  // art is the picture of an item: its photo when the menu has one, else a drawing by kind. The
+  // menu does not carry photos yet; the day it does, a card shows it without a change here.
+  function art(item, kind) {
+    if (item && item.image) return h("div", { class: "im photo" }, h("img", { src: item.image, alt: "", loading: "lazy" }));
+    var k = kind || (item && item.station === "drinks" ? "drink" : "food");
+    return h("div", { class: "im art-" + k }, svg(ART[k] || ART.food));
+  }
   function money(n) { return L.formatMoney(n); }
   function randBytes(n) { var a = new Uint8Array(n); (window.crypto || window.msCrypto).getRandomValues(a); return a; }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -327,7 +353,7 @@
       err,
       btn,
       h("p", { class: "fine" }, "Ask the manager for your token. It is kept in this tab only, and goes away when you close it."));
-    clear($("view")).appendChild(form);
+    clear($("view")).appendChild(authShell(form));
     input.focus();
   }
 
@@ -357,7 +383,7 @@
       fieldOf("password", "Password", pass),
       err, btn,
       h("p", { class: "fine" }, "Forgot your password? Ask an administrator to reset it."));
-    clear($("view")).appendChild(form);
+    clear($("view")).appendChild(authShell(form));
     (message ? pass : user).focus();
   }
 
@@ -395,10 +421,10 @@
   // renderMustChange is the only page for an account whose password is a temporary one.
   function renderMustChange() {
     var pf = passwordForm(function (me) { return begin(me); }, true);
-    clear($("view")).appendChild(h("div", { class: "card signin" },
+    clear($("view")).appendChild(authShell(h("div", { class: "card signin" },
       h("h1", {}, "Choose your own password"),
       h("p", {}, "The password you were given is temporary. Choose one that only you know before you go on."),
-      pf.form));
+      pf.form)));
     pf.focus();
   }
 
@@ -427,8 +453,39 @@
       view.appendChild(h("div", { class: "card signin" }, h("h1", {}, "Nothing here for you"), h("p", { class: "fine" }, "This account has no screen in the kitchen system.")));
       return;
     }
+    var banner = bannerFor(S.screen);
+    if (banner) view.appendChild(banner);
     S.current = SCREENS[S.screen](view);
     S.current.update();
+  }
+
+  // The two pages that a customer lives on open with a banner, like the front page of a shop; the
+  // screens of the staff are for working in and have a plain title.
+  function bannerFor(screen) {
+    var customer = S.me && !S.me.permissions["order.view_all"];
+    if (screen === "order" && customer) {
+      return h("section", { class: "hero" }, h("div", { class: "hero-in" },
+        h("h1", {}, "Order fast.", h("br"), "Pick up on time."),
+        h("p", {}, "Choose your items, pay at the till and follow each step of the preparation here."),
+        h("button", { type: "button", class: "primary", onclick: function () {
+          var m = $("menu");
+          if (m) m.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+        } }, "See the menu")));
+    }
+    if (screen === "myorders") {
+      return h("section", { class: "hero slim" }, h("div", { class: "hero-in" }, h("h1", {}, "My orders"), h("p", {}, "What is being made, and what is ready, live.")));
+    }
+    return null;
+  }
+
+  // authShell puts a sign-in form beside the name of the system, as the front door of a site.
+  function authShell(card) {
+    return h("div", { class: "auth" },
+      h("aside", { class: "auth-art" },
+        h("div", { class: "wordmark" }, "KITCHEN", h("i", {}, ".")),
+        h("h1", {}, "From the counter", h("br"), "to the kitchen"),
+        h("p", {}, "One screen for each person on the team: the customer, the till, the kitchen, the manager.")),
+      card);
   }
 
   var pendingFrame = false;
@@ -455,7 +512,7 @@
       return h("span", { class: "chip " + t.status }, t.station + ": " + t.status);
     });
     var move = motion("o:" + o.id, o.status);
-    var cls = "order" + (o.cancel_request ? " attention" : "") + (move === "enter" ? " enter" : "");
+    var cls = "order s-" + o.status + (o.cancel_request ? " attention" : "") + (move === "enter" ? " enter" : "");
     return h("article", { class: cls, "aria-label": "Order " + o.number },
       h("div", { class: "head" },
         h("span", { class: "num" }, "#" + o.number),
@@ -591,7 +648,7 @@
           changed();
         } }, "Add to cart")));
     }
-    return h("div", { class: "item" + (item.sold_out ? " soldout" : "") }, kids);
+    return h("div", { class: "item" + (item.sold_out ? " soldout" : "") }, art(item), h("div", { class: "cb" }, kids));
   }
 
   function quantityStepper(q, set) {
@@ -635,12 +692,13 @@
           changed();
         } }, "Add to cart")));
     }
-    return h("div", { class: "item" }, kids);
+    return h("div", { class: "item" }, art(combo, "combo"), h("div", { class: "cb" }, kids));
   }
 
   function screenOrder(root) {
-    var menuBox = h("div", {}), cartBox = h("div", { class: "card" });
-    root.appendChild(h("h1", {}, S.me.permissions["order.view_all"] ? "New order at the counter" : "Order"));
+    var menuBox = h("div", { id: "menu" }), cartBox = h("div", { class: "card cart" });
+    // A customer's page opens with the banner of render(); the till's has a plain title.
+    if (S.me.permissions["order.view_all"]) root.appendChild(h("h1", {}, "New order at the counter"));
     root.appendChild(h("div", { class: "cols two" }, menuBox, cartBox));
 
     function update() {
@@ -714,7 +772,6 @@
 
   function screenMyOrders(root) {
     var box = h("div", { class: "stack" });
-    root.appendChild(h("h1", {}, "My orders"));
     root.appendChild(box);
     function update() {
       clear(box);
@@ -1212,7 +1269,8 @@
     }
 
     root.appendChild(h("h1", {}, "Users"));
-    root.appendChild(h("div", { class: "cols two" }, h("div", { class: "stack" }, tempBox, listBox, eventsBox), h("div", { class: "stack" }, form)));
+    // The table has the width of the page, so that the buttons of a row stay on one line.
+    root.appendChild(h("div", { class: "stack" }, tempBox, listBox, h("div", { class: "cols two" }, eventsBox, form)));
     reload();
     function update() { drawTemp(); drawList(); drawEvents(); }
     return { update: update, reload: reload };

@@ -11,6 +11,7 @@
 package pgmigrate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -59,7 +60,9 @@ func Load(fsys fs.FS) ([]Migration, error) {
 			return nil, fmt.Errorf("pgmigrate: %w", err)
 		}
 		v, _ := strconv.Atoi(m[1])
-		sum := sha256.Sum256(data)
+		// The checksum is of the text, not of how a checkout wrote its line ends: the same file is
+		// LF on one machine and CRLF on another (git's autocrlf), and must be the same migration.
+		sum := sha256.Sum256(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))
 		out = append(out, Migration{Version: v, Name: m[1] + "_" + m[2], SQL: string(data), Checksum: hex.EncodeToString(sum[:])})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })

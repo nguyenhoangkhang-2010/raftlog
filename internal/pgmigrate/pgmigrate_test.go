@@ -40,6 +40,24 @@ func TestLoadRefusesWhatLooksLikeAMergeThatWentWrong(t *testing.T) {
 	}
 }
 
+func TestTheLineEndsOfACheckoutDoNotChangeAMigration(t *testing.T) {
+	lf, err := Load(files("CREATE TABLE a (n int);\nINSERT INTO a VALUES (1);\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlf, err := Load(files("CREATE TABLE a (n int);\r\nINSERT INTO a VALUES (1);\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lf[0].Checksum != crlf[0].Checksum {
+		t.Fatal("the same migration has two checksums, one per kind of line end: a Windows checkout would be refused")
+	}
+	other, _ := Load(files("CREATE TABLE a (n int);\nINSERT INTO a VALUES (2);\n"))
+	if other[0].Checksum == lf[0].Checksum {
+		t.Fatal("a migration that differs in its text has the same checksum")
+	}
+}
+
 func TestApplyRunsEachMigrationOnceAndInOrder(t *testing.T) {
 	pool := pgtest.Pool(t)
 	ctx := context.Background()
