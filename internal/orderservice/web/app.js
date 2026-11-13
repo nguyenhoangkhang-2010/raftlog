@@ -34,9 +34,9 @@
 
   // svg builds an inline drawing. Nothing is loaded from elsewhere, and what is drawn is not data.
   var SVGNS = "http://www.w3.org/2000/svg";
-  function svg(paths) {
+  function svg(paths, size) {
     var el = document.createElementNS(SVGNS, "svg");
-    el.setAttribute("viewBox", "0 0 48 48");
+    el.setAttribute("viewBox", "0 0 " + (size || 48) + " " + (size || 48));
     el.setAttribute("aria-hidden", "true");
     paths.forEach(function (d) {
       var p = document.createElementNS(SVGNS, "path");
@@ -50,6 +50,23 @@
     food: ["M8 20c0-8 7-12 16-12s16 4 16 12v18a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z", "M8 24h32M16 32h16"],
     combo: ["M6 18h22l-2 20a3 3 0 0 1-3 2H11a3 3 0 0 1-3-2z", "M30 24c8-4 14 0 12 8s-8 8-12 6", "M12 10c0 2 2 2 2 4M18 10c0 2 2 2 2 4"],
   };
+  // The icons of the screens, on a 24 by 24 grid, drawn with a line like the pictures of the items.
+  var ICONS = {
+    order: ["M3 4h2l2.4 10.2a1 1 0 0 0 1 .8h8.8a1 1 0 0 0 1-.8L20 8H6", "M9 17.8a1.2 1.2 0 1 0 0 2.4a1.2 1.2 0 1 0 0-2.4", "M17 17.8a1.2 1.2 0 1 0 0 2.4a1.2 1.2 0 1 0 0-2.4"],
+    myorders: ["M7 3h10a1 1 0 0 1 1 1v16l-2-1.2-2 1.2-2-1.2-2 1.2-2-1.2L6 20V4a1 1 0 0 1 1-1z", "M9 8h6M9 12h6"],
+    till: ["M3 7h18v10H3z", "M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5", "M6 10v4M18 10v4"],
+    kitchen: ["M12 3c1 3 4 4.5 4 8.5a4 4 0 0 1-8 0c0-1.5.5-2.5 1.5-3.5.5 1 1.5 2 2.5 2 0-3-.5-5 0-7z"],
+    manager: ["M5 20V10M12 20V4M19 20v-7"],
+    stock: ["M3 8l9-5 9 5v8l-9 5-9-5z", "M3 8l9 5 9-5", "M12 13v8"],
+    users: ["M10 4.8a3.2 3.2 0 1 0 0 6.4a3.2 3.2 0 1 0 0-6.4", "M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20", "M17 5a3 3 0 0 1 0 5.8M21 20v-1.5a3.5 3.5 0 0 0-2.5-3.3"],
+    account: ["M12 4.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7", "M5 20a7 7 0 0 1 14 0"],
+  };
+  function icon(id) {
+    var el = svg(ICONS[id] || [], 24);
+    el.setAttribute("class", "ico");
+    return el;
+  }
+
   // art is the picture of an item: its photo when the menu has one, else a drawing by kind. The
   // menu does not carry photos yet; the day it does, a card shows it without a change here.
   function art(item, kind) {
@@ -435,7 +452,7 @@
   function renderTabs() {
     var tabs = clear($("tabs"));
     S.screens.forEach(function (id) {
-      tabs.appendChild(h("button", { type: "button", "aria-current": id === S.screen ? "page" : null, onclick: function () { go(id); } }, TITLES[id]));
+      tabs.appendChild(h("button", { type: "button", "aria-current": id === S.screen ? "page" : null, onclick: function () { go(id); } }, icon(id), h("span", {}, TITLES[id])));
     });
   }
 
@@ -512,7 +529,7 @@
       return h("span", { class: "chip " + t.status }, t.station + ": " + t.status);
     });
     var move = motion("o:" + o.id, o.status);
-    var cls = "order s-" + o.status + (o.cancel_request ? " attention" : "") + (move === "enter" ? " enter" : "");
+    var cls = "order" + (o.cancel_request ? " attention" : "") + (move === "enter" ? " enter" : "");
     return h("article", { class: cls, "aria-label": "Order " + o.number },
       h("div", { class: "head" },
         h("span", { class: "num" }, "#" + o.number),
@@ -883,7 +900,8 @@
     var minutes = (Date.now() - Date.parse(w.since)) / 60000;
     var move = motion("t:" + o.id + ":" + station, cooking ? "started" : "pending");
     return h("article", { class: "order ticket" + (move ? " enter" : "") + (cooking ? " cooking" : "") + (w.cancelling ? " cancelling" : "") + (minutes > 10 ? " late" : ""), "aria-label": "Order " + o.number },
-      h("div", { class: "head" }, h("span", { class: "num" }, "#" + o.number), o.channel === "counter" ? h("span", { class: "chip" }, "counter") : null,
+      h("div", { class: "head" }, h("span", { class: "num" }, "#" + o.number), minutes > 10 ? h("span", { class: "badge cancelled" }, "late") : null,
+        o.channel === "counter" ? h("span", { class: "chip" }, "counter") : null,
         h("span", { class: "age" }, (cooking ? "started " : "waiting ") + L.ageText(w.since))),
       h("ul", { class: "pieces" }, w.pieces.map(function (p) { return h("li", {}, h("b", {}, p.quantity + "×"), p.name); })),
       w.notes.map(function (n) { return h("div", { class: "note" }, "“" + n + "”"); }),
