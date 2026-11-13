@@ -200,6 +200,45 @@ test("each role gets the screens its permissions allow", () => {
   assert.deepEqual(L.screensFor({ "ticket.start": true, "ticket.finish": true, "order.view_all": true, "stock.view": true }), ["kitchen", "stock"]);
   assert.deepEqual(L.screensFor({ "order.hand_over": true, "order.view_all": true }), ["till"]);
   assert.deepEqual(L.screensFor({ "order.approve_cancel": true, "stock.view": true }), ["manager", "stock"]);
-  assert.deepEqual(L.screensFor({ "user.manage": true, "audit.view": true }), [], "an administrator has no kitchen screen");
+  assert.deepEqual(L.screensFor({ "user.manage": true, "audit.view": true }), ["users"], "an administrator has no kitchen screen, only the accounts");
   assert.deepEqual(L.screensFor(null), []);
+});
+
+test("an account says what is the matter with it, the most serious first", () => {
+  const now = Date.parse("2026-11-20T10:00:00Z");
+  assert.equal(L.userState({}, now).key, "active");
+  assert.equal(L.userState({ must_change_password: true }, now).key, "change");
+  assert.equal(L.userState({ must_change_password: true, locked_until: "2026-11-20T10:10:00Z" }, now).key, "locked");
+  assert.equal(L.userState({ locked_until: "2026-11-20T09:59:00Z" }, now).key, "active", "a lock that has run out is not shown");
+  assert.equal(L.userState({ disabled: true, locked_until: "2026-11-20T10:10:00Z", must_change_password: true }, now).key, "disabled");
+});
+
+test("a new password is checked here the way the service will check it", () => {
+  assert.match(L.passwordProblem("short", "short", "thu-ngan"), /at least 10/);
+  assert.match(L.passwordProblem("tám chữ", "tám chữ", "x"), /at least 10/, "characters are counted, not bytes");
+  assert.equal(L.passwordProblem("tám chữ Việt đẹp", "tám chữ Việt đẹp", "thu-ngan"), "");
+  assert.match(L.passwordProblem("my-Thu-Ngan-pass", "my-Thu-Ngan-pass", "thu-ngan"), /login name/);
+  assert.match(L.passwordProblem("abababababab", "abababababab", "x"), /different characters/);
+  assert.match(L.passwordProblem("a long enough one", "another long one", "x"), /differ/);
+  assert.match(L.passwordProblem("é".repeat(70), "é".repeat(70), "x"), /128 bytes/);
+  assert.equal(L.passwordProblem("a long enough one", undefined, "x"), "", "no confirmation to compare");
+});
+
+test("every line of the trail is a sentence, and an unknown one is still shown", () => {
+  const line = (action, actor, subject, detail) => L.describeEvent({ action, actor, subject, detail });
+  assert.equal(line("login.success", "thu-ngan", "thu-ngan"), "thu-ngan signed in");
+  assert.equal(line("login.failure", "", "thu-ngan"), "Wrong password for thu-ngan");
+  assert.equal(line("user.disable", "admin-1", "thu-ngan"), "admin-1 disabled thu-ngan");
+  assert.equal(line("login.unknown", "", "", { login: "nobody" }), "Sign-in with a login name that does not exist: nobody");
+  assert.equal(line("login.unknown", "", "", {}), "Sign-in with a login name that does not exist");
+  assert.equal(line("user.set_password", "command-line", "admin-1"), "The password of admin-1 was set at the command line");
+  assert.equal(line("shift.open", "cash-1", "till-2"), "cash-1 shift.open till-2");
+});
+
+test("a browser is named in a few words", () => {
+  assert.equal(L.shortAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"), "Chrome on Windows");
+  assert.equal(L.shortAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36 Edg/124.0"), "Edge on Windows");
+  assert.equal(L.shortAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605 Version/17.0 Mobile Safari/604"), "Safari on iOS");
+  assert.equal(L.shortAgent("curl/8.4.0"), "curl");
+  assert.equal(L.shortAgent(""), "unknown browser");
 });

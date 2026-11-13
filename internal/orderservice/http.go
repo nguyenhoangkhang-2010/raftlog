@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/accounts"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/menu"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/money"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/order"
@@ -30,21 +31,34 @@ var streamKeepAlive = 15 * time.Second
 // the menu and the health check, and a stream of changes for screens that must stay current.
 type API struct {
 	svc    *Service
-	users  *Users
+	authn  Authenticator
 	logger *slog.Logger
+
+	// Set by WithAccounts: people who sign in with a password and keep a session.
+	acc   *accounts.Service
+	opts  AccountsOptions
+	login *limiter
 }
 
-// NewAPI returns the handler of the service.
-func NewAPI(svc *Service, users *Users, logger *slog.Logger) http.Handler {
+// NewAPI returns the handler of the service. authn finds out who is calling: TokenAuth for the
+// users file, SessionAuth with WithAccounts for people who sign in.
+func NewAPI(svc *Service, authn Authenticator, logger *slog.Logger, options ...APIOption) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	a := &API{svc: svc, users: users, logger: logger}
+	a := &API{svc: svc, authn: authn, logger: logger}
+	for _, o := range options {
+		o(a)
+	}
 	mux := http.NewServeMux()
 	registerAssets(mux)
 	mux.HandleFunc("GET /healthz", a.health)
 	mux.HandleFunc("GET /api/menu", a.menu)
-	mux.HandleFunc("GET /api/me", a.auth(a.me))
+	mux.HandleFunc("GET /api/auth", a.authMode)
+	mux.HandleFunc("GET /api/me", a.identified(a.me))
+	if a.acc != nil {
+		a.accountRoutes(mux)
+	}
 
 	mux.HandleFunc("POST /api/orders", a.auth(a.placeOrder))
 	mux.HandleFunc("GET /api/orders", a.auth(a.listOrders))
@@ -65,7 +79,7 @@ func NewAPI(svc *Service, users *Users, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/stock/write-off", a.auth(a.moveStock(stock.WriteOff)))
 	mux.HandleFunc("POST /api/stock/count", a.auth(a.moveStock(stock.Count)))
 
-	mux.HandleFunc("GET /api/stream", a.auth(a.stream))
+	mux.HandleFunc("GET /api/stream", a.authID(a.stream))
 	return secure(a.recoverer(mux))
 }
 
@@ -81,16 +95,47 @@ func (a *API) recoverer(next http.Handler) http.Handler {
 	})
 }
 
-func (a *API) auth(f func(http.ResponseWriter, *http.Request, rbac.Actor)) http.HandlerFunc {
+// identified finds out who is calling and hands the handler the whole identity, even when the
+// caller still has to change a temporary password: it is what the few handlers that must work
+// in that state use. Everything else goes through auth or authID.
+func (a *API) identified(f func(http.ResponseWriter, *http.Request, Identity)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		actor, ok := a.users.Authenticate(r)
-		if !ok {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="kitchen"`)
-			writeJSON(w, http.StatusUnauthorized, errorBody{Error: "a valid bearer token is needed", Code: "unauthorized"})
+		id, err := a.authn.Authenticate(r)
+		switch {
+		case err == nil:
+			f(w, r, id)
+		case errors.Is(err, ErrUnauthenticated):
+			if a.acc == nil {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="kitchen"`)
+				writeJSON(w, http.StatusUnauthorized, errorBody{Error: "a valid bearer token is needed", Code: "unauthorized"})
+			} else {
+				writeJSON(w, http.StatusUnauthorized, errorBody{Error: "sign in first", Code: "unauthorized"})
+			}
+		case errors.Is(err, ErrCrossSite):
+			writeJSON(w, http.StatusForbidden, errorBody{Error: "this request was made by another site", Code: "cross_site"})
+		default:
+			a.logger.Error("could not tell who is calling", "err", err)
+			w.Header().Set("Retry-After", "2")
+			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "the accounts database did not answer", Code: "unavailable"})
+		}
+	}
+}
+
+// authID is identified for a person who may use the system: one who still has a temporary
+// password is told to change it first.
+func (a *API) authID(f func(http.ResponseWriter, *http.Request, Identity)) http.HandlerFunc {
+	return a.identified(func(w http.ResponseWriter, r *http.Request, id Identity) {
+		if id.MustChangePassword {
+			writeJSON(w, http.StatusForbidden, errorBody{Error: "change your temporary password first", Code: "password_change_required"})
 			return
 		}
-		f(w, r, actor)
-	}
+		f(w, r, id)
+	})
+}
+
+// auth is authID for the handlers that only need to know who is acting.
+func (a *API) auth(f func(http.ResponseWriter, *http.Request, rbac.Actor)) http.HandlerFunc {
+	return a.authID(func(w http.ResponseWriter, r *http.Request, id Identity) { f(w, r, id.Actor) })
 }
 
 // --- answers --------------------------------------------------------------------
@@ -194,18 +239,41 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 
 // --- handlers -------------------------------------------------------------------
 
-func (a *API) health(w http.ResponseWriter, _ *http.Request) {
+func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	h := a.svc.Health()
 	code := http.StatusOK
+	state := "ok"
 	if h.Stale {
-		code = http.StatusServiceUnavailable
+		code, state = http.StatusServiceUnavailable, "behind the log"
 	}
-	writeJSON(w, code, map[string]any{"status": map[bool]string{true: "ok", false: "behind the log"}[!h.Stale], "orders": h.Orders, "next_offset": h.Next, "skipped_records": h.Skipped})
+	body := map[string]any{"orders": h.Orders, "next_offset": h.Next, "skipped_records": h.Skipped}
+	// With accounts, a service whose database does not answer cannot let anyone in: say so.
+	if a.acc != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := a.acc.Ping(ctx); err != nil {
+			body["accounts"] = "not answering"
+			if !h.Stale {
+				code, state = http.StatusServiceUnavailable, "accounts database not answering"
+			}
+		} else {
+			body["accounts"] = "ok"
+		}
+	}
+	body["status"] = state
+	writeJSON(w, code, body)
 }
 
 func (a *API) menu(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, a.svc.Menu()) }
 
-func (a *API) me(w http.ResponseWriter, _ *http.Request, actor rbac.Actor) {
+func (a *API) me(w http.ResponseWriter, _ *http.Request, id Identity) {
+	writeJSON(w, http.StatusOK, a.meView(id))
+}
+
+// meView says who the caller is, what they may do and, for a signed-in person, until when. The
+// permissions are for the screens to choose what to show; the service decides again at every call.
+func (a *API) meView(id Identity) map[string]any {
+	actor := id.Actor
 	roles := make([]string, len(actor.Roles))
 	for i, r := range actor.Roles {
 		roles[i] = string(r)
@@ -216,7 +284,24 @@ func (a *API) me(w http.ResponseWriter, _ *http.Request, actor rbac.Actor) {
 			perms[string(p)] = true
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": actor.ID, "roles": roles, "station": actor.Station, "permissions": perms})
+	v := map[string]any{"id": actor.ID, "display_name": id.DisplayName, "roles": roles, "station": actor.Station, "permissions": perms,
+		"auth": a.mode(), "must_change_password": id.MustChangePassword}
+	if !id.ExpiresAt.IsZero() {
+		v["session_expires_at"] = id.ExpiresAt
+	}
+	return v
+}
+
+func (a *API) mode() string {
+	if a.acc != nil {
+		return "password"
+	}
+	return "token"
+}
+
+// authMode tells a screen which way people sign in here, before anyone has.
+func (a *API) authMode(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"mode": a.mode()})
 }
 
 type pickJSON struct {
@@ -458,7 +543,12 @@ func (a *API) moveStock(kind stock.Kind) func(http.ResponseWriter, *http.Request
 // state first and then listens: an event only says that something changed, and the screen
 // asks again for what it shows. If the stream ends with a "reset" event, the screen reads the
 // state again and reconnects.
-func (a *API) stream(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
+//
+// A stream can last for hours, so it asks again who the caller is at every keep-alive: if the
+// session has ended or the roles are no longer the same, it says "reset" and closes, and the
+// screen's next request finds out what is the matter.
+func (a *API) stream(w http.ResponseWriter, r *http.Request, id Identity) {
+	actor := id.Actor
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		a.fail(w, errors.New("streaming is not supported here"))
@@ -482,6 +572,12 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
 		case <-r.Context().Done():
 			return
 		case <-tick.C:
+			now, err := a.authn.Authenticate(r.WithContext(context.WithValue(r.Context(), peekKey{}, true)))
+			if (err != nil && errors.Is(err, ErrUnauthenticated)) || (err == nil && !sameActor(actor, now.Actor)) {
+				_, _ = io.WriteString(w, "event: reset\ndata: {}\n\n")
+				fl.Flush()
+				return
+			}
 			_, _ = io.WriteString(w, ": keep-alive\n\n")
 			fl.Flush()
 		case ch, open := <-sub.C:
@@ -501,6 +597,19 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
 			fl.Flush()
 		}
 	}
+}
+
+// sameActor reports whether two identities of one person have the same roles and station.
+func sameActor(a, b rbac.Actor) bool {
+	if a.ID != b.ID || a.Station != b.Station || len(a.Roles) != len(b.Roles) {
+		return false
+	}
+	for _, r := range a.Roles {
+		if !b.Has(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func writeEvent(buf *bytes.Buffer, name string, v any) {

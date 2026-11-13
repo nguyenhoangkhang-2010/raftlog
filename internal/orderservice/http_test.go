@@ -58,7 +58,7 @@ type httpRig struct {
 func newHTTPRig(t *testing.T) *httpRig {
 	t.Helper()
 	r := newRig(t)
-	srv := httptest.NewServer(NewAPI(r.svc, testUsers(t), nil))
+	srv := httptest.NewServer(NewAPI(r.svc, TokenAuth(testUsers(t)), nil))
 	t.Cleanup(srv.Close)
 	return &httpRig{rig: r, srv: srv}
 }

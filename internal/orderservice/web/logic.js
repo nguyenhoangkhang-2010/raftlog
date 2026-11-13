@@ -321,7 +321,75 @@
     if (can("ticket.start") || can("ticket.finish")) out.push("kitchen");
     if (can("order.approve_cancel") || can("order.issue_refund")) out.push("manager");
     if (can("stock.view")) out.push("stock");
+    if (can("user.manage")) out.push("users");
     return out;
+  }
+
+  // ---- accounts -------------------------------------------------------------------------
+
+  // userState says in one word what is the matter with an account, if anything: the most serious
+  // thing first. now is a time in milliseconds, for a lock that has run out.
+  function userState(u, now) {
+    if (u.disabled) return { key: "disabled", label: "disabled" };
+    if (u.locked_until && Date.parse(u.locked_until) > (now === undefined ? Date.now() : now)) return { key: "locked", label: "locked" };
+    if (u.must_change_password) return { key: "change", label: "must change password" };
+    return { key: "active", label: "active" };
+  }
+
+  // passwordProblem checks a new password before it is sent, to say at once what the service
+  // would say. The service decides; this only saves a round trip. It returns "" when nothing is
+  // wrong that can be seen here.
+  function passwordProblem(pw, again, loginName) {
+    if (Array.from(pw).length < 10) return "Use at least 10 characters.";
+    if (new TextEncoder().encode(pw).length > 128) return "Use at most 128 bytes.";
+    if (loginName && loginName.length >= 3 && pw.toLowerCase().indexOf(loginName.toLowerCase()) >= 0) return "The password cannot contain your login name.";
+    if (new Set(Array.from(pw)).size < 5) return "Use at least 5 different characters.";
+    if (again !== undefined && pw !== again) return "The two passwords differ.";
+    return "";
+  }
+
+  // One sentence for each kind of line of the trail. actor is who did it (empty when nobody was
+  // signed in) and subject is the account it was done to.
+  var EVENTS = {
+    "login.success": function (e) { return e.subject + " signed in"; },
+    "login.failure": function (e) { return "Wrong password for " + e.subject; },
+    "login.locked": function (e) { return e.subject + " was locked after wrong passwords"; },
+    "login.blocked": function (e) { return "Sign-in to " + e.subject + " refused: the account is locked"; },
+    "login.disabled": function (e) { return "Sign-in to " + e.subject + " refused: the account is disabled"; },
+    "login.unknown": function (e) {
+      var tried = (e.detail && e.detail.login) || e.subject;
+      return "Sign-in with a login name that does not exist" + (tried ? ": " + tried : "");
+    },
+    "logout": function (e) { return e.subject + " signed out"; },
+    "password.change": function (e) { return e.subject + " changed their password"; },
+    "password.wrong_current": function (e) { return e.subject + " gave a wrong current password"; },
+    "user.create": function (e) { return e.actor + " created " + e.subject; },
+    "user.update": function (e) { return e.actor + " changed " + e.subject; },
+    "user.disable": function (e) { return e.actor + " disabled " + e.subject; },
+    "user.enable": function (e) { return e.actor + " enabled " + e.subject; },
+    "user.unlock": function (e) { return e.actor + " unlocked " + e.subject; },
+    "user.reset_password": function (e) { return e.actor + " reset the password of " + e.subject; },
+    "user.set_password": function (e) { return "The password of " + e.subject + " was set at the command line"; },
+    "session.revoke": function (e) { return e.actor + " ended a session of " + e.subject; },
+    "session.revoke_all": function (e) { return e.actor + " ended all sessions of " + e.subject; },
+  };
+
+  // describeEvent turns a line of the trail into a sentence. An action that is not known is shown
+  // as it is: a new kind of line must not disappear from the screen.
+  function describeEvent(e) {
+    var f = EVENTS[e.action];
+    return f ? f(e) : [e.actor, e.action, e.subject].filter(Boolean).join(" ");
+  }
+
+  // shortAgent makes a browser's long user-agent into "Chrome on Windows". It is a convenience
+  // for reading a list of sessions, not a way to identify anything.
+  function shortAgent(ua) {
+    if (!ua) return "unknown browser";
+    var browser = /Edg\//.test(ua) ? "Edge" : /OPR\/|Opera/.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" :
+      /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : /curl\//.test(ua) ? "curl" : "browser";
+    var os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" :
+      /Mac OS X/.test(ua) ? "macOS" : /Linux/.test(ua) ? "Linux" : "";
+    return os ? browser + " on " + os : browser;
   }
 
   return {
@@ -331,5 +399,6 @@
     cancelQueue: cancelQueue, refundPolicy: refundPolicy, workStarted: workStarted, summary: summary,
     ageText: ageText, statusLabel: statusLabel, cashChange: cashChange, quickAmounts: quickAmounts,
     newCommandID: newCommandID, parseStream: parseStream, screensFor: screensFor, ACTIVE: ACTIVE,
+    userState: userState, passwordProblem: passwordProblem, describeEvent: describeEvent, shortAgent: shortAgent,
   };
 });
