@@ -3,7 +3,10 @@
 Date: 2026-11-08
 
 ## Status
-Accepted
+Accepted, and later **retired**: the waiting room was removed from the repository (its code, its
+commands and its document) once the kitchen system had become the application that depends on the
+broker, so that the project tells one story instead of two. The decision below is kept as it was
+made; the code is in the git history before that change.
 
 ## Context
 The project needs an application that someone could use, and that needs what a

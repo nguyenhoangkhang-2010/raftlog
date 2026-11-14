@@ -6,9 +6,9 @@
 
 ![CI](https://github.com/nguyenhoangkhang-2010/raftlog/actions/workflows/ci.yml/badge.svg)
 
-![Console của cụm khi leader bị kill: có lúc không có leader, một node khác được bầu, các lần ghi vẫn tiếp tục, và Verify không thấy mất gì](docs/media/failover.gif)
+![Hệ thống bếp khi leader của cụm bị kill: các đơn vẫn tiếp tục, và cuối cùng mọi đơn đã được xác nhận đều đọc lại được](docs/media/kitchen-failover.gif)
 
-*Một bản ghi hình thật của [console cụm](docs/observability.md#3-the-cluster-console): một tiến trình ghi gửi 50 message mỗi giây, leader bị kill, một leader mới được bầu, node cũ được khởi động lại, rồi Verify đọc lại toàn bộ topic và thấy mọi lần ghi đã được xác nhận đều còn ([cách quay](docs/media/record-console.js)). Số "not sent" là những lần ghi đến hạn trong lúc chưa có leader nào nhận được.*
+*Một bản ghi hình thật của hệ thống bếp trên cụm ba node. Bên dưới là màn hình của trạm bếp nóng trong lúc đơn của khách được đặt và thanh toán; bên trên là [console cụm](docs/observability.md#3-the-cluster-console). Leader (node 3) bị kill, node 1 tiếp quản, các đơn vẫn tiếp tục, rồi node cũ được khởi động lại. Dòng xanh ở cuối do [script quay](docs/media/record-kitchen.js) viết, không phải do trang: trong 29 đơn đã được xác nhận cho script, nó đọc lại được cả 29 từ service. Script gửi lại một lệnh, với cùng ID, khi không có câu trả lời.*
 
 > Bản tiếng Việt này tóm lược và dịch từ [README.md](README.md). Các tài liệu liên kết bên dưới (ADR, thiết kế, benchmark) vẫn bằng tiếng Anh. Nếu hai bản khác nhau, bản tiếng Anh là bản đúng.
 
@@ -68,6 +68,10 @@ make build
 ```
 Bật tải ghi trên trang, bấm **Kill** ở node đang là leader, xem một node khác tiếp quản trong khoảng một hai giây trong khi các lần ghi vẫn chạy, bấm **Start** ở node đã chết, rồi bấm **Verify**: nó đọc lại toàn bộ topic và kiểm tra mọi lần ghi mà cụm đã xác nhận đều có mặt. [docs/observability.md](docs/observability.md) mô tả trang này.
 
+![Console của cụm khi leader bị kill: có lúc không có leader, một node khác được bầu, các lần ghi vẫn tiếp tục, và Verify không thấy mất gì](docs/media/failover.gif)
+
+*Một bản ghi hình thật của [console cụm](docs/observability.md#3-the-cluster-console): một tiến trình ghi gửi 50 message mỗi giây, leader bị kill, một leader mới được bầu, node cũ được khởi động lại, rồi Verify đọc lại toàn bộ topic và thấy mọi lần ghi đã được xác nhận đều còn ([cách quay](docs/media/record-console.js)). Số "not sent" là những lần ghi đến hạn trong lúc chưa có leader nào nhận được.*
+
 ## Tính năng (lộ trình)
 Tất cả các mục dưới đây đã xong.
 
@@ -89,7 +93,6 @@ Tất cả các mục dưới đây đã xong.
 - Toàn bộ hệ thống trong một file Compose: cụm, PostgreSQL, kitchen service, console, Prometheus và Grafana, mọi cổng chỉ ở địa chỉ loopback ([deploy](deploy/docker-compose.yml)).
 
 **Ứng dụng xây trên nó**
-- Phòng chờ ảo cho đăng ký học phần, toàn bộ trạng thái nằm trong hai topic raftlog ([docs/waitingroom.md](docs/waitingroom.md)).
 - Hệ thống bếp ([docs/kitchen/service.md](docs/kitchen/service.md)):
   - *Service:* đơn hàng, thanh toán, phiếu bếp, huỷ đơn và tồn kho là sự kiện trong một topic; API JSON có phân quyền theo vai trò và luồng thay đổi; trạng thái được dựng lại từ log khi khởi động ([ADR 13](docs/adr/0013-order-service-on-one-log.md)).
   - *Màn hình:* đặt món, đơn của tôi, quầy thu ngân, bảng bếp, quản lý và kho; phục vụ bởi chính service dưới dạng file nhúng, không framework, không request ra ngoài, cập nhật trực tiếp, có content security policy chặt; tiếng Việt và tiếng Anh, sáng và tối.
@@ -166,15 +169,16 @@ if errors.Is(err, client.ErrNotFound) { /* topic không tồn tại */ }
 ```
 `c.Fetch(ctx, topic, partition, offset, limit, client.WaitUpTo(20*time.Second))` chờ message kế tiếp thay vì trả về rỗng ngay. Việc giao là at-least-once: một request thất bại sau khi leader đã lưu có thể bị lưu lại lần nữa khi bạn thử lại, nên consumer cần chịu được việc lặp (xem `client/doc.go`).
 
-## Một ví dụ nhỏ hơn, có trước: phòng chờ
-Trước hệ thống bếp có một ứng dụng nhỏ hơn, `cmd/waitingroom`, một phòng chờ ảo cho đăng ký học phần, cũng chỉ xây trên gói `client` công khai: hàng nằm trong hai topic, nên kill leader không làm ai mất chỗ, và `cmd/wrsim` mô phỏng một đám đông. Nó được giữ lại như một ví dụ ngắn về cách dùng client; xem [docs/waitingroom.md](docs/waitingroom.md).
-
 ## Giới hạn đã biết
 - Một producer đơn lẻ bị giới hạn bởi giá của một request (khoảng 6 ms với một node, 8 đến 11 ms với ba node trên laptop thử): các request đến cùng lúc chia sẻ fsync (group commit, ADR 12), nhưng từng cái một thì không, và mọi lần ghi vẫn chờ một fsync của log Raft trên leader và trên một follower.
 - Một nhóm Raft cho cả cụm: mọi lần ghi đi qua một leader duy nhất.
 - Một snapshot là bản sao toàn bộ dữ liệu trong bộ nhớ gửi trong một message (`-max-message-bytes`), nên kích thước dữ liệu bị chặn.
 - Việc giao là at-least-once (request được thử lại có thể lưu một message hai lần); đọc có thể trễ trên follower và không linearizable; lưu lượng giữa các node không mã hoá.
 - Mọi node của một cụm phải chạy cùng cài đặt `-pre-vote` (mặc định bật); không có nâng cấp cuốn chiếu giữa hai chế độ. Chưa có chuyển giao leader và thay đổi thành viên.
+- Hệ thống bếp chỉ có **một writer**: một `orderservice` duy nhất quyết định mọi lệnh, vì số đơn hàng được chọn từ trạng thái và log không có conditional append. Nếu nó dừng, các lệnh phải chờ cho đến khi nó chạy lại (log và việc đọc log vẫn chạy, và chaos test kill nó cứ một hai giây một lần rồi kiểm tra không mất gì). Một bản dự phòng cần một fence để writer cũ không ghi được sau khi bản mới tiếp quản; chưa xây ([ADR 13](docs/adr/0013-order-service-on-one-log.md)).
+- Kitchen service đọc toàn bộ log khi khởi động, nên khởi động chậm dần khi lịch sử dài ra; trạng thái của nó chưa có snapshot. Thông lượng của nó là thông lượng của một partition.
+- Quản lý có thể cộng cho một khách tối đa 10.000 điểm trong một lần, kèm lý do và dấu vết không sửa được, nhưng không có hạn mức theo ngày và không cần người thứ hai duyệt ([ADR 23](docs/adr/0023-points-changed-by-a-manager.md)).
+- Các màn hình bếp được kiểm tra bằng tay trên trình duyệt, không có test trình duyệt tự động, và chưa mở bên trong Compose; mật khẩu trong file Compose là của bản demo.
 - Xem `docs/adr` về lý lẽ đằng sau từng quyết định thiết kế.
 
 ## Kết quả
@@ -207,8 +211,6 @@ Xem [docs/design.md](docs/design.md) và [docs/adr](docs/adr).
 | `cmd/raftlogbench`, `internal/bench` | Công cụ benchmark: thông lượng ghi và độ trễ, thời gian failover, kiểm tra từng node |
 | `internal/metrics`, `internal/observe` | Metric Prometheus, và những gì được đo trong một node |
 | `client` | Thư viện client Go: tìm leader, theo failover |
-| `cmd/waitingroom`, `internal/waitingroom` | Ứng dụng demo: phòng chờ ảo |
-| `cmd/wrsim` | Mô phỏng đám đông đến phòng chờ |
 | `internal/kitchen` | Lõi miền của hệ thống bếp: tiền, vai trò, thực đơn, khuyến mãi, kho, đơn hàng event-sourced ([docs/kitchen](docs/kitchen/README.md)) |
 | `cmd/orderservice`, `internal/orderservice` | Kitchen service trên raftlog: lệnh, trạng thái dựng từ log, API HTTP, và các màn hình (`web/`); `orderservice user ...` tạo tài khoản từ dòng lệnh |
 | `internal/staff` | Lịch của nhân viên, chấm công kèm sửa và lịch sử, và mức lương theo giờ, trong PostgreSQL ([ADR 21](docs/adr/0021-the-schedule-and-the-time-clock.md)) |

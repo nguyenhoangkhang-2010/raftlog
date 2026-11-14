@@ -6,8 +6,6 @@ VERSION ?= dev
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogd ./cmd/raftlogd
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogctl ./cmd/raftlogctl
-	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/waitingroom ./cmd/waitingroom
-	go build -o $(BIN_DIR)/wrsim ./cmd/wrsim
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogconsole ./cmd/raftlogconsole
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/raftlogbench ./cmd/raftlogbench
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/orderservice ./cmd/orderservice
