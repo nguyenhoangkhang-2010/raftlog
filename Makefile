@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt proto bench chaos up down clean
+.PHONY: build test lint fmt proto bench chaos spec up down clean
 
 BIN_DIR := bin
 VERSION ?= dev
@@ -31,6 +31,9 @@ bench: # micro-benchmarks; the cluster benchmark is bench/run-matrix.sh
 
 chaos:
 	go test -race -count=1 -v ./test/chaos/... ./cmd/raftlogconsole/... ./cmd/raftlogbench/... ./cmd/orderservice/...
+
+spec: # model-check the TLA+ specifications (docs/formal-spec); needs Java and TLA2TOOLS=/path/to/tla2tools.jar
+	docs/formal-spec/check.sh
 
 up:
 	docker compose -f deploy/docker-compose.yml up --build

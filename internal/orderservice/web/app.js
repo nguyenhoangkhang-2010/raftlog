@@ -62,6 +62,7 @@
     reports: ["M4 20h16", "M7 16v-5M12 16V6M17 16v-8"],
     shift: ["M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16", "M12 8v4.5l3 1.8"],
     points: ["M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"],
+    pointsdesk: ["M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z", "M19 3v4M17 5h4"],
     schedule: ["M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M4 10h16", "M8 3v4M16 3v4", "M8 14h3"],
     runner: ["M5 8h14l-1.2 11H6.2z", "M9 8V6a3 3 0 0 1 6 0v2"],
     stock: ["M3 8l9-5 9 5v8l-9 5-9-5z", "M3 8l9 5 9-5", "M12 13v8"],
@@ -515,6 +516,7 @@
       case "order": return T("Order");
       case "myorders": return T("My orders");
       case "points": return T("Points");
+      case "pointsdesk": return T("Customer points");
       case "till": return T("Till");
       case "runner": return T("Runner");
       case "shift": return T("Shift");
@@ -1412,11 +1414,11 @@
 
   var staffScreens = window.KitchenStaff({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var loyaltyScreens = window.KitchenLoyalty({ h: h, clear: clear, T: T, api: api, when: when, money: money });
+  var loyaltyScreens = window.KitchenLoyalty({ h: h, clear: clear, T: T, api: api, when: when, money: money, run: run, toast: toast, fieldOf: fieldOf });
 
   var reportScreens = window.KitchenReports({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, points: loyaltyScreens.points, till: screenTill, shift: shiftScreens.shift, schedule: staffScreens.schedule, reports: reportScreens.reports, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, points: loyaltyScreens.points, pointsdesk: loyaltyScreens.pointsdesk, till: screenTill, shift: shiftScreens.shift, schedule: staffScreens.schedule, reports: reportScreens.reports, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 

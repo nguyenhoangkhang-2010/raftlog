@@ -203,6 +203,7 @@ test("each role gets the screens its permissions allow", () => {
   assert.deepEqual(L.screensFor({ "order.hand_over": true, "order.view_all": true }), ["runner"], "a runner has a screen of their own, not the till");
   assert.deepEqual(L.screensFor({ "order.record_payment": true, "order.view_all": true }), ["till"]);
   assert.deepEqual(L.screensFor({ "order.approve_cancel": true, "stock.view": true }), ["manager", "stock"]);
+  assert.deepEqual(L.screensFor({ "points.adjust": true, "order.view_all": true }), ["pointsdesk"], "a manager has the desk of points, and a customer has the points screen");
   assert.deepEqual(L.screensFor({ "user.manage": true, "audit.view": true }), ["users"], "an administrator has no kitchen screen, only the accounts");
   assert.deepEqual(L.screensFor(null), []);
 });
@@ -256,6 +257,7 @@ test("an order is ready from the moment its last station finished", () => {
 test("what the service says about points and signing up is written in a sentence", () => {
   assert.equal(L.describeError(409, { error: "x", code: "points", max: 7 }), "This order can use at most 7 points.");
   assert.equal(L.describeError(409, { error: "x", code: "points" }), "This order can use at most 0 points.", "no number means none");
+  assert.equal(L.describeError(409, { error: "x", code: "points_short", max: 12 }), "Only 12 points can be taken off this customer.");
   assert.match(L.describeError(409, { error: "x", code: "no_points" }), /cannot be used/);
   assert.match(L.describeError(400, { error: "x", code: "no_customer" }), /no customer/);
   assert.match(L.describeError(403, { error: "x", code: "registration_closed" }), /Registration is closed/);

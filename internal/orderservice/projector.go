@@ -181,6 +181,8 @@ func count(tx *reports.Tx, rec Record, moved []LedgerEntry) (at time.Time, err e
 	switch {
 	case rec.Barrier != "":
 		return time.Time{}, nil
+	case rec.Points != nil:
+		return rec.Points.At, nil // points are not sales or goods: the reports do not count them
 	case rec.Stock != nil:
 		m := rec.Stock
 		sm := reports.StockMovement{ID: m.ID, At: m.At, Kind: string(m.Kind), Ingredient: m.Ingredient, Qty: m.Qty, Cause: m.Cause,

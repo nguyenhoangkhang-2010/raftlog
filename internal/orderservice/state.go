@@ -141,6 +141,8 @@ func (s *State) ApplyRecord(offset uint64, rec Record) (Change, error) {
 		return ch, nil // a mark in the log; it changes nothing and is not a record that was skipped
 	case rec.Stock != nil:
 		ch, err = s.applyMove(ch, *rec.Stock)
+	case rec.Points != nil:
+		ch, err = s.applyPointsMove(ch, *rec.Points)
 	default:
 		ch, err = s.applyEvent(ch, rec)
 	}

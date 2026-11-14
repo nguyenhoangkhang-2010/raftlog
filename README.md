@@ -4,7 +4,9 @@
 
 ![CI](https://github.com/nguyenhoangkhang-2010/raftlog/actions/workflows/ci.yml/badge.svg)
 
-<!-- TODO: record a GIF of the cluster console while the leader is killed (see "Watch it survive a crash") and put it here -->
+![The cluster console while the leader is killed: no leader for a moment, another node is elected, the writes go on, and Verify finds nothing lost](docs/media/failover.gif)
+
+*A real recording of [the cluster console](docs/observability.md#3-the-cluster-console): a writer sends 50 messages a second, the leader is killed, a new one is elected, the node is started again, and Verify reads the topic back and finds every acknowledged write ([how it was made](docs/media/record-console.js)). The "not sent" count is writes that were due while no leader could take them.*
 
 ## Why this project
 A message broker is a small system with a hard promise: once it has told a producer that a
@@ -12,11 +14,37 @@ message is stored, the message stays stored, in order, even if a machine dies at
 moment. raftlog is a broker built to see that promise kept, and to see what breaks it.
 
 The replication protocol, Raft, is written from scratch rather than taken from a library, and
-most of the work went into trying to break it: random faults against a simulated cluster, real
-processes killed and cut off from each other while clients write, and a checker that compares
-what the clients were told with what the nodes ended up holding. The findings are in the
-[ADRs](docs/adr) and the [chaos README](test/chaos/README.md), including the bugs the tests
-found and the measurements that did not look good ([bench/README.md](bench/README.md)).
+most of the work went into trying to break it:
+- **Faults, for real.** Random faults against a simulated cluster, and real processes killed and
+  cut off from each other while clients write, with a checker that compares what the clients were
+  told with what the nodes ended up holding ([chaos tests](test/chaos/README.md)). The suite is
+  itself tested: bugs were put into the code on purpose (a leader that commits one replica short,
+  a state machine that applies entries again after a restart, a node that votes for a candidate
+  with an older log), and it caught each of them.
+- **A specification.** The protocol is written in TLA+ and checked by a model checker over every
+  interleaving of a three-node cluster, within small bounds, and the same checks are shown to fail
+  when a mistake is put in ([docs/formal-spec](docs/formal-spec/README.md)).
+- **Measurements that were allowed to look bad.** What group commit gained, what a lone producer
+  still pays, and one result that is too noisy to quote ([bench/README.md](bench/README.md)).
+
+A broker alone does not show what it is like to build on one, so there is a second system on top
+that uses it as an application would: a **kitchen system**. Orders, payments, kitchen tickets,
+stock and customers' points are events in one raftlog topic, and PostgreSQL sits beside it for the
+accounts, the menu, the shifts, the reports and the rest. The question it asks is the one a real
+system meets next: *what do you do when facts live in two places that cannot change in one
+transaction?* Each answer is an ADR: what goes in the log and what in the database
+([13](docs/adr/0013-order-service-on-one-log.md), [14](docs/adr/0014-accounts-in-postgresql.md),
+[16](docs/adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md)), how a follower copies
+the log into the database without ever counting an event twice
+([19](docs/adr/0019-reports-by-following-the-log.md)), and why the points of a customer are kept in
+the log with their orders ([22](docs/adr/0022-customer-accounts-and-points.md),
+[23](docs/adr/0023-points-changed-by-a-manager.md)).
+
+Two findings that were not expected, each recorded where it was made: a service that rebuilt its
+state from a follower that was behind gave the same number to two orders, which is why it now
+writes a barrier record and reads up to it ([chaos README](test/chaos/README.md#what-it-found));
+and a node that came back after a crash disturbed a healthy cluster, because the transport retried
+it with a backoff that grew towards two minutes ([observability](docs/observability.md#what-it-found)).
 
 <!-- TODO: add your own story here: what made you want to build this, and what you learned. -->
 
@@ -73,21 +101,47 @@ cluster acknowledged is there. [docs/observability.md](docs/observability.md) de
 - [x] Kitchen system, the reports: a follower reads the log of the service in order and writes a copy of what happened to PostgreSQL, a batch and its checkpoint in one transaction so that nothing is counted twice; sales by day, best sellers, what the kitchen used, refunds and busy hours are queries over it, each with a spreadsheet to download, and the copy can be thrown away and built again ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 19](docs/adr/0019-reports-by-following-the-log.md))
 - [x] Kitchen system, cost and profit: the follower applies the log to a state of its own and so knows what each order took from which lot at what price; the reports give the profit of each day (net sales less goods used, waste and the expenses that a manager writes down, spread over the days they cover), what each item costs to make, and a spreadsheet of each ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 20](docs/adr/0020-what-things-cost.md))
 - [x] Kitchen system, the schedule and the time clock: a manager plans the shifts of the staff week by week, people clock in and out, and the service compares the plan with what happened (hours, late, missed); a manager corrects an entry only with a reason and the old one is kept, a person cannot clock out with a cash drawer open, and the hours at the hourly rates are the labour of the profit report ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 21](docs/adr/0021-the-schedule-and-the-time-clock.md))
-- [x] Kitchen system, customers and points: a person can sign up for a customer's account (off unless the venue turns it on, limited per address); a customer earns points when an order is paid and uses them on a later order, and the balance is kept in the log with the orders, so that it cannot disagree with them: a placement is checked against the points that are available at its place in the log, points are held until the order is paid, and a cancellation or a refund gives back and takes back ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 22](docs/adr/0022-customer-accounts-and-points.md))
+- [x] Kitchen system, customers and points: a person can sign up for a customer's account (off unless the venue turns it on, limited per address); a customer earns points when an order is paid and uses them on a later order, and the balance is kept in the log with the orders, so that it cannot disagree with them: a placement is checked against the points that are available at its place in the log, points are held until the order is paid, and a cancellation or a refund gives back and takes back ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 22](docs/adr/0022-customer-accounts-and-points.md)); a manager can give points or take them off, with a reason that the customer sees and that stays in the log ([ADR 23](docs/adr/0023-points-changed-by-a-manager.md))
 - [x] Benchmark tool (`raftlogbench`): write throughput and latency, and failover time with a check of every node's log; measured results and their limits in [bench/README.md](bench/README.md)
 - [x] Group commit: requests that arrive together share their fsyncs, the journal write and the replication round, 3.4 to 5.2 times the throughput with 16 concurrent producers on the test laptop ([ADR 12](docs/adr/0012-group-commit.md))
 - [x] Prometheus metrics (`-metrics-listen`), `raftlogctl topics` and `groups`, and a cluster console that kills nodes, writes under load and verifies that no acknowledged write was lost ([docs/observability.md](docs/observability.md))
 - [x] Raft pre-vote and check-quorum (on by default): a node that cannot hear the leader no longer forces an election, and a cut-off leader steps down ([ADR 10](docs/adr/0010-pre-vote-and-check-quorum.md))
-- [ ] Grafana dashboard
+- [x] Grafana dashboard: leader, term, elections, writes, latency, lag of followers and of consumer groups, provisioned from files; a test checks that every metric it asks for is one that the nodes serve ([deploy/grafana](deploy/grafana/dashboards/raftlog.json))
+- [x] The whole system in one Compose file: the cluster, PostgreSQL, the kitchen service, the cluster console, Prometheus and Grafana, every port on the loopback address ([deploy](deploy/docker-compose.yml))
+- [x] A formal specification of the protocol (Raft: elections, replication, commit) and of the points rules, in TLA+, checked with TLC, with the mistakes that the checks must catch ([docs/formal-spec](docs/formal-spec/README.md))
 
 ## Quick start
 ```bash
-# starts a 3-node cluster and a Prometheus that scrapes it (ports 9091-9093 and 9090)
 docker compose -f deploy/docker-compose.yml up --build
 ```
-Then `raftlogctl -addr localhost:9091,localhost:9092,localhost:9093 status` as in the next section.
-(CI builds the image. The Compose cluster itself was not run when the benchmarks were made,
-because the Docker daemon was not running on that machine, so no figure here is from Docker.)
+This starts the whole system on your machine, with every port on `127.0.0.1` only:
+
+| What | Where |
+|---|---|
+| 3-node raftlog cluster | gRPC on `localhost:9091`, `9092`, `9093` |
+| Kitchen service (the screens; PostgreSQL beside the cluster) | <http://localhost:8100> |
+| Cluster console (who leads, writes under load, Verify) | <http://localhost:8090> |
+| Prometheus | <http://localhost:9090> |
+| Grafana, dashboard "raftlog cluster" (no login to look) | <http://localhost:3000> |
+
+The kitchen service starts with no accounts. Make the first administrator (the password is asked twice),
+then sign in at <http://localhost:8100> and make the other accounts on the Users screen; people can also sign up
+for a customer's account themselves, and earn points:
+```bash
+docker compose -f deploy/docker-compose.yml exec orderservice orderservice user create -id admin -name "Admin" -roles admin
+```
+Try the cluster with `raftlogctl -addr localhost:9091,localhost:9092,localhost:9093 status`, then stop the node that
+leads (`docker compose -f deploy/docker-compose.yml stop node1`, or whichever it is) and watch the leader move on the
+console and the dashboard while the kitchen service goes on.
+
+What was run, on 14 November 2026 on a Windows laptop with Docker Desktop: the three nodes, PostgreSQL, the
+kitchen service, the console, Prometheus and Grafana came up and became healthy; Prometheus scraped the three
+nodes; every query of the dashboard answered; an account was made with the command above, a customer signed up
+through the API, and a manager gave that customer points; the leader was stopped, a new one was elected, a write
+went through while that node was down, and the node came back without another election. The kitchen screens were
+not opened in a browser inside Compose (they were, against the same service started without Docker). The
+passwords in the Compose file are those of a demonstration: read the comments in it before you let anything
+else reach the ports. No figure in this README is from Docker; the benchmarks ran as plain processes.
 
 ## Try a cluster
 Start three nodes (each in its own terminal; every node needs the same `-peers`):
@@ -218,7 +272,9 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 | `internal/broker` | Topics, partitions, consumer groups |
 | `internal/server` | gRPC handlers |
 | `api` | Protobuf definitions |
-| `deploy` | Dockerfile, Compose with Prometheus |
+| `deploy` | Dockerfile, Compose (cluster, PostgreSQL, the kitchen service, the console, Prometheus, Grafana), the Grafana dashboard; a test checks that they agree |
+| `docs/formal-spec` | TLA+ specifications of the protocol and of the points, and how to check them |
+| `docs/media` | The GIF of a failover, and the script that records it |
 | `test/chaos` | Fault-injection scenarios |
 | `bench` | Benchmark method, results and the script that produced them |
 | `docs` | Design doc and architecture decision records |

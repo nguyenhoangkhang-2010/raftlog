@@ -171,6 +171,7 @@
       case "no_shift": msg = T("Open a shift before taking cash."); break;
       case "registration_closed": msg = T("Registration is closed. Ask the venue for an account."); break;
       case "points": msg = T("This order can use at most {n} points.", { n: body.max || 0 }); break;
+      case "points_short": msg = T("Only {n} points can be taken off this customer.", { n: body.max || 0 }); break;
       case "no_points": msg = T("Points cannot be used on this order."); break;
       case "no_customer": msg = T("There is no customer with that login."); break;
       case "drawer_open": msg = T("Close your cash drawer before you clock out."); break;
@@ -380,6 +381,7 @@
     if (can("order.place")) out.push("order");
     if (can("order.view_own") && !can("order.view_all")) out.push("myorders", "points");
     if (can("order.record_payment")) out.push("till");
+    if (can("points.adjust")) out.push("pointsdesk");
     if (can("shift.open") || can("shift.close") || can("shift.review")) out.push("shift");
     if (can("clock.use") || can("staff.manage")) out.push("schedule");
     if (can("order.hand_over")) out.push("runner");

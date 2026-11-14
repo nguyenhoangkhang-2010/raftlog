@@ -95,16 +95,20 @@ const (
 	PointsRedeemed   = "redeemed"
 	PointsReturned   = "returned"
 	PointsClawedBack = "taken_back"
+	PointsAdjusted   = "adjusted"
 )
 
 // PointsEntry is one thing that happened to the points of a customer: an order's payment earned them, or spent
-// them, or a cancellation or a refund gave them back or took them back. Points is signed.
+// them, or a cancellation or a refund gave them back or took them back, or a manager changed them. Points is
+// signed. A change by a manager has no order, and says who made it and why.
 type PointsEntry struct {
 	At     time.Time `json:"at"`
 	Kind   string    `json:"kind"`
 	Points int64     `json:"points"`
-	Order  string    `json:"order"`
-	Number int       `json:"number"`
+	Order  string    `json:"order,omitempty"`
+	Number int       `json:"number,omitempty"`
+	By     string    `json:"by,omitempty"`
+	Reason string    `json:"reason,omitempty"`
 }
 
 // maxPointsHistory is how many entries of history the state keeps for each customer.
@@ -116,8 +120,10 @@ type pointsAccount struct {
 	balance, held int64
 	// earned and spent are the sums of every entry of those kinds, whatever has been dropped from the history.
 	earned, spent int64
-	history       []PointsEntry
-	dropped       int
+	// adjusted is the sum of what managers gave and took: balance = earned - spent + adjusted.
+	adjusted int64
+	history  []PointsEntry
+	dropped  int
 }
 
 // PointsView is the points of a customer, as the API gives them.
@@ -127,9 +133,11 @@ type PointsView struct {
 	Held      int64  `json:"held"`
 	Available int64  `json:"available"`
 	// Earned and Spent are what was earned and what was spent in all, less what was taken back and what was given back.
-	Earned  int64         `json:"earned"`
-	Spent   int64         `json:"spent"`
-	History []PointsEntry `json:"history"`
+	Earned int64 `json:"earned"`
+	Spent  int64 `json:"spent"`
+	// Adjusted is what managers gave, less what they took.
+	Adjusted int64         `json:"adjusted"`
+	History  []PointsEntry `json:"history"`
 	// Dropped says how many older entries of the history are no longer kept.
 	Dropped int `json:"dropped,omitempty"`
 }
@@ -158,7 +166,7 @@ func (a *pointsAccount) note(e PointsEntry) {
 func (s *State) Points(customer string) PointsView {
 	v := PointsView{Customer: customer, History: []PointsEntry{}}
 	if a := s.points[customer]; a != nil {
-		v.Balance, v.Held, v.Available, v.Earned, v.Spent, v.Dropped = a.balance, a.held, a.balance-a.held, a.earned, a.spent, a.dropped
+		v.Balance, v.Held, v.Available, v.Earned, v.Spent, v.Adjusted, v.Dropped = a.balance, a.held, a.balance-a.held, a.earned, a.spent, a.adjusted, a.dropped
 		v.History = append(v.History, a.history...)
 	}
 	return v
@@ -288,6 +296,11 @@ func (s *Service) seesAll(a rbac.Actor) bool {
 func (s *Service) PointsOf(customer string) PointsAnswer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.pointsAnswer(customer)
+}
+
+// pointsAnswer is PointsOf for a caller that holds the lock.
+func (s *Service) pointsAnswer(customer string) PointsAnswer {
 	ans := PointsAnswer{Enabled: s.loyalty.On(), PointsView: s.st.Points(customer)}
 	if ans.Enabled {
 		ans.EarnPer, ans.Value, ans.MaxShare = int64(s.loyalty.EarnPer), int64(s.loyalty.Value), s.loyalty.share()

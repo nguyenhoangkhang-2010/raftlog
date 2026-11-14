@@ -1,16 +1,44 @@
-# A 3-node raftlog cluster. The nodes elect a leader among themselves, and every
-# topic, message and consumer offset is replicated through the Raft log.
+# The whole system, on one machine, with one command:
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+#   raftlog cluster      3 nodes that elect a leader; gRPC on localhost:9091, 9092, 9093
+#   kitchen service      http://localhost:8100   the screens of the kitchen system, on the cluster and PostgreSQL
+#   cluster console      http://localhost:8090   who leads, writes under load, Verify (it watches; it cannot stop nodes here)
+#   Prometheus           http://localhost:9090   scrapes the three nodes
+#   Grafana              http://localhost:3000   the dashboard "raftlog cluster" (no login to look; admin / GRAFANA_ADMIN_PASSWORD)
+#
+# Every port is published on 127.0.0.1 only. The passwords below are for a machine that is yours and nobody
+# else's: they are the defaults of a demonstration, so change them (POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD) before
+# anything else can reach the ports.
+#
+# The kitchen service starts with no accounts. Make the first administrator (the password is asked twice):
+#
+#   docker compose -f deploy/docker-compose.yml exec orderservice orderservice user create -id admin -name "Admin" -roles admin
+#
+# then sign in at http://localhost:8100 and make the other accounts on the Users screen. People can also sign up for
+# a customer's account themselves (registration is on here), and earn points: 1 for every 10.000đ paid, worth 100đ.
 #
 # Every value can be overridden from the shell or a .env file, e.g.
 #   RAFTLOG_PORT_1=19091 docker compose -f deploy/docker-compose.yml up --build
-# Each node is configured through RAFTLOG_* environment variables
-# (see internal/config). Inside the compose network the nodes reach each other
-# by service name on port 9092.
+# Each node is configured through RAFTLOG_* environment variables (see internal/config). Inside the
+# Compose network the nodes reach each other by service name on port 9092.
 #
 # Try it:  raftlogctl -addr localhost:9091 status     (repeat for 9092, 9093)
 #          docker compose -f deploy/docker-compose.yml stop <the leader's service>
-x-node: &node
+#          then watch the leader move on the console and on the dashboard, and start it again.
+# The project has a name of its own, so that its containers and volumes are called raftlog-... whatever the directory
+# of this file is called. (Volumes of an older version of this file, made as root, are named deploy_...: the nodes
+# here run as an ordinary user and cannot open them, and they are left alone; remove them with `docker volume rm`
+# if you do not need what they hold.)
+name: raftlog
+
+x-image: &image
+  image: raftlog:dev
   build: { context: .., dockerfile: deploy/Dockerfile }
+
+x-node: &node
+  <<: *image
   environment: &node-env
     RAFTLOG_LISTEN_ADDR: ":9092"
     RAFTLOG_DATA_DIR: "/data"
@@ -24,6 +52,12 @@ x-node: &node
     RAFTLOG_INDEX_INTERVAL_BYTES: "${RAFTLOG_INDEX_INTERVAL_BYTES:-0}"
     RAFTLOG_SYNC_ON_APPEND: "${RAFTLOG_SYNC_ON_APPEND:-false}"
     RAFTLOG_METRICS_LISTEN: ":2112"
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/raftlogctl", "-addr", "localhost:9092", "status"]
+    interval: 5s
+    timeout: 4s
+    retries: 12
+  restart: unless-stopped
 
 services:
   node1:
@@ -31,33 +65,106 @@ services:
     environment:
       <<: *node-env
       RAFTLOG_NODE_ID: "1"
-    ports: ["${RAFTLOG_PORT_1:-9091}:9092"]
+    ports: ["127.0.0.1:${RAFTLOG_PORT_1:-9091}:9092"]
     volumes: ["node1-data:/data"]
   node2:
     <<: *node
     environment:
       <<: *node-env
       RAFTLOG_NODE_ID: "2"
-    ports: ["${RAFTLOG_PORT_2:-9092}:9092"]
+    ports: ["127.0.0.1:${RAFTLOG_PORT_2:-9092}:9092"]
     volumes: ["node2-data:/data"]
   node3:
     <<: *node
     environment:
       <<: *node-env
       RAFTLOG_NODE_ID: "3"
-    ports: ["${RAFTLOG_PORT_3:-9093}:9092"]
+    ports: ["127.0.0.1:${RAFTLOG_PORT_3:-9093}:9092"]
     volumes: ["node3-data:/data"]
 
-  # Prometheus scrapes the three nodes (see deploy/prometheus/prometheus.yml) and keeps
-  # what it reads; open http://localhost:9090 and try the queries in docs/observability.md.
+  # The accounts, the menu, the shifts, the reports and the rest of what the kitchen service keeps beside the log.
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: kitchen
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-kitchen-local-only}"
+      POSTGRES_DB: kitchen
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kitchen -d kitchen"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    restart: unless-stopped
+
+  # Orders and stock are events in a topic of the cluster above; everything else is in PostgreSQL.
+  orderservice:
+    <<: *image
+    entrypoint: ["/usr/local/bin/orderservice"]
+    environment:
+      RAFTLOG_ADDR: "node1:9092,node2:9092,node3:9092"
+      ORDERSERVICE_LISTEN: ":8100"
+      ORDERSERVICE_DATABASE_URL: "postgres://kitchen:${POSTGRES_PASSWORD:-kitchen-local-only}@postgres:5432/kitchen?sslmode=disable"
+      ORDERSERVICE_MENU: /examples/kitchen/menu.json
+      ORDERSERVICE_PROMOTIONS: /examples/kitchen/promotions.json
+      ORDERSERVICE_TIMEZONE: "${ORDERSERVICE_TIMEZONE:-Asia/Ho_Chi_Minh}"
+      ORDERSERVICE_OPEN_REGISTRATION: "true"
+      ORDERSERVICE_LOYALTY_EARN_PER: "10000"
+      ORDERSERVICE_LOYALTY_VALUE: "100"
+    ports: ["127.0.0.1:${ORDERSERVICE_PORT:-8100}:8100"]
+    depends_on:
+      node1: { condition: service_healthy }
+      node2: { condition: service_healthy }
+      node3: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: on-failure
+
+  # The cluster console in its watching mode: it shows who leads and can write to the cluster and verify what was
+  # acknowledged, but only the console that starts the nodes itself (./bin/raftlogconsole -spawn 3) can kill them.
+  # Here, stop a node with `docker compose stop node2`.
+  console:
+    <<: *image
+    entrypoint: ["/usr/local/bin/raftlogconsole"]
+    command: ["-addr", "node1:9092,node2:9092,node3:9092", "-listen", ":8090"]
+    ports: ["127.0.0.1:${CONSOLE_PORT:-8090}:8090"]
+    depends_on:
+      node1: { condition: service_healthy }
+      node2: { condition: service_healthy }
+      node3: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Prometheus scrapes the three nodes (see deploy/prometheus/prometheus.yml) and keeps what it reads; open
+  # http://localhost:9090 and try the queries in docs/observability.md.
   prometheus:
     image: prom/prometheus:v2.53.0
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     volumes: ["./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
-    ports: ["${PROMETHEUS_PORT:-9090}:9090"]
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"]
     depends_on: [node1, node2, node3]
+    restart: unless-stopped
+
+  # Grafana shows the dashboard in deploy/grafana/dashboards, set up from files: nothing to click to see it. Anyone
+  # may look (viewer); changing it needs the administrator.
+  grafana:
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/raftlog.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
+    depends_on: [prometheus]
+    restart: unless-stopped
 
 volumes:
   node1-data:
   node2-data:
   node3-data:
+  postgres-data:
+  grafana-data:

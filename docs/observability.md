@@ -24,7 +24,11 @@ curl http://127.0.0.1:2112/metrics
 ```
 
 `docker compose -f deploy/docker-compose.yml up --build` turns it on for the three nodes and
-starts a Prometheus that scrapes them, at <http://localhost:9090>. The metrics are written by
+starts a Prometheus that scrapes them, at <http://localhost:9090>, and a Grafana at <http://localhost:3000> with
+the dashboard "raftlog cluster" already set up (`deploy/grafana`): who leads and the term of each node, the elections of the
+last ten minutes, the writes per second and the latency of Produce, how far each follower and each consumer group
+is behind, the backlog, the snapshots, memory and goroutines. A test checks that every metric the dashboard asks for
+is one that the nodes serve. The metrics are written by
 a small package of our own (`internal/metrics`, no dependency): counters, gauges, histograms
 and labels, checked when the program starts, rendered by a test-covered writer.
 

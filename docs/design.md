@@ -160,6 +160,9 @@ the latest write from a follower, and power-loss durability on a disk that lies 
   design.
 - **The cluster console** (`raftlogconsole`) does the same by hand, with a button to kill the
   leader and one to verify that no acknowledged write is missing (ADR 9).
+- **A specification checked by a model checker** (ADR 24, [docs/formal-spec](formal-spec/README.md)): the
+  protocol in TLA+, with TLC trying every interleaving of a three-node cluster within small bounds, and
+  models with a deliberate mistake that it must reject.
 
 ## 8. Benchmarks
 
@@ -187,5 +190,6 @@ from the internet would not be comparable.
 - **Membership changes and leadership transfer** are not implemented.
 - **Read consistency**: reads from followers may lag; a read through the leader's lease or
   through the log would give stronger guarantees at a price.
-- **A formal specification** (TLA+) of the protocol, to check what the simulation can only
-  sample.
+- **The specification covers less than the code.** It has no snapshots, pre-vote, check-quorum or batching of
+  entries, and is checked only to small bounds (docs/formal-spec/README.md says which); a bigger model, or a proof,
+  would say more.

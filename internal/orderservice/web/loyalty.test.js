@@ -65,3 +65,31 @@ test("the rules of the program are written from what the service says", () => {
   assert.equal(a, "Every 10000đ you pay earns one point.");
   assert.equal(b, "One point takes 100đ off an order, and points may pay for up to 50% of it.");
 });
+
+test("a change of points is checked before it is sent", () => {
+  const view = { available: 30 };
+  assert.equal(P.adjustProblem("give", "50", "welcome", view), "");
+  assert.equal(P.adjustProblem("take", "30", "mistake", view), "", "the most that can be taken is what is available");
+  assert.match(P.adjustProblem("take", "31", "mistake", view), /Only 30 points can be taken off/);
+  assert.match(P.adjustProblem("take", "1", "mistake", { available: -4 }), /Only 0 points/, "a negative balance has nothing to take");
+  assert.equal(P.adjustProblem("give", "10000", "a lot", view), "");
+  assert.match(P.adjustProblem("give", "10001", "too many", view), /1 to 10000 points/);
+  for (const bad of ["", "0", "-5", "1.5", "abc"]) assert.match(P.adjustProblem("give", bad, "why", view), /whole number above zero/, bad);
+  assert.equal(P.adjustProblem("give", "5", "   ", view), "Say why.");
+  assert.equal(P.adjustProblem("give", "5", undefined, view), "Say why.");
+  assert.match(P.adjustProblem("give", "5", "x".repeat(201), view), /at most 200/);
+  assert.equal(P.adjustProblem("give", "5", "x".repeat(200), view), "");
+  I18N.setLang("vi");
+  assert.equal(P.adjustProblem("give", "0", "why", view), "Số điểm là số nguyên lớn hơn 0.");
+});
+
+test("a change is sent with a sign, the login in lower case and the reason trimmed", () => {
+  assert.deepEqual(P.adjustBody("c-1", " Linh ", "give", "25", " welcome "), { command_id: "c-1", customer: "linh", points: 25, reason: "welcome" });
+  assert.deepEqual(P.adjustBody("c-2", "linh", "take", "10", "mistake"), { command_id: "c-2", customer: "linh", points: -10, reason: "mistake" });
+});
+
+test("a change by a manager has a label of its own", () => {
+  assert.equal(P.kindLabel("adjusted"), "Changed by the venue");
+  I18N.setLang("vi");
+  assert.equal(P.kindLabel("adjusted"), "Quán điều chỉnh");
+});

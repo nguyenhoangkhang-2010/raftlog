@@ -227,3 +227,9 @@ func TestTheClockIsForStaffAndOnlyAManagerRunsTheSchedule(t *testing.T) {
 		t.Errorf("the schedule, the corrections and the rates are the manager's: %v", got)
 	}
 }
+
+func TestOnlyAManagerChangesThePointsOfACustomer(t *testing.T) {
+	if got := holders(AdjustPoints); len(got) != 1 || got[0] != Manager {
+		t.Errorf("points are changed by a manager alone, and the log keeps who and why: %v", got)
+	}
+}
