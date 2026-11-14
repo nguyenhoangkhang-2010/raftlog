@@ -189,7 +189,7 @@
 
     function lotsTable(row) {
       var costs = W.data.costs;
-      return h("div", { class: "scroll" }, h("table", {},
+      return h("div", { class: "scroll" }, h("table", { class: "stackrows" },
         h("thead", {}, h("tr", {}, h("th", {}, T("Lot")), h("th", { class: "n" }, T("Left")), h("th", {}, T("Expires")), h("th", {}, T("From")),
           costs ? h("th", { class: "n" }, T("Price of one")) : null, h("th", {}, ""))),
         h("tbody", {}, row.lots.map(function (l) {
@@ -197,12 +197,12 @@
           var state = l.state === "expired" ? h("span", { class: "badge soldout" }, T("expired")) : l.state === "soon" ? h("span", { class: "badge low" }, T("expires soon")) : null;
           return [h("tr", {},
             h("td", {}, h("code", { class: "code" }, l.document || l.id.slice(-8)), h("div", { class: "fine" }, ago(l.received_at))),
-            h("td", { class: "n" }, qtyText(row.ingredient, l.qty), h("div", { class: "fine" }, T("of {n}", { n: l.received }))),
-            h("td", {}, l.expires_at ? dateOf(l.expires_at) : T("no date"), " ", state),
-            h("td", {}, supplierName(l.supplier)),
-            costs ? h("td", { class: "n" }, l.unit_cost_milli ? p.unitCost(l.unit_cost_milli) + "đ" : "") : null,
+            h("td", { class: "n", "data-label": T("Left") }, qtyText(row.ingredient, l.qty), h("div", { class: "fine" }, T("of {n}", { n: l.received }))),
+            h("td", { "data-label": T("Expires") }, l.expires_at ? dateOf(l.expires_at) : T("no date"), " ", state),
+            h("td", { "data-label": T("From") }, supplierName(l.supplier)),
+            costs ? h("td", { class: "n", "data-label": T("Price of one") }, l.unit_cost_milli ? p.unitCost(l.unit_cost_milli) + "đ" : "") : null,
             h("td", {}, can("stock.adjust") ? h("button", { type: "button", class: "small ghost", onclick: function () { W.writeoff = W.writeoff === key ? null : key; W.redraw(); } }, T("Write off")) : null)),
-            W.writeoff === key ? h("tr", {}, h("td", { colspan: costs ? "6" : "5" }, writeOffForm(row, l))) : null];
+            W.writeoff === key ? h("tr", { class: "detail" }, h("td", { colspan: costs ? "6" : "5" }, writeOffForm(row, l))) : null];
         }))));
     }
 
@@ -227,7 +227,7 @@
           h("td", {}, h("div", { class: "acts" },
             h("button", { type: "button", class: "small ghost", onclick: function () { W.open[r.ingredient] = !open; W.redraw(); } }, open ? T("Hide lots") : T("Lots ({n})", { n: r.lots.length })),
             h("button", { type: "button", class: "small ghost", onclick: function () { W.tab = "history"; W.ledgerIng = r.ingredient; loadLedger(); W.redraw(); } }, T("History"))))),
-          open ? h("tr", {}, h("td", { colspan: costs ? "6" : "5" },
+          open ? h("tr", { class: "detail" }, h("td", { colspan: costs ? "6" : "5" },
             r.lots.length ? lotsTable(r) : h("p", { class: "fine" }, T("No lots: nothing of this in stock.")),
             can("stock.adjust") && r.qty ? [h("div", {}, h("button", { type: "button", class: "small ghost", onclick: function () { W.writeoff = W.writeoff === r.ingredient ? null : r.ingredient; W.redraw(); } }, T("Write off from the oldest lots"))),
               W.writeoff === r.ingredient ? writeOffForm(r, null) : null] : null)) : null];
@@ -330,7 +330,7 @@
               [e.cause ? causeLabel(e.cause) : "", e.reason, e.document ? "#" + e.document : "", e.supplier ? supplierName(e.supplier) : ""].filter(Boolean).join(" · ");
             return h("tr", {}, h("td", { "data-label": T("When") }, when(e.at)), h("td", { "data-label": T("What") }, kindLabel(e.kind)),
               h("td", { class: "n", "data-label": T("Change") }, (e.delta > 0 ? "+" : "") + e.delta), h("td", { class: "n", "data-label": T("Left") }, String(e.after)),
-              h("td", { "data-label": T("By") }, e.by), h("td", { "data-label": T("Why") }, why), costs ? h("td", { class: "n", "data-label": T("Value") }, costCell(e.value_milli)) : null);
+              h("td", { "data-label": T("By") }, e.by), h("td", { class: "wide", "data-label": T("Why") }, why), costs ? h("td", { class: "n", "data-label": T("Value") }, costCell(e.value_milli)) : null);
           })))));
         if (W.ledger.truncated) card.appendChild(h("p", { class: "fine" }, T("Only the latest {n} movements of an ingredient are kept on this screen; the log has them all.", { n: d.ledger_cap })));
       }
