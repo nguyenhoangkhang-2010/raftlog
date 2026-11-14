@@ -53,10 +53,7 @@ PostgreSQL is already beside the log (ADR 14, 15, 16, 18) and is good at exactly
 - **Only managers.** `report.view`, which the manager had since the roles were written.
 
 ## Consequences
-- **The follower trusts the log.** A record that the service skipped because it did not fit (a payment that the
-  stock could not cover, written by something that is not this service) is counted by the follower, which does
-  not know the rules. The service counts such records and says so in `/healthz`; in normal running there are
-  none, because the service checks before it writes.
+- **The follower trusted the log, and no longer does.** In this first version it counted a record that the service had skipped because it did not fit, since it did not know the rules. [ADR 20](0020-what-things-cost.md) gave it a state of its own, the service's, so that it skips what the service skips.
 - **Reports lag by a moment.** The follower waits for the log up to two seconds and writes at once what it
   reads; in a test and on the demo the lag is under a second, and it grows if the database is slow.
 - **The copy costs space and a reader.** One more process loop in the service, and rows for every order, line,
@@ -64,9 +61,6 @@ PostgreSQL is already beside the log (ADR 14, 15, 16, 18) and is good at exactly
   large the follower can be a program of its own, since it only needs the log and the database.
 - **Reading the log for a rebuild takes as long as the log is long.** As with the start of the service, there
   are no snapshots.
-- **Prices of goods used are not in the copy.** What a cup costs to make needs the price of the lots the
-  ingredients came from, which only the service's state knows. It is the next branch, and will need the follower
-  to be told it (for instance by writing it into the log with the order); until then the report of ingredients
-  shows quantities, and what was paid for deliveries.
+- **Prices of goods used were not in the copy at first.** What a cup costs to make needs the price of the lots the ingredients came from, which the service's state knows; ADR 20 gives the follower that state and the report of costs.
 - **Not done:** a report of customers, of promotions, or of stations; comparing two periods; scheduled reports
   by email; and anyone but a manager.

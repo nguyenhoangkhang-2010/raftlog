@@ -11,12 +11,10 @@ package reports
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"regexp"
-	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -164,6 +162,17 @@ type Line struct {
 	Unit, Total               int64
 }
 
+// Usage is what an order took from the stock (positive) or gave back (negative), and what it was
+// worth at the price of the lots it came from, in thousandths of a đồng (negative with the quantity).
+func (t *Tx) Usage(orderID string, at time.Time, ingredient string, qty, valueMilli int64) error {
+	if qty == 0 {
+		return nil
+	}
+	_, err := t.tx.Exec(t.ctx, `INSERT INTO ingredient_usage (order_id, at, ingredient, qty, value_milli)
+		SELECT $1, $2, $3, $4, $5 WHERE EXISTS (SELECT 1 FROM orders WHERE order_id = $1)`, orderID, at, ingredient, qty, valueMilli)
+	return err
+}
+
 // PlacedOrder is an order as it was taken.
 type PlacedOrder struct {
 	ID       string
@@ -175,21 +184,18 @@ type PlacedOrder struct {
 	Discount int64
 	Total    int64
 	Lines    []Line
-	// Needs is what the whole order takes from the stock, by ingredient.
-	Needs map[string]int64
 	// Stations are the stations that make part of the order.
 	Stations []string
 }
 
 // OrderPlaced counts an order that was taken. An order that is counted already is left as it is.
 func (t *Tx) OrderPlaced(o PlacedOrder) error {
-	needs, _ := json.Marshal(o.Needs)
 	if o.Stations == nil {
 		o.Stations = []string{}
 	}
-	tag, err := t.tx.Exec(t.ctx, `INSERT INTO orders (order_id, number, channel, customer, placed_at, subtotal, discount, total, status, last_seq, needs, stations)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'placed', 1, $9::jsonb, $10) ON CONFLICT (order_id) DO NOTHING`,
-		o.ID, o.Number, o.Channel, o.Customer, o.At, o.Subtotal, o.Discount, o.Total, string(needs), o.Stations)
+	tag, err := t.tx.Exec(t.ctx, `INSERT INTO orders (order_id, number, channel, customer, placed_at, subtotal, discount, total, status, last_seq, stations)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'placed', 1, $9) ON CONFLICT (order_id) DO NOTHING`,
+		o.ID, o.Number, o.Channel, o.Customer, o.At, o.Subtotal, o.Discount, o.Total, o.Stations)
 	if err != nil || tag.RowsAffected() == 0 {
 		return err
 	}
@@ -241,64 +247,27 @@ func (t *Tx) OrderHandedOver(id string, seq int, at time.Time) error {
 	return err
 }
 
-// OrderPaid records a payment, and what the order took from the stock.
+// OrderPaid records a payment.
 func (t *Tx) OrderPaid(id string, seq int, at time.Time, by, method string) error {
-	ok, err := t.next(id, seq, `, status = 'paid', paid_at = $3, paid_by = $4, pay_method = $5, stock_held = true`, at, by, method)
-	if err != nil || !ok {
-		return err
-	}
-	return t.usage(id, at, 1)
+	_, err := t.next(id, seq, `, status = 'paid', paid_at = $3, paid_by = $4, pay_method = $5`, at, by, method)
+	return err
 }
 
-// usage writes what an order took (sign 1) or gave back (sign -1), from the needs that were kept
-// when it was taken.
-func (t *Tx) usage(id string, at time.Time, sign int64) error {
-	var raw []byte
-	if err := t.tx.QueryRow(t.ctx, `SELECT needs FROM orders WHERE order_id = $1`, id).Scan(&raw); err != nil {
-		return err
-	}
-	var needs map[string]int64
-	if err := json.Unmarshal(raw, &needs); err != nil {
-		return err
-	}
-	names := make([]string, 0, len(needs))
-	for ing := range needs {
-		names = append(names, ing)
-	}
-	sort.Strings(names)
-	for _, ing := range names {
-		if needs[ing] == 0 {
-			continue
-		}
-		if _, err := t.tx.Exec(t.ctx, `INSERT INTO ingredient_usage (order_id, at, ingredient, qty) VALUES ($1, $2, $3, $4)`, id, at, ing, sign*needs[ing]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// OrderCancelled records a cancellation, the money given back with it, and whether the ingredients
-// went back to the stock.
-func (t *Tx) OrderCancelled(id string, seq int, at time.Time, by, reason string, refund int64, restock bool) error {
-	var held bool
+// OrderCancelled records a cancellation and the money given back with it.
+func (t *Tx) OrderCancelled(id string, seq int, at time.Time, by, reason string, refund int64) error {
 	var method *string
-	if err := t.tx.QueryRow(t.ctx, `SELECT stock_held, pay_method FROM orders WHERE order_id = $1`, id).Scan(&held, &method); err != nil {
+	if err := t.tx.QueryRow(t.ctx, `SELECT pay_method FROM orders WHERE order_id = $1`, id).Scan(&method); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil // an order that was not counted
 		}
 		return err
 	}
-	ok, err := t.next(id, seq, `, status = 'cancelled', cancelled_at = $3, refunded = refunded + $4, stock_held = false`, at, refund)
+	ok, err := t.next(id, seq, `, status = 'cancelled', cancelled_at = $3, refunded = refunded + $4`, at, refund)
 	if err != nil || !ok {
 		return err
 	}
 	if refund > 0 {
-		if err := t.refund(id, at, "cancel", refund, method, by, reason); err != nil {
-			return err
-		}
-	}
-	if restock && held {
-		return t.usage(id, at, -1)
+		return t.refund(id, at, "cancel", refund, method, by, reason)
 	}
 	return nil
 }
@@ -341,13 +310,17 @@ type StockMovement struct {
 	TotalCost  int64
 	By         string
 	Reason     string
+	// Delta is how much the quantity changed (negative for what left) and ValueMilli what that was
+	// worth at the price of the lots it touched, in thousandths of a đồng.
+	Delta      int64
+	ValueMilli int64
 }
 
 // StockMoved counts a movement of the stock. One that is counted already is left as it is.
 func (t *Tx) StockMoved(m StockMovement) error {
-	_, err := t.tx.Exec(t.ctx, `INSERT INTO stock_movements (move_id, at, kind, ingredient, qty, cause, supplier, document, total_cost, by, reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (move_id) DO NOTHING`,
-		m.ID, m.At, m.Kind, m.Ingredient, m.Qty, m.Cause, m.Supplier, m.Document, m.TotalCost, m.By, m.Reason)
+	_, err := t.tx.Exec(t.ctx, `INSERT INTO stock_movements (move_id, at, kind, ingredient, qty, cause, supplier, document, total_cost, by, reason, delta, value_milli)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (move_id) DO NOTHING`,
+		m.ID, m.At, m.Kind, m.Ingredient, m.Qty, m.Cause, m.Supplier, m.Document, m.TotalCost, m.By, m.Reason, m.Delta, m.ValueMilli)
 	return err
 }
 
@@ -607,4 +580,64 @@ func (s *Store) ValidZone(ctx context.Context, zone string) (bool, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM pg_timezone_names WHERE name = $1`, zone).Scan(&n)
 	return n > 0, err
+}
+
+// CostDay is what the kitchen's goods cost on one day, in thousandths of a đồng.
+type CostDay struct {
+	Date string `json:"date"`
+	// CogsMilli is what the orders paid that day took from the stock, at the price of the lots it came from,
+	// less what cancellations gave back. WasteMilli is what was written off or found missing that day.
+	CogsMilli  int64 `json:"cogs_milli"`
+	WasteMilli int64 `json:"waste_milli"`
+}
+
+// CostsByDay returns, for each day of the period (also a day with none), the cost of the goods that
+// orders used and of the goods that were wasted. An ingredient that came without a price counts for
+// nothing, so a cost is what is known, and no more.
+func (s *Store) CostsByDay(ctx context.Context, p Period) ([]CostDay, error) {
+	if err := p.check(); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `
+WITH days AS (SELECT generate_series($2::text::date, $3::text::date, interval '1 day')::date AS d),
+used AS (SELECT (at AT TIME ZONE $1)::date AS d, sum(value_milli) AS v FROM ingredient_usage WHERE at >= `+bounds+` AND at < `+boundsEnd+` GROUP BY 1),
+lost AS (SELECT (at AT TIME ZONE $1)::date AS d, sum(value_milli) AS v FROM stock_movements
+         WHERE kind IN ('write_off', 'adjust', 'count') AND delta < 0 AND at >= `+bounds+` AND at < `+boundsEnd+` GROUP BY 1)
+SELECT days.d::text, COALESCE(used.v, 0)::bigint, COALESCE(lost.v, 0)::bigint
+FROM days LEFT JOIN used USING (d) LEFT JOIN lost USING (d) ORDER BY days.d`, p.Zone, p.From, p.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CostDay{}
+	for rows.Next() {
+		var r CostDay
+		if err := rows.Scan(&r.Date, &r.CogsMilli, &r.WasteMilli); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// LatestUnitCosts returns, for each ingredient that came with a price, what one unit cost the last time
+// it was bought, in thousandths of a đồng.
+func (s *Store) LatestUnitCosts(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT DISTINCT ON (ingredient) ingredient, (total_cost * 1000 + qty / 2) / qty
+FROM stock_movements WHERE kind = 'receive' AND total_cost > 0 AND qty > 0 ORDER BY ingredient, at DESC, move_id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var ing string
+		var c int64
+		if err := rows.Scan(&ing, &c); err != nil {
+			return nil, err
+		}
+		out[ing] = c
+	}
+	return out, rows.Err()
 }

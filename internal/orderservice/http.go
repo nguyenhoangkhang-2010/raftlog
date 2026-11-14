@@ -16,6 +16,7 @@ import (
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/accounts"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/expenses"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/inventory"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/menu"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/money"
@@ -53,6 +54,9 @@ type API struct {
 	reports     *reports.Store
 	reportTopic string
 	reportZone  string
+
+	// Set by WithExpenses: what the venue spends, for the profit report.
+	expenses *expenses.Store
 
 	// Set by WithAccounts: people who sign in with a password and keep a session.
 	acc   *accounts.Service
@@ -96,6 +100,9 @@ func NewAPI(svc *Service, authn Authenticator, logger *slog.Logger, options ...A
 	}
 	if a.reports != nil {
 		a.reportRoutes(mux)
+		if a.expenses != nil {
+			a.expenseRoutes(mux)
+		}
 	}
 
 	mux.HandleFunc("POST /api/orders", a.auth(a.placeOrder))

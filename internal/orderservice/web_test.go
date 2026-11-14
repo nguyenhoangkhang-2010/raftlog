@@ -358,6 +358,39 @@ func TestEveryFixedMessageOfTheShiftsIsInTheVietnameseDictionary(t *testing.T) {
 	}
 }
 
+func TestEveryFixedMessageOfTheExpensesIsInTheVietnameseDictionary(t *testing.T) {
+	dict := readEmbedded(t, "vi.js")
+	var found []string
+	scan := func(path string, patterns ...*regexp.Regexp) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range patterns {
+			for _, m := range re.FindAllStringSubmatch(string(data), -1) {
+				found = append(found, m[1])
+			}
+		}
+	}
+	scan("../expenses/expenses.go", regexp.MustCompile(`invalid\("([^"%\\]+)"\)`), regexp.MustCompile(`errors\.New\("expenses: ([^"\\]+)"\)`))
+	scan("http_costs.go", regexp.MustCompile(`InvalidError\{Reason: "([^"%\\]+)"\}`))
+	// the messages that are built from a field name are got by writing them out
+	found = append(found, "the category is 1 to 40 characters", "the note is at most 200 characters", "the reason is at most 200 characters")
+	checked := 0
+	for _, msg := range found {
+		if strings.HasPrefix(msg, "say who") || msg == "not found" {
+			continue
+		}
+		checked++
+		if !strings.Contains(dict, `"`+msg+`":`) {
+			t.Errorf("the message %q of the service is not in the server section of vi.js", msg)
+		}
+	}
+	if checked < 6 {
+		t.Fatalf("only %d messages were found in the sources: the patterns no longer match what is written", checked)
+	}
+}
+
 func TestTheScreensLogicPassesItsOwnTests(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

@@ -1335,7 +1335,7 @@
 
   var shiftScreens = window.KitchenShifts({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var reportScreens = window.KitchenReports({ h: h, clear: clear, T: T, api: api, toast: toast, when: when, money: money });
+  var reportScreens = window.KitchenReports({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
   var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, shift: shiftScreens.shift, reports: reportScreens.reports, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
