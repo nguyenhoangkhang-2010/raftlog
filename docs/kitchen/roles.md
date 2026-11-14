@@ -18,6 +18,7 @@ The test that compares this file with the code fails when they differ.
 | `order.request_cancel` | ✓ | ✓ |  |  | ✓ |  |  |
 | `order.view_all` |  | ✓ | ✓ | ✓ | ✓ |  |  |
 | `order.view_own` | ✓ |  |  |  |  |  |  |
+| `points.adjust` |  |  |  |  | ✓ |  |  |
 | `promo.manage` |  |  |  |  | ✓ |  |  |
 | `report.view` |  |  |  |  | ✓ |  |  |
 | `shift.close` |  | ✓ |  |  | ✓ |  |  |

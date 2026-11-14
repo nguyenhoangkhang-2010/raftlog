@@ -17,6 +17,36 @@ var ErrNoSuchCustomer = errors.New("orderservice: there is no customer with that
 
 func (a *API) pointsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/points", a.auth(a.getPoints))
+	mux.HandleFunc("POST /api/points/adjust", a.auth(a.adjustPoints))
+}
+
+// adjustPoints gives a customer points, or takes them off, for a reason that is kept with the change. The
+// customer must be an active customer's login when there are accounts.
+func (a *API) adjustPoints(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
+	if !a.need(w, actor, rbac.AdjustPoints) {
+		return
+	}
+	var b struct {
+		Command  string `json:"command_id"`
+		Customer string `json:"customer"`
+		Points   int64  `json:"points"`
+		Reason   string `json:"reason"`
+	}
+	if err := decode(w, r, &b); err != nil {
+		a.fail(w, err)
+		return
+	}
+	customer, err := a.customerLogin(r.Context(), b.Customer)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	ans, err := a.svc.AdjustPoints(r.Context(), actor, b.Command, customer, b.Points, b.Reason)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ans)
 }
 
 // PointsAnswer is the points of a customer with the rules of the program, for the screens.
@@ -43,7 +73,13 @@ func (a *API) getPoints(w http.ResponseWriter, r *http.Request, actor rbac.Actor
 		a.fail(w, fmt.Errorf("%w: needs %s", ErrNotAllowed, rbac.ViewOwnOrders))
 		return
 	}
-	writeJSON(w, http.StatusOK, a.svc.PointsOf(customer))
+	ans := a.svc.PointsOf(customer)
+	if !a.svc.seesAll(actor) { // a customer is told why, not which member of staff
+		for i := range ans.History {
+			ans.History[i].By = ""
+		}
+	}
+	writeJSON(w, http.StatusOK, ans)
 }
 
 // customerLogin checks, for an order taken at the counter, that the login the cashier named is a customer's:

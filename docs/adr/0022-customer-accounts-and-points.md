@@ -80,10 +80,9 @@ decided by an event in the other is the classic dual write. Three shapes were we
   command: the points follow the order event that moved them, and that event is either in the log or not.
   What this costs is the same as for the stock: the balances are in the memory of the service and are rebuilt at
   start from the whole log (which grows with every order and every point).
-- **A balance cannot be edited.** A manager cannot give 100 points to a customer who complained, and a mistake
-  is not repaired by changing a number: there is no event for it yet. The next step is a *points adjustment*
-  record, written by a manager with a reason like a stock adjustment; it is not part of this branch, and until
-  then the only ways to move points are orders, cancellations and refunds.
+- **A balance cannot be edited.** A mistake is not repaired by changing a number. In this ADR the only ways to
+  move points were orders, cancellations and refunds; the manager's *change of points*, a record with a reason
+  like a stock adjustment, was added afterwards in [ADR 23](0023-points-changed-by-a-manager.md).
 - **Points never expire and have no tiers, no birthday offers, no referral.** The program is a rate and a value.
 - **Points are a discount**, so the reports count them as one (net sales are after them, the cost of the
   goods is unchanged) and the profit shows what the program costs. The reports do not yet say how many points
@@ -94,5 +93,5 @@ decided by an event in the other is the classic dual write. Three shapes were we
   or a confirmation by email would be the next steps.
 - **Anyone who knows a customer's login can attach their orders at the counter, and earn them points.** That
   helps only the customer; staff cannot spend them.
-- **Not done:** points adjustments by a manager, expiry, the number of points earned and used in the reports, a
+- **Not done:** expiry, the number of points earned and used in the reports, a
   profile with a phone number, and recovering an account.

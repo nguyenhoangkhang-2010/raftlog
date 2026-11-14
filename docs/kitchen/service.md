@@ -169,7 +169,8 @@ answer or a timeout, does not do it twice.
 | `PUT /api/admin/menu/items/{id}/image`, `DELETE ...` | `menu.manage` | the bytes of a JPEG or PNG (at most 1 MiB, sides of 64 to 4096 pixels); `400` if it is anything else. Not a new version of the menu |
 | `GET /api/auth` | anyone | `{"mode": "password", "registration": true}` with accounts (and whether a person may sign up), `"token"` otherwise |
 | `POST /api/register` | anyone, when the venue turned registration on | `username`, `display_name`, `password`: makes an account with the customer role and nothing else (a role or a station in the request is refused), signs the person in. Limited to 5 an hour for each address; `403 registration_closed`, `409` for a login that is taken, `400 weak_password`, `429 rate_limited` |
-| `GET /api/points?customer=` | a customer, for their own points; staff who see all orders, for any customer's | whether the program is on, what earns a point and what a point is worth, the balance, what is held for orders not paid yet, what is available, what was earned and used in all, and the last 200 entries of the history |
+| `GET /api/points?customer=` | a customer, for their own points; staff who see all orders, for any customer's | whether the program is on, what earns a point and what a point is worth, the balance, what is held for orders not paid yet, what is available, what was earned and used in all, what managers gave and took, and the last 200 entries of the history (a change by a manager shows its reason, and its author only to staff) |
+| `POST /api/points/adjust` | `points.adjust` (manager) | `command_id`, `customer` (the login of an active customer), `points` (positive to give, negative to take off, 1 to 10000 in size) and a `reason`: one record in the log with who, when and why, answered with the points of that customer. A manager cannot change their own points; points that orders not paid yet have set aside cannot be taken (`409 points_short` with `max`); `409 no_points` if the venue has no program; sending the same `command_id` again changes nothing more |
 | `GET /api/me` | anyone signed in | your ID, name, roles, station, permissions, whether you must change your password, when the session ends |
 | `POST /api/login` | anyone | `username`, `password`; sets the cookie. `401 bad_credentials`, `429 locked` or `rate_limited` |
 | `POST /api/logout` | anyone signed in | ends the session and clears the cookie |
@@ -231,7 +232,7 @@ first), `403 cross_site` (a request made by another site), `401 bad_credentials`
 clocked in, when the venue asks for it), `drawer_open` (clocking out with a cash drawer open),
 `overlap` (a shift or an entry that overlaps another of the same person) and `cancelled` (a shift that was
 called off). Customers add `409 points` (an order asked for more points than it may use, with `max`), `409 no_points` (points cannot be used
-here) and `400 no_customer` (the login named at the counter is not an active customer's), and `403 registration_closed`.
+here) and `400 no_customer` (the login named at the counter, or for a change of points, is not an active customer's), `409 points_short` (a manager asked to take more points than the customer has available, with `max`) and `403 registration_closed`.
 
 ### A session
 
@@ -305,6 +306,7 @@ signs out. A browser holds one session per site: two people on one browser profi
 |---|---|---|
 | **Order** | customer; cashier (at the counter, with an optional customer ID) | the menu with today's prices, options and combos, a cart, a promotion code, then "Place order". The price shown while choosing is an estimate: the total and any offer come from the service when the order is placed |
 | **Points** | customer | what the customer can use now and what it is worth, what they own and what is set aside for orders not paid yet, what they earned and used in all, how the program works, and what happened to their points, newest first. On the sign-in page, when registration is open, a person can create an account and is signed in at once. In the cart, a customer with points chooses how many to use (or the most) and sees what they take off |
+| **Customer points** | manager | look up a customer by login name, see what they have and what happened to their points, and give or take off points with a reason (the customer sees the reason, not who wrote it) |
 | **My orders** | customer | their orders with a live status, a note when the order is ready, "Cancel" before payment and "Ask to cancel" after |
 | **Runner** | anyone who may hand over (cashier, runner) | the orders that are ready as large cards, the one that has waited longest first and red after 5 minutes, each with its customer and a "Hand over" button; beside them, what is still in the kitchen, with the progress of each station; a link to the call board |
 | **Call board** (`/board`, a page of its own, no sign-in with `-public-board`) | the customers waiting | for a screen in the shop: the numbers that are ready, large in orange, and those being made, smaller, live; a new number pulses, and a chime can be switched on (a browser allows sound only after a click); full screen; Vietnamese and English. It is the one screen that is not signed in, so it shows nothing but numbers |
@@ -404,7 +406,7 @@ browser tests yet.
 ## What is not here
 
 Units that convert, a cost for options and combos and for each order line (the cost of the goods is by day and by ingredient, not by item sold), taxes, depreciation, reorder points, a correction of a delivery already received, a note typed with a save of the menu and a comparison of two
-versions, customers who register themselves and points (the accounts are made by an administrator for now),
+versions, confirming who a customer is (an email or a phone number), recovering an account without an administrator, points that expire, tiers, and the points in the reports,
 several writers or read-only replicas, snapshots of the state, automated browser tests of the
 screens, and a printed receipt. A change of the menu is seen at once
 only by the instance that saved it: with several instances the others keep the old menu until they

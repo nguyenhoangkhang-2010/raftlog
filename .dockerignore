@@ -1,0 +1,13 @@
+# What the image build does not need, and what must never be sent to the Docker daemon.
+.git
+.github
+.env
+.env.*
+bin
+dist
+data
+console-data
+*.log
+*.exe
+*.test
+node_modules

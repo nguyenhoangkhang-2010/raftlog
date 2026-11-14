@@ -15,7 +15,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/order"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/rbac"
@@ -31,6 +33,8 @@ type Record struct {
 	// Order is an order.Event, exactly as order.Encode writes it.
 	Order json.RawMessage `json:"order,omitempty"`
 	Stock *StockMove      `json:"stock,omitempty"`
+	// Points is a change of the points of a customer that a manager made.
+	Points *PointsMove `json:"points,omitempty"`
 	// Barrier marks a point of the log and changes nothing. The service writes one after it
 	// starts, and after a write whose outcome it did not learn, and reads on until it sees its
 	// own barrier: everything written before the barrier is then in its state. A read may be
@@ -39,13 +43,16 @@ type Record struct {
 	Barrier string `json:"barrier,omitempty"`
 }
 
-// kinds is how many of the three kinds the record has set; a valid record has exactly one.
+// kinds is how many of the four kinds the record has set; a valid record has exactly one.
 func (r Record) kinds() int {
 	n := 0
 	if len(r.Order) != 0 {
 		n++
 	}
 	if r.Stock != nil {
+		n++
+	}
+	if r.Points != nil {
 		n++
 	}
 	if r.Barrier != "" {
@@ -78,6 +85,19 @@ type StockMove struct {
 	Cause string `json:"cause,omitempty"`
 }
 
+// PointsMove is points that a manager gave to a customer, or took from them, with the reason: the one way to
+// change a balance other than by an order (see ADR 23). ID is the ID of the command, which makes a repeat
+// harmless. Points is signed and never zero.
+type PointsMove struct {
+	ID       string      `json:"id"`
+	By       string      `json:"by"`
+	Roles    []rbac.Role `json:"roles,omitempty"`
+	At       time.Time   `json:"at"`
+	Customer string      `json:"customer"`
+	Points   int64       `json:"points"`
+	Reason   string      `json:"reason"`
+}
+
 // Movement is the stock movement that this record stands for.
 func (m StockMove) Movement() stock.Movement {
 	mv := stock.Movement{Kind: m.Kind, Ingredient: stock.Ingredient(m.Ingredient), Qty: m.Qty, Reason: m.Reason, Ref: m.ID, At: m.At,
@@ -86,6 +106,10 @@ func (m StockMove) Movement() stock.Movement {
 		mv.ExpiresAt = *m.Expires
 	}
 	return mv
+}
+
+func validPointsReason(s string) bool {
+	return strings.TrimSpace(s) != "" && utf8.ValidString(s) && utf8.RuneCountInString(s) <= order.MaxReasonRunes
 }
 
 // ErrBadRecord is returned for a log entry that this version cannot read.
@@ -103,7 +127,7 @@ func OrderRecord(ev order.Event) (Record, error) {
 // Encode returns the JSON form of the record, for the log.
 func (r Record) Encode() ([]byte, error) {
 	if r.kinds() != 1 {
-		return nil, fmt.Errorf("%w: a record holds exactly one of an order event, a stock movement and a barrier", ErrBadRecord)
+		return nil, fmt.Errorf("%w: a record holds exactly one of an order event, a stock movement, a points change and a barrier", ErrBadRecord)
 	}
 	return json.Marshal(r)
 }
@@ -121,7 +145,17 @@ func DecodeRecord(data []byte) (Record, error) {
 		return Record{}, fmt.Errorf("%w: trailing data", ErrBadRecord)
 	}
 	if r.kinds() != 1 {
-		return Record{}, fmt.Errorf("%w: a record holds exactly one of an order event, a stock movement and a barrier", ErrBadRecord)
+		return Record{}, fmt.Errorf("%w: a record holds exactly one of an order event, a stock movement, a points change and a barrier", ErrBadRecord)
+	}
+	if m := r.Points; m != nil {
+		switch {
+		case m.ID == "" || m.By == "" || m.At.IsZero() || m.Customer == "":
+			return Record{}, fmt.Errorf("%w: a change of points needs an ID, a person, a customer and a time", ErrBadRecord)
+		case m.Points == 0 || m.Points > order.MaxPoints || m.Points < -order.MaxPoints:
+			return Record{}, fmt.Errorf("%w: a change of %d points", ErrBadRecord, m.Points)
+		case !validPointsReason(m.Reason):
+			return Record{}, fmt.Errorf("%w: a change of points needs a reason of at most %d characters", ErrBadRecord, order.MaxReasonRunes)
+		}
 	}
 	if r.Stock != nil {
 		m := r.Stock

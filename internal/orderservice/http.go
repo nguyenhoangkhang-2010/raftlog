@@ -236,11 +236,14 @@ func status(err error) (int, string) {
 	var oos *OutOfStockError
 	var short *stock.ShortageError
 	var pl *PointsLimitError
+	var ps *PointsShortError
 	switch {
 	case errors.As(err, &cart):
 		return http.StatusUnprocessableEntity, "cart"
 	case errors.As(err, &pl):
 		return http.StatusConflict, "points"
+	case errors.As(err, &ps):
+		return http.StatusConflict, "points_short"
 	case errors.Is(err, ErrNoPoints):
 		return http.StatusConflict, "no_points"
 	case errors.Is(err, ErrNoSuchCustomer):
@@ -280,9 +283,12 @@ func (a *API) fail(w http.ResponseWriter, err error) {
 	var oos *OutOfStockError
 	var short *stock.ShortageError
 	var pl *PointsLimitError
+	var ps *PointsShortError
 	switch {
 	case errors.As(err, &pl):
 		body.Max = pl.Max
+	case errors.As(err, &ps):
+		body.Max = ps.Available
 	case errors.As(err, &cart):
 		for _, l := range cart.Lines {
 			body.Lines = append(body.Lines, lineProblem{Line: l.Index + 1, Error: l.Err.Error()})
