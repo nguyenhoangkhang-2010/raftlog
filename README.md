@@ -1,5 +1,7 @@
 # raftlog
 
+**English** · [Tiếng Việt](README.vi.md)
+
 > A distributed, fault-tolerant message broker built from scratch in Go, with Raft consensus.
 
 ![CI](https://github.com/nguyenhoangkhang-2010/raftlog/actions/workflows/ci.yml/badge.svg)
@@ -27,26 +29,47 @@ most of the work went into trying to break it:
 - **Measurements that were allowed to look bad.** What group commit gained, what a lone producer
   still pays, and one result that is too noisy to quote ([bench/README.md](bench/README.md)).
 
-A broker alone does not show what it is like to build on one, so there is a second system on top
-that uses it as an application would: a **kitchen system**. Orders, payments, kitchen tickets,
-stock and customers' points are events in one raftlog topic, and PostgreSQL sits beside it for the
-accounts, the menu, the shifts, the reports and the rest. The question it asks is the one a real
-system meets next: *what do you do when facts live in two places that cannot change in one
-transaction?* Each answer is an ADR: what goes in the log and what in the database
-([13](docs/adr/0013-order-service-on-one-log.md), [14](docs/adr/0014-accounts-in-postgresql.md),
-[16](docs/adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md)), how a follower copies
-the log into the database without ever counting an event twice
-([19](docs/adr/0019-reports-by-following-the-log.md)), and why the points of a customer are kept in
-the log with their orders ([22](docs/adr/0022-customer-accounts-and-points.md),
-[23](docs/adr/0023-points-changed-by-a-manager.md)).
+The broker has one real user, built on top of it: a **kitchen system**, where orders, payments,
+kitchen tickets, stock and customers' points are events in one raftlog topic (PostgreSQL sits beside
+it for accounts, the menu, the shifts and the reports). It is there so that the promise is tested
+by an application that depends on it, and each part of it leans on something the broker has to keep:
 
-Two findings that were not expected, each recorded where it was made: a service that rebuilt its
-state from a follower that was behind gave the same number to two orders, which is why it now
-writes a barrier record and reads up to it ([chaos README](test/chaos/README.md#what-it-found));
-and a node that came back after a crash disturbed a healthy cluster, because the transport retried
-it with a backoff that grew towards two minutes ([observability](docs/observability.md#what-it-found)).
+| The kitchen needs that... | ...so it depends on | Where it is shown |
+|---|---|---|
+| An order that was confirmed is never lost when a node dies | A write is acknowledged only once a majority stores it | The leader is stopped under a running service and a write still goes through ([Quick start](#quick-start)); [chaos tests](test/chaos/README.md) |
+| Two orders never get the same number | Every reader of the log sees the same order, and a service reads up to a barrier record, not from a follower that is behind | The first thing the chaos tests found ([what it found](test/chaos/README.md#what-it-found)) |
+| A command sent twice (the answer was lost) changes nothing the second time | Delivery is at-least-once, so the command carries an ID and the state remembers it | [ADR 13](docs/adr/0013-order-service-on-one-log.md), [23](docs/adr/0023-points-changed-by-a-manager.md) |
+| A customer's points are never spent twice | One order of events, and a placement is checked at its place in the log | [ADR 22](docs/adr/0022-customer-accounts-and-points.md); the rule is specified in [Points.tla](docs/formal-spec/README.md) |
+| A report never counts an event twice | A follower writes a batch and its offset in one transaction | [ADR 19](docs/adr/0019-reports-by-following-the-log.md) |
 
-<!-- TODO: add your own story here: what made you want to build this, and what you learned. -->
+The rest of the kitchen (menu, warehouse, shifts, schedule, costs) is what a real venue needs
+around that core, so that the application can be tried as a whole; those parts say little about the
+broker and are described in [docs/kitchen](docs/kitchen/README.md). The question that the system
+raises is the one a real application meets: *what do you do when facts live in two places that
+cannot change in one transaction?* ([ADR 14](docs/adr/0014-accounts-in-postgresql.md),
+[16](docs/adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md)).
+
+Two findings that were not expected, each recorded where it was made: the service that rebuilt its
+state from a follower that was behind (the barrier record above); and a node that came back after a
+crash disturbed a healthy cluster, because the transport retried it with a backoff that grew towards
+two minutes ([observability](docs/observability.md#what-it-found)).
+
+<!-- TODO: one or two sentences, in your own words, on what made you want to build this. Only you can say that; delete this line when it is written. -->
+
+### What building it taught me
+
+- **A test that passes is not the same as a protocol that is right.** Every bug that mattered here
+  showed up only when something was killed in the middle of a write: the duplicate order number, the
+  node that kept disturbing a healthy cluster. None of them was visible in a unit test.
+- **Write down what a failure looks like before you look for it.** The chaos test and the formal
+  specification both begin from a stated promise ("no acknowledged write is lost", "two leaders never
+  share a term"), and the specification only earned trust once the mutants with a deliberate mistake
+  failed as they should.
+- **My own checks can be wrong too.** The model checker once reported a violation, and the fault was
+  in the property I had written, not in the protocol; reading the trace to tell which was the useful
+  part ([docs/formal-spec](docs/formal-spec/README.md)).
+- **Say what was not measured.** The numbers in the benchmarks are the ones that were measured, one
+  of them is marked as too noisy to quote, and the specification lists what it leaves out.
 
 ## Architecture
 
@@ -194,13 +217,11 @@ for the next message instead of returning nothing at once.
 Delivery is at-least-once: a request that failed after the leader stored it may be
 stored again when you retry, so consumers should tolerate repeats (see `client/doc.go`).
 
-## Demo: a waiting room for course registration
-`cmd/waitingroom` is a web application built only on the public `client` package:
-people join a line, are let in a few at a time, and see their place update live.
-The line lives in two topics, so killing the leader of the cluster does not cost
-anyone their place; `cmd/wrsim` simulates the crowd. See
-[docs/waitingroom.md](docs/waitingroom.md) for how to run it, how it works, what the
-tests prove and what a measured run looked like.
+## An earlier, smaller example: a waiting room
+Before the kitchen system there was a smaller application, `cmd/waitingroom`, a virtual waiting
+room for course registration, also built only on the public `client` package: the line lives in
+two topics, so killing the leader does not cost anyone their place, and `cmd/wrsim` simulates a
+crowd. It is kept as a short example of using the client; see [docs/waitingroom.md](docs/waitingroom.md).
 
 ## Known limitations
 - A lone producer is bound by the cost of one request (about 6 ms with one node, 8 to 11 ms with three on the test laptop): requests that arrive together share their fsyncs (group commit, ADR 12), but one at a time they do not, and
