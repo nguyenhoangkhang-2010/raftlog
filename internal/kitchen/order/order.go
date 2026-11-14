@@ -133,6 +133,10 @@ type Order struct {
 	Discount  money.Money
 	Total     money.Money
 
+	// Points are the points that the order uses; PointsEarned those that its payment earned.
+	Points       *PointsUse
+	PointsEarned int64
+
 	PlacedAt time.Time
 	Payment  *Payment
 	Tickets  map[menu.Station]*Ticket
@@ -266,6 +270,10 @@ func (o *Order) applyPlaced(ev Event) error {
 	o.Lines = append([]menu.Line(nil), p.Lines...)
 	o.Discounts = append([]promo.Applied(nil), p.Discounts...)
 	o.Subtotal, o.Discount, o.Total = p.Subtotal, p.Discount, p.Total
+	if p.Points != nil {
+		pts := *p.Points
+		o.Points = &pts
+	}
 	o.PlacedAt = ev.At
 	o.Tickets = map[menu.Station]*Ticket{}
 	for _, l := range o.Lines {
@@ -286,6 +294,10 @@ func (o *Order) applyPaid(ev Event) error {
 	if p.Amount != o.Total {
 		return fmt.Errorf("%w: paid %v for an order of %v", ErrAmount, p.Amount, o.Total)
 	}
+	if p.PointsEarned > 0 && o.Customer == "" {
+		return fmt.Errorf("%w: points are earned by a customer, and this order has none", ErrIllegalTransition)
+	}
+	o.PointsEarned = p.PointsEarned
 	o.Payment = &Payment{Method: p.Method, Amount: p.Amount, Tendered: p.Tendered, Change: p.Change, Reference: p.Reference, By: ev.By, At: ev.At}
 	o.Status = Paid
 	o.StockHeld = true

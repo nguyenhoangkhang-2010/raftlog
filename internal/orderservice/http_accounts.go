@@ -30,7 +30,11 @@ type AccountsOptions struct {
 	// together behind one address, too few for guessing.
 	LoginBurst  int
 	LoginPeriod time.Duration
-	Now         func() time.Time
+	// SignupBurst and SignupPeriod limit the accounts that one address may make when registration is open:
+	// a burst of SignupBurst that refills over SignupPeriod. Default 5 an hour.
+	SignupBurst  int
+	SignupPeriod time.Duration
+	Now          func() time.Time
 }
 
 // APIOption changes how NewAPI builds the handler.
@@ -52,8 +56,15 @@ func WithAccounts(acc *accounts.Service, o AccountsOptions) APIOption {
 		if o.LoginPeriod <= 0 {
 			o.LoginPeriod = time.Minute
 		}
+		if o.SignupBurst <= 0 {
+			o.SignupBurst = defaultSignupBurst
+		}
+		if o.SignupPeriod <= 0 {
+			o.SignupPeriod = defaultSignupPeriod
+		}
 		a.acc, a.opts = acc, o
 		a.login = newLimiter(o.LoginBurst, o.LoginPeriod, o.Now)
+		a.signups = newLimiter(o.SignupBurst, o.SignupPeriod, o.Now)
 		if a.authn == nil {
 			a.authn = SessionAuth(acc, o.CookieName)
 		}
@@ -62,6 +73,7 @@ func WithAccounts(acc *accounts.Service, o AccountsOptions) APIOption {
 
 func (a *API) accountRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/login", a.signIn)
+	mux.HandleFunc("POST /api/register", a.register)
 	mux.HandleFunc("POST /api/logout", a.identified(a.signOut))
 	mux.HandleFunc("POST /api/me/password", a.identified(a.changePassword))
 	mux.HandleFunc("GET /api/me/sessions", a.authID(a.mySessions))

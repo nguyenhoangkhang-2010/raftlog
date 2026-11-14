@@ -77,6 +77,9 @@ type PlaceInput struct {
 	Customer string
 	Lines    []menu.Line
 	Pricing  promo.Result // the outcome of the promotions for these lines
+	// Points are the points of the customer to use on the order, each worth Value; nil for none. Only an order
+	// from the app may use them; they come off after the promotions.
+	Points *PointsUse
 }
 
 // Place makes the event that creates an order. The numbers in it are checked: the
@@ -109,6 +112,19 @@ func Place(m Meta, in PlaceInput) (Event, error) {
 		Lines: in.Lines, Discounts: in.Pricing.Applied,
 		Subtotal: in.Pricing.Subtotal, Discount: in.Pricing.Discount, Total: in.Pricing.Total,
 	}
+	if in.Points != nil {
+		pts := *in.Points
+		if pts.Used < 1 || pts.Used > MaxPoints || pts.Value < 1 || pts.Value > money.MaxPrice {
+			return Event{}, fmt.Errorf("%w: points used %d at %v each", ErrInvalid, pts.Used, pts.Value)
+		}
+		if amt := pts.Amount(); amt > in.Pricing.Total {
+			return Event{}, fmt.Errorf("%w: %v of points on an order of %v", ErrAmount, amt, in.Pricing.Total)
+		}
+		data.Points = &pts
+		data.Discounts = append(append([]promo.Applied(nil), in.Pricing.Applied...), promo.Applied{ID: PointsDiscountID, Name: "Points", Amount: pts.Amount()})
+		data.Discount += pts.Amount()
+		data.Total -= pts.Amount()
+	}
 	if err := data.check(); err != nil {
 		return Event{}, err
 	}
@@ -120,6 +136,9 @@ type PayInput struct {
 	Method    string
 	Tendered  money.Money // for cash: what was handed over
 	Reference string      // for card and transfer
+	// PointsEarned is what the payment earns the customer of the order; the service works it out from its
+	// settings. It is refused for an order that has no customer.
+	PointsEarned int64
 }
 
 // Pay records the payment of the whole total. It returns nil, nil when the same
@@ -131,7 +150,10 @@ func (o *Order) Pay(m Meta, in PayInput) (*Event, error) {
 	if o.Status != Placed {
 		return nil, o.wrongState("take payment for")
 	}
-	p := &PaidData{Method: in.Method, Amount: o.Total}
+	if in.PointsEarned != 0 && o.Customer == "" {
+		return nil, fmt.Errorf("%w: an order with no customer earns no points", ErrInvalid)
+	}
+	p := &PaidData{Method: in.Method, Amount: o.Total, PointsEarned: in.PointsEarned}
 	switch in.Method {
 	case Cash:
 		if in.Tendered < o.Total {

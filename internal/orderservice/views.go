@@ -78,6 +78,9 @@ type OrderView struct {
 	Subtotal  int64          `json:"subtotal"`
 	Discount  int64          `json:"discount"`
 	Total     int64          `json:"total"`
+	// Points are the points the order uses and what each took off; PointsEarned what its payment earned.
+	Points       *PointsUseView `json:"points,omitempty"`
+	PointsEarned int64          `json:"points_earned,omitempty"`
 
 	PlacedAt      time.Time          `json:"placed_at"`
 	Payment       *PaymentView       `json:"payment,omitempty"`
@@ -89,6 +92,12 @@ type OrderView struct {
 	CompletedBy   string             `json:"completed_by,omitempty"`
 	CompletedAt   *time.Time         `json:"completed_at,omitempty"`
 	Events        int                `json:"events"`
+}
+
+// PointsUseView is the points that an order uses.
+type PointsUseView struct {
+	Used  int64 `json:"used"`
+	Value int64 `json:"value"`
 }
 
 func timePtr(t time.Time) *time.Time {
@@ -113,6 +122,10 @@ func viewOf(o *order.Order) OrderView {
 		}
 		v.Lines = append(v.Lines, lv)
 	}
+	if o.Points != nil {
+		v.Points = &PointsUseView{Used: o.Points.Used, Value: int64(o.Points.Value)}
+	}
+	v.PointsEarned = o.PointsEarned
 	for _, d := range o.Discounts {
 		v.Discounts = append(v.Discounts, DiscountView{ID: string(d.ID), Name: d.Name, Amount: int64(d.Amount)})
 	}

@@ -61,6 +61,7 @@
     manager: ["M5 20V10M12 20V4M19 20v-7"],
     reports: ["M4 20h16", "M7 16v-5M12 16V6M17 16v-8"],
     shift: ["M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16", "M12 8v4.5l3 1.8"],
+    points: ["M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"],
     schedule: ["M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M4 10h16", "M8 3v4M16 3v4", "M8 14h3"],
     runner: ["M5 8h14l-1.2 11H6.2z", "M9 8V6a3 3 0 0 1 6 0v2"],
     stock: ["M3 8l9-5 9 5v8l-9 5-9-5z", "M3 8l9 5 9-5", "M12 13v8"],
@@ -83,6 +84,8 @@
     return h("div", { class: "im art-" + k }, svg(ART[k] || ART.food));
   }
   function money(n) { return L.formatMoney(n); }
+  // discountName is what a discount of an order is called: the points have no name of their own in the log.
+  function discountName(d) { return d.id === "points" ? T("Points") : d.name; }
   function randBytes(n) { var a = new Uint8Array(n); (window.crypto || window.msCrypto).getRandomValues(a); return a; }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
@@ -100,7 +103,7 @@
     mode: "token", token: null, me: null, menu: null,
     orders: new Map(), screens: [], screen: null, current: null,
     live: "off", stream: null,
-    cart: [], draft: null, placed: null, codes: "", counterCustomer: "",
+    cart: [], draft: null, placed: null, codes: "", counterCustomer: "", points: null, pointsUse: "", registration: false,
     ui: { payFor: null, reasonFor: null, refundFor: null, station: null, audit: null },
     pending: {}, // command IDs of actions that were sent and not yet answered, by action
   };
@@ -353,7 +356,7 @@
 
   function signOut(message) {
     if (S.stream) S.stream.abort();
-    S.token = null; S.me = null; S.orders = new Map(); S.menu = null; S.cart = []; S.draft = null;
+    S.token = null; S.me = null; S.orders = new Map(); S.menu = null; S.cart = []; S.draft = null; S.points = null; S.pointsUse = "";
     shown = {}; settled = false;
     S.pending = {}; S.current = null; S.ui = { payFor: null, reasonFor: null, refundFor: null, station: null, audit: null };
     store("kitchen.token", null);
@@ -421,9 +424,45 @@
       fieldOf("username", T("Login name"), user),
       fieldOf("password", T("Password"), pass),
       err, btn,
-      h("p", { class: "fine" }, T("Forgot your password? Ask an administrator to reset it.")));
+      h("p", { class: "fine" }, T("Forgot your password? Ask an administrator to reset it.")),
+      S.registration ? h("div", { class: "row" }, h("span", { class: "fine" }, T("New here?")), h("button", { type: "button", class: "small ghost", onclick: function () { renderSignUp(""); } }, T("Create an account"))) : null);
     clear($("view")).appendChild(authShell(form));
     (message ? pass : user).focus();
+  }
+
+  // renderSignUp is the form of a person who makes an account of their own. It makes a customer's account and
+  // signs them in; the checks here only save a round trip, the service decides.
+  function renderSignUp(message) {
+    var login = h("input", { type: "text", id: "su-login", autocomplete: "username", autocapitalize: "none", spellcheck: "false", maxlength: "32" });
+    var name = h("input", { type: "text", id: "su-name", autocomplete: "name", maxlength: "60" });
+    var pass = h("input", { type: "password", id: "su-pass", autocomplete: "new-password" });
+    var again = h("input", { type: "password", id: "su-again", autocomplete: "new-password" });
+    var err = h("p", { class: "problem", id: "su-err", role: "alert" }, message || "");
+    var btn = h("button", { type: "submit", class: "primary" }, T("Create my account"));
+    var form = h("form", { class: "card signin", onsubmit: function (e) {
+      e.preventDefault();
+      var id = login.value.trim().toLowerCase();
+      var problem = L.loginProblem(id) || (!name.value.trim() ? T("Enter your name.") : "") || L.passwordProblem(pass.value, again.value, id);
+      if (problem) { err.textContent = problem; return; }
+      btn.disabled = true; err.textContent = "";
+      api("POST", "/api/register", { username: id, display_name: name.value.trim(), password: pass.value }, true).then(function (me) {
+        pass.value = again.value = "";
+        return startSession(me);
+      }).catch(function (ex) {
+        pass.value = again.value = "";
+        err.textContent = ex && ex.message ? ex.message : T("Could not reach the kitchen system. Try again.");
+      }).then(function () { btn.disabled = false; });
+    } },
+      h("h1", {}, T("Create an account")),
+      fieldOf("su-login", T("Login name"), login),
+      h("p", { class: "fine" }, T("3 to 32 letters, digits, dots, dashes or underscores.")),
+      fieldOf("su-name", T("Your name"), name),
+      fieldOf("su-pass", T("Password"), pass),
+      fieldOf("su-again", T("Password again"), again),
+      err, btn,
+      h("div", { class: "row" }, h("span", { class: "fine" }, T("Already have an account?")), h("button", { type: "button", class: "small ghost", onclick: function () { renderSignIn(""); } }, T("Sign in"))));
+    clear($("view")).appendChild(authShell(form));
+    login.focus();
   }
 
   // passwordForm changes the password of the person signed in. forced is the page that a
@@ -475,6 +514,7 @@
     switch (id) {
       case "order": return T("Order");
       case "myorders": return T("My orders");
+      case "points": return T("Points");
       case "till": return T("Till");
       case "runner": return T("Runner");
       case "shift": return T("Shift");
@@ -587,11 +627,12 @@
           h("span", { class: "money" }, money(l.total)));
       })),
       (o.discounts || []).map(function (d) {
-        return h("div", { class: "row" }, h("span", { class: "fine" }, d.name), h("span", { class: "grow" }), h("span", { class: "money fine" }, "−" + money(d.amount)));
+        return h("div", { class: "row" }, h("span", { class: "fine" }, discountName(d)), h("span", { class: "grow" }), h("span", { class: "money fine" }, "−" + money(d.amount)));
       }),
       h("div", { class: "row" }, h("b", {}, T("Total")), h("span", { class: "grow" }), h("b", { class: "money" }, money(o.total))),
       tickets.length ? h("div", { class: "tickets" }, tickets) : null,
       o.payment ? h("div", { class: "fine" }, T("Paid by {method}", { method: T(o.payment.method) }) + (o.payment.change ? ", " + T("change {amount}", { amount: money(o.payment.change) }) : "") + (o.payment.reference ? " · " + o.payment.reference : "")) : null,
+      o.points_earned ? h("div", { class: "fine" }, T("{n} points earned", { n: o.points_earned })) : null,
       o.cancel_request ? h("div", { class: "banner warn" }, T("Cancellation requested by {who}: {reason}", { who: o.cancel_request.by, reason: o.cancel_request.reason })) : null,
       o.status === "cancelled" ? h("div", { class: "banner bad" }, T("Cancelled") + (o.cancel_reason ? ": " + o.cancel_reason : "") + (o.refunded ? " · " + T("refunded {amount}", { amount: money(o.refunded) }) : "")) : null,
       o.status === "completed" && o.refunded ? h("div", { class: "banner warn" }, T("Refunded {amount}", { amount: money(o.refunded) })) : null,
@@ -759,6 +800,32 @@
     // A customer's page opens with the banner of render(); the till's has a plain title.
     if (S.me.permissions["order.view_all"]) root.appendChild(h("h1", {}, T("New order at the counter")));
     root.appendChild(h("div", { class: "cols two" }, menuBox, cartBox));
+    var LP = window.KitchenLoyalty.pure(T);
+    var isCustomer = !!S.me.permissions["order.view_own"] && !S.me.permissions["order.view_all"];
+    // loadPoints asks what the customer has, to offer it in the cart; a venue with no program answers so.
+    function loadPoints() {
+      if (!isCustomer) return;
+      api("GET", "/api/points").then(function (d) { S.points = d; if (S.menu && !S.placed) drawCart(); }, function () { /* the cart works without it */ });
+    }
+
+    function pointsBox() {
+      var est = L.cartEstimate(S.menu, S.cart), max = LP.maxUsable(est, S.points);
+      var box = h("div", { class: "field" }, h("label", { for: "points" }, T("Use points")));
+      if (S.points.available <= 0) { box.appendChild(h("p", { class: "fine" }, T("You have no points to use yet."))); return box; }
+      var off = h("p", { class: "fine" }), problem = h("p", { class: "problem", role: "alert" });
+      function show() {
+        var n = LP.intOf(S.pointsUse) || 0, why = LP.pointsProblem(S.pointsUse, S.points, est);
+        problem.textContent = why;
+        off.textContent = n > 0 && !why ? T("Points take {amount} off.", { amount: money(n * S.points.value) }) : "";
+      }
+      var input = h("input", { type: "text", id: "points", inputmode: "numeric", autocomplete: "off", value: S.pointsUse, placeholder: "0",
+        oninput: function (e) { S.pointsUse = e.target.value; delete S.pending.place; show(); } });
+      box.appendChild(h("div", { class: "row" }, input, h("button", { type: "button", class: "small ghost", onclick: function () { S.pointsUse = max ? String(max) : ""; delete S.pending.place; drawCart(); } }, T("Use the most"))));
+      box.appendChild(h("p", { class: "fine" }, T("You have {n} points. This order can use up to {max}.", { n: S.points.available, max: max })));
+      box.appendChild(off); box.appendChild(problem);
+      show();
+      return box;
+    }
 
     function update() {
       if (!S.menu) { clear(menuBox).appendChild(h("p", { class: "empty" }, T("Loading the menu…"))); return; }
@@ -783,7 +850,7 @@
       if (S.placed) {
         var o = S.placed;
         cartBox.appendChild(h("div", { class: "banner ok", role: "status" }, T("Order #{n} placed. Total {total}.", { n: o.order.number, total: money(o.order.total) })));
-        (o.order.discounts || []).forEach(function (d) { cartBox.appendChild(h("p", { class: "fine" }, d.name + ": −" + money(d.amount))); });
+        (o.order.discounts || []).forEach(function (d) { cartBox.appendChild(h("p", { class: "fine" }, discountName(d) + ": −" + money(d.amount))); });
         (o.rejected_codes || []).forEach(function (r) { cartBox.appendChild(h("p", { class: "problem" }, r)); });
         var next = [];
         if (S.me.permissions["order.record_payment"]) {
@@ -809,22 +876,28 @@
       cartBox.appendChild(h("p", { class: "fine" }, T("The kitchen system works out the price, with any offer, when the order is placed.")));
       cartBox.appendChild(h("div", { class: "field" }, h("label", { for: "codes" }, T("Promotion code")),
         h("input", { type: "text", id: "codes", value: S.codes, autocomplete: "off", oninput: function (e) { S.codes = e.target.value; delete S.pending.place; } })));
+      if (isCustomer && S.points && S.points.enabled) cartBox.appendChild(pointsBox());
       if (S.me.permissions["order.view_all"]) {
         cartBox.appendChild(h("div", { class: "field" }, h("label", { for: "cust" }, T("Customer ID (optional)")),
           h("input", { type: "text", id: "cust", value: S.counterCustomer, autocomplete: "off", oninput: function (e) { S.counterCustomer = e.target.value; delete S.pending.place; } })));
       }
       var btn = h("button", { type: "button", class: "big primary", onclick: function () {
         var codes = S.codes.split(/[\s,]+/).filter(Boolean);
-        run("place", btn, function (id) { return api("POST", "/api/orders", L.cartBody(id, S.cart, codes, S.counterCustomer.trim())); }).then(function (res) {
+        var usePoints = S.points && S.points.enabled ? (LP.intOf(S.pointsUse) || 0) : 0;
+        var why = usePoints ? LP.pointsProblem(S.pointsUse, S.points, L.cartEstimate(S.menu, S.cart)) : "";
+        if (why) { toast(why, "bad"); return; }
+        run("place", btn, function (id) { return api("POST", "/api/orders", L.cartBody(id, S.cart, codes, S.counterCustomer.trim(), usePoints)); }).then(function (res) {
           if (!res) return;
           S.placed = res;
-          S.cart = []; S.codes = ""; S.counterCustomer = "";
+          S.cart = []; S.codes = ""; S.counterCustomer = ""; S.pointsUse = "";
           putOrder(res.order);
+          loadPoints();
         });
       } }, T("Place order"));
       cartBox.appendChild(btn);
     }
-    return { update: update };
+    loadPoints();
+    return { update: update, reload: loadPoints };
   }
 
   // ---- my orders (customer) -------------------------------------------------------------
@@ -1339,9 +1412,11 @@
 
   var staffScreens = window.KitchenStaff({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
+  var loyaltyScreens = window.KitchenLoyalty({ h: h, clear: clear, T: T, api: api, when: when, money: money });
+
   var reportScreens = window.KitchenReports({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, shift: shiftScreens.shift, schedule: staffScreens.schedule, reports: reportScreens.reports, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, points: loyaltyScreens.points, till: screenTill, shift: shiftScreens.shift, schedule: staffScreens.schedule, reports: reportScreens.reports, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 
@@ -1395,7 +1470,7 @@
   }, 20000);
 
   // How do people sign in here? With accounts, a session cookie may already be there.
-  fetch("/api/auth").then(function (r) { return r.json(); }).then(function (a) { return a.mode; }, function () { return "token"; }).then(function (mode) {
+  fetch("/api/auth").then(function (r) { return r.json(); }).then(function (a) { S.registration = !!a.registration; return a.mode; }, function () { return "token"; }).then(function (mode) {
     S.mode = mode === "password" ? "password" : "token";
     if (S.mode === "password") {
       api("GET", "/api/me", undefined, true).then(startSession, function () { renderSignIn(""); });

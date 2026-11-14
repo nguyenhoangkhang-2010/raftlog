@@ -67,7 +67,26 @@ type PlacedData struct {
 	Subtotal  money.Money     `json:"subtotal"`
 	Discount  money.Money     `json:"discount"`
 	Total     money.Money     `json:"total"`
+	// Points are the points of the customer that the order uses, each worth Value. They are also one of the
+	// Discounts, under the ID PointsDiscountID, so that the totals need no other rule.
+	Points *PointsUse `json:"points,omitempty"`
 }
+
+// PointsDiscountID is the ID of the discount that points make. No promotion may use it.
+const PointsDiscountID = promo.PointsID
+
+// MaxPoints bounds the points of one order, of a payment and of a balance.
+const MaxPoints int64 = 10_000_000
+
+// PointsUse is points that an order uses, and what each was worth when it was placed: the order says so itself,
+// so that what the venue sets later does not change what an old order meant.
+type PointsUse struct {
+	Used  int64       `json:"used"`
+	Value money.Money `json:"value"`
+}
+
+// Amount is the money that the points take off.
+func (p PointsUse) Amount() money.Money { return p.Value * money.Money(p.Used) }
 
 // PaidData is a payment.
 type PaidData struct {
@@ -76,6 +95,8 @@ type PaidData struct {
 	Tendered  money.Money `json:"tendered,omitempty"`
 	Change    money.Money `json:"change,omitempty"`
 	Reference string      `json:"reference,omitempty"`
+	// PointsEarned is what the payment earned the customer of the order, decided by the service when it paid.
+	PointsEarned int64 `json:"points_earned,omitempty"`
 }
 
 // TicketData names the station a ticket event is about.
@@ -147,11 +168,28 @@ func (p *PlacedData) check() error {
 		sub += l.Total
 	}
 	var disc money.Money
+	pointsDiscounts := 0
 	for _, d := range p.Discounts {
 		if d.Amount <= 0 {
 			return bad("discount %q is not positive", d.ID)
 		}
+		if d.ID == PointsDiscountID {
+			pointsDiscounts++
+			if p.Points == nil || d.Amount != p.Points.Amount() {
+				return bad("the discount of points is not what the points are worth")
+			}
+		}
 		disc += d.Amount
+	}
+	if p.Points != nil {
+		switch {
+		case p.Points.Used < 1 || p.Points.Used > MaxPoints || p.Points.Value < 1 || p.Points.Value > money.MaxPrice:
+			return bad("points used %d at %v each", p.Points.Used, p.Points.Value)
+		case p.Channel != ChannelApp:
+			return bad("points are used on an order from the app")
+		case pointsDiscounts != 1:
+			return bad("an order that uses points has exactly one discount of points")
+		}
 	}
 	if p.Subtotal != sub || p.Discount != disc || disc > sub || p.Total != sub-disc {
 		return bad("subtotal %v, discount %v, total %v do not add up from the lines", p.Subtotal, p.Discount, p.Total)
@@ -237,6 +275,9 @@ func (p *PaidData) check() error {
 	}
 	if p.Amount < 0 || p.Tendered < 0 || p.Change < 0 {
 		return bad("negative money in a payment")
+	}
+	if p.PointsEarned < 0 || p.PointsEarned > MaxPoints {
+		return bad("points earned %d", p.PointsEarned)
 	}
 	switch p.Method {
 	case Cash:

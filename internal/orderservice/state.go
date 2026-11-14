@@ -66,6 +66,8 @@ type State struct {
 	// cash is, for each cashier, the cash that orders put into their drawer and took out of it.
 	cash map[string][]CashEntry
 	ledgerDropped map[stock.Ingredient]bool
+	// points is, for each customer, the points they own and what is set aside (see loyalty.go).
+	points map[string]*pointsAccount
 
 	next    uint64 // the offset of the next record to apply
 	skipped int
@@ -179,6 +181,7 @@ func (s *State) applyEvent(ch Change, rec Record) (Change, error) {
 	}
 	before := o.Seq()
 	hadStock := o.StockHeld
+	refundedBefore := o.Refunded
 	if err := o.Apply(ev); err != nil {
 		return ch, err
 	}
@@ -189,6 +192,10 @@ func (s *State) applyEvent(ch Change, rec Record) (Change, error) {
 	// What the event does beyond the order itself.
 	switch ev.Type {
 	case order.EvPlaced:
+		// an order that uses more points than the customer has is refused here, by every reader alike
+		if err := s.pointsPlaced(o); err != nil {
+			return ch, err
+		}
 		s.orders[ev.Order] = o
 		if o.Number > s.maxNumber {
 			s.maxNumber = o.Number
@@ -214,8 +221,10 @@ func (s *State) applyEvent(ch Change, rec Record) (Change, error) {
 		}
 		ch.StockChanged = true
 		s.cashSale(o, ev)
+		s.pointsPaid(o, ev.At)
 	case order.EvRefunded:
 		s.cashRefund(o, ev, int64(ev.Refund.Amount))
+		s.pointsRefunded(o, ev.At, refundedBefore)
 	case order.EvCancelled:
 		if ev.Cancelled.Restock && hadStock {
 			needs := o.Needs()
@@ -233,6 +242,7 @@ func (s *State) applyEvent(ch Change, rec Record) (Change, error) {
 		if ev.Cancelled != nil {
 			s.cashRefund(o, ev, int64(ev.Cancelled.Refund))
 		}
+		s.pointsCancelled(o, ev.At, o.Payment != nil)
 	case order.EvHandedOver:
 		delete(s.takes, o.ID)
 	}

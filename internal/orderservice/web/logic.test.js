@@ -87,6 +87,8 @@ test("the request that places an order carries only what is set", () => {
     codes: ["HELLO10"], customer: "khach-1",
   });
   assert.deepEqual(Object.keys(L.cartBody("cmd-1234abcd", [], [], "")), ["command_id", "items"]);
+  assert.equal(L.cartBody("cmd-1234abcd", [], [], "", 0).points, undefined, "no points, nothing sent");
+  assert.equal(L.cartBody("cmd-1234abcd", [], [], "", 12).points, 12);
 });
 
 test("an error is said in words, with what was short or which line was wrong", () => {
@@ -195,7 +197,7 @@ test("the stream is cut into events, comments are ignored, and an unfinished eve
 });
 
 test("each role gets the screens its permissions allow", () => {
-  assert.deepEqual(L.screensFor({ "order.place": true, "order.view_own": true }), ["order", "myorders"]);
+  assert.deepEqual(L.screensFor({ "order.place": true, "order.view_own": true }), ["order", "myorders", "points"], "a customer has their orders and their points");
   assert.deepEqual(L.screensFor({ "order.place": true, "order.view_all": true, "order.record_payment": true, "order.hand_over": true }), ["order", "till", "runner"], "a cashier who also hands over has both screens");
   assert.deepEqual(L.screensFor({ "ticket.start": true, "ticket.finish": true, "order.view_all": true, "stock.view": true }), ["kitchen", "stock"]);
   assert.deepEqual(L.screensFor({ "order.hand_over": true, "order.view_all": true }), ["runner"], "a runner has a screen of their own, not the till");
@@ -249,4 +251,18 @@ test("an order is ready from the moment its last station finished", () => {
   assert.equal(L.readySince(o), "2026-11-20T10:09:00Z");
   assert.equal(L.readySince({ placed_at: "2026-11-20T10:00:00Z", tickets: [] }), "2026-11-20T10:00:00Z", "with no time of its own it is counted from when it was placed");
   assert.equal(L.readySince({ placed_at: "2026-11-20T10:00:00Z" }), "2026-11-20T10:00:00Z");
+});
+
+test("what the service says about points and signing up is written in a sentence", () => {
+  assert.equal(L.describeError(409, { error: "x", code: "points", max: 7 }), "This order can use at most 7 points.");
+  assert.equal(L.describeError(409, { error: "x", code: "points" }), "This order can use at most 0 points.", "no number means none");
+  assert.match(L.describeError(409, { error: "x", code: "no_points" }), /cannot be used/);
+  assert.match(L.describeError(400, { error: "x", code: "no_customer" }), /no customer/);
+  assert.match(L.describeError(403, { error: "x", code: "registration_closed" }), /Registration is closed/);
+});
+
+test("a login name is checked as the accounts check it", () => {
+  assert.equal(L.loginProblem("linh.tran"), "");
+  assert.equal(L.loginProblem("a1_"), "");
+  for (const bad of ["", "ab", "two words", "-start", "UPPER", "x".repeat(33), "dấu"]) assert.notEqual(L.loginProblem(bad), "", bad);
 });

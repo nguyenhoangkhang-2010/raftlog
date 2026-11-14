@@ -77,11 +77,15 @@ type rig struct {
 	clk *clock
 	ctx context.Context
 	n   int
+	// loyalty is the points program of the services that the rig opens.
+	loyalty Loyalty
 }
 
-func newRig(t *testing.T) *rig {
+func newRig(t *testing.T) *rig { return newRigWith(t, Loyalty{}) }
+
+func newRigWith(t *testing.T, l Loyalty) *rig {
 	t.Helper()
-	r := &rig{t: t, log: &MemoryLog{}, clk: &clock{t: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)}, ctx: context.Background()}
+	r := &rig{t: t, log: &MemoryLog{}, clk: &clock{t: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)}, ctx: context.Background(), loyalty: l}
 	r.svc = r.open(r.log)
 	return r
 }
@@ -89,7 +93,7 @@ func newRig(t *testing.T) *rig {
 func (r *rig) open(l Log) *Service {
 	r.t.Helper()
 	svc, err := Open(r.ctx, l, Options{Menu: testMenu(r.t), Promos: testPromos(r.t), Location: time.UTC, Now: r.clk.now,
-		LowAt: map[stock.Ingredient]int64{"beans": 100}})
+		LowAt: map[stock.Ingredient]int64{"beans": 100}, Loyalty: r.loyalty})
 	if err != nil {
 		r.t.Fatal(err)
 	}
