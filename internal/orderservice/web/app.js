@@ -70,6 +70,8 @@
     account: ["M12 4.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7", "M5 20a7 7 0 0 1 14 0"],
     menu: ["M6 3v8M9 3v5a3 3 0 0 1-3 3M3 3v5a3 3 0 0 0 3 3", "M6 11v10", "M16 21V3c-2.2 1.2-3.5 4-3.5 7.5 0 1.8 1.2 2.5 3.5 2.5"],
     promotions: ["M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z", "M8 8.2a.6.6 0 1 0 0 1.2a.6.6 0 1 0 0-1.2"],
+    eye: ["M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z", "M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5"],
+    eyeoff: ["M3 3l18 18", "M10.6 5.6a9.6 9.6 0 0 1 1.4-.1c6.4 0 10 6.5 10 6.5a17 17 0 0 1-3.1 3.8", "M6.5 7.6A16.6 16.6 0 0 0 2 12s3.6 6.5 10 6.5a9.6 9.6 0 0 0 3.9-.8", "M9.9 9.9a2.5 2.5 0 0 0 3.2 3.2"],
   };
   function icon(id) {
     var el = svg(ICONS[id] || [], 24);
@@ -392,7 +394,7 @@
       }).then(function () { btn.disabled = false; });
     } },
       h("h1", {}, T("Sign in")),
-      h("div", { class: "field" }, h("label", { for: "token" }, T("Your token")), input),
+      h("div", { class: "field" }, h("label", { for: "token" }, T("Your token")), revealable(input)),
       err,
       btn,
       h("p", { class: "fine" }, T("Ask the manager for your token. It is kept in this tab only, and goes away when you close it.")));
@@ -401,6 +403,34 @@
   }
 
   function fieldOf(id, label, input) { return h("div", { class: "field" }, h("label", { for: id }, label), input); }
+
+  // revealable puts a button beside a password box that shows what was typed and hides it again. The box starts
+  // hidden, and a box that is shown is not spell-checked or capitalised by the browser.
+  function revealable(input) {
+    var shown = false;
+    input.setAttribute("autocapitalize", "none");
+    input.setAttribute("spellcheck", "false");
+    var btn = h("button", { type: "button", class: "reveal", "aria-pressed": "false", title: T("Show password"), "aria-label": T("Show password"),
+      onclick: function () {
+        shown = !shown;
+        input.type = L.passwordType(shown);
+        var label = shown ? T("Hide password") : T("Show password");
+        btn.setAttribute("aria-pressed", shown ? "true" : "false");
+        btn.setAttribute("aria-label", label);
+        btn.title = label;
+        clear(btn).appendChild(icon(shown ? "eyeoff" : "eye"));
+        input.focus();
+      } }, icon("eye"));
+    return h("div", { class: "pwbox" }, input, btn);
+  }
+
+  // forgotHelp is what a person who cannot remember the password is told. Nothing can be done from this page: no
+  // account has an address to send a link to, so an administrator sets a temporary password.
+  function forgotHelp() {
+    return h("details", { class: "forgot" },
+      h("summary", {}, T("Forgot your password?")),
+      h("p", { class: "fine" }, T("Ask an administrator to set a temporary password. You choose a new one when you sign in.")));
+  }
 
   function renderPasswordSignIn(message) {
     var user = h("input", { type: "text", id: "username", autocomplete: "username", autocapitalize: "none", spellcheck: "false", maxlength: "32", "aria-describedby": "signin-err" });
@@ -423,9 +453,9 @@
     } },
       h("h1", {}, T("Sign in")),
       fieldOf("username", T("Login name"), user),
-      fieldOf("password", T("Password"), pass),
+      fieldOf("password", T("Password"), revealable(pass)),
       err, btn,
-      h("p", { class: "fine" }, T("Forgot your password? Ask an administrator to reset it.")),
+      forgotHelp(),
       S.registration ? h("div", { class: "row" }, h("span", { class: "fine" }, T("New here?")), h("button", { type: "button", class: "small ghost", onclick: function () { renderSignUp(""); } }, T("Create an account"))) : null);
     clear($("view")).appendChild(authShell(form));
     (message ? pass : user).focus();
@@ -458,8 +488,8 @@
       fieldOf("su-login", T("Login name"), login),
       h("p", { class: "fine" }, T("3 to 32 letters, digits, dots, dashes or underscores.")),
       fieldOf("su-name", T("Your name"), name),
-      fieldOf("su-pass", T("Password"), pass),
-      fieldOf("su-again", T("Password again"), again),
+      fieldOf("su-pass", T("Password"), revealable(pass)),
+      fieldOf("su-again", T("Password again"), revealable(again)),
       err, btn,
       h("div", { class: "row" }, h("span", { class: "fine" }, T("Already have an account?")), h("button", { type: "button", class: "small ghost", onclick: function () { renderSignIn(""); } }, T("Sign in"))));
     clear($("view")).appendChild(authShell(form));
@@ -489,9 +519,9 @@
       }).then(function () { btn.disabled = false; });
     } },
       forced ? null : h("h2", {}, T("Change your password")),
-      fieldOf("pw-current", forced ? T("Temporary password") : T("Current password"), cur),
-      fieldOf("pw-new", T("New password"), nw),
-      fieldOf("pw-again", T("New password again"), again),
+      fieldOf("pw-current", forced ? T("Temporary password") : T("Current password"), revealable(cur)),
+      fieldOf("pw-new", T("New password"), revealable(nw)),
+      fieldOf("pw-again", T("New password again"), revealable(again)),
       h("p", { class: "fine" }, T("At least 10 characters, not your login name. A phrase of several words is easier to remember than a jumble.")),
       err, btn);
     return { form: form, focus: function () { cur.focus(); } };

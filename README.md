@@ -144,11 +144,15 @@ This starts the whole system on your machine, with every port on `127.0.0.1` onl
 | Grafana, dashboard "raftlog cluster" (no login to look) | <http://localhost:3000> |
 
 The kitchen service starts with no accounts. Make the first administrator (the password is asked twice),
-then sign in at <http://localhost:8100> and make the other accounts on the Users screen; people can also sign up
-for a customer's account themselves, and earn points:
+then sign in at <http://localhost:8100> and make the other accounts on the Users screen:
 ```bash
 docker compose -f deploy/docker-compose.yml exec orderservice orderservice user create -id admin -name "Admin" -roles admin
 ```
+
+Staff accounts are always made by an administrator. A customer can sign up for an account of their own and earn points,
+because this Compose file turns sign-up on (`ORDERSERVICE_OPEN_REGISTRATION`); started by hand, `orderservice` has it
+off unless you pass `-open-registration` ([docs/kitchen/service.md](docs/kitchen/service.md)).
+
 Try the cluster with `raftlogctl -addr localhost:9091,localhost:9092,localhost:9093 status`, then stop the node that
 leads (`docker compose -f deploy/docker-compose.yml stop node1`, or whichever it is) and watch the leader move on the
 console and the dashboard while the kitchen service goes on.

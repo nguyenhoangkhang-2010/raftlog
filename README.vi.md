@@ -120,10 +120,13 @@ Lệnh này chạy toàn bộ hệ thống trên máy bạn, mọi cổng chỉ 
 | Prometheus | <http://localhost:9090> |
 | Grafana, dashboard "raftlog cluster" (xem không cần đăng nhập) | <http://localhost:3000> |
 
-Kitchen service khởi động mà chưa có tài khoản. Tạo quản trị viên đầu tiên (mật khẩu được hỏi hai lần), rồi đăng nhập ở <http://localhost:8100> và tạo các tài khoản khác ở màn hình Users; người dùng cũng có thể tự đăng ký tài khoản khách và tích điểm:
+Kitchen service khởi động mà chưa có tài khoản. Tạo quản trị viên đầu tiên (mật khẩu được hỏi hai lần), rồi đăng nhập ở <http://localhost:8100> và tạo các tài khoản khác ở màn hình Users:
 ```bash
 docker compose -f deploy/docker-compose.yml exec orderservice orderservice user create -id admin -name "Admin" -roles admin
 ```
+
+Tài khoản nhân viên luôn do quản trị viên tạo. Khách có thể tự đăng ký tài khoản và tích điểm vì file Compose này bật đăng ký (`ORDERSERVICE_OPEN_REGISTRATION`); chạy `orderservice` bằng tay thì đăng ký tắt, trừ khi bạn thêm `-open-registration` ([docs/kitchen/service.md](docs/kitchen/service.md)).
+
 Thử cụm bằng `raftlogctl -addr localhost:9091,localhost:9092,localhost:9093 status`, rồi dừng node đang là leader (`docker compose -f deploy/docker-compose.yml stop node1`, hoặc node nào đó) và xem leader chuyển trên console và dashboard trong khi kitchen service vẫn chạy.
 
 Những gì đã chạy, ngày 14/11/2026 trên một laptop Windows với Docker Desktop: ba node, PostgreSQL, kitchen service, console, Prometheus và Grafana lên và khoẻ; Prometheus thu thập ba node; mọi truy vấn của dashboard trả lời; một tài khoản được tạo bằng lệnh trên, một khách đăng ký qua API, và một quản lý cộng điểm cho khách đó; leader bị dừng, leader mới được bầu, một lần ghi đi qua khi node đó đang tắt, và node quay lại mà không gây thêm một cuộc bầu cử nào. Các màn hình bếp chưa được mở trên trình duyệt bên trong Compose (đã mở với cùng service khởi động không qua Docker). Mật khẩu trong file Compose là của bản demo: đọc chú thích trong file trước khi để bất cứ thứ gì khác chạm tới các cổng. Không con số nào trong README này đến từ Docker; benchmark chạy như tiến trình thường.

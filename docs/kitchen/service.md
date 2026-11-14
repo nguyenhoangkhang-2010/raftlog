@@ -40,6 +40,12 @@ Open `http://127.0.0.1:8100/`, sign in as the administrator and make the other a
 **Users** screen. [ADR 14](../adr/0014-accounts-in-postgresql.md) says what it does and what it
 costs.
 
+**Sign-up is off unless you turn it on.** The sign-in page has a "Create an account" button only when the
+service is started with `-open-registration` (or `ORDERSERVICE_OPEN_REGISTRATION=1`; the Compose file sets
+it). It is off by default because it opens a door to anyone who can reach the page: it makes a customer's
+account and nothing else, never a role of the staff, and is limited to 5 an hour for each address
+([ADR 22](../adr/0022-customer-accounts-and-points.md)). Staff accounts are made by an administrator.
+
 **With a file of tokens**, for trying the service without a database (and what the tests of the
 service and the chaos test use). The sample files of `examples/kitchen` are invented for this; their
 tokens never expire and are in this repository:
@@ -58,8 +64,10 @@ other has already changed.
 
 `orderservice user create`, `set-password` and `list` work on the database directly. They are how
 the first administrator is made, and how an account is recovered when every administrator is locked
-out or has forgotten the password (there is no email, so no "forgot password" link: an administrator
-resets it on the Users screen, or this does).
+out or has forgotten the password. There is no email, so the sign-in page cannot send a link: its
+"Forgot your password?" says to ask an administrator, who sets a temporary password on the Users screen
+(the person chooses a new one at the next sign-in), or this does. The password boxes have a button
+that shows what was typed.
 
 ```bash
 ./bin/orderservice user create -id cash-1 -name "Thu Ngan" -roles cashier,runner
