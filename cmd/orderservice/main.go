@@ -282,6 +282,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 		}
 		if reportStore != nil {
 			apiOptions = append(apiOptions, orderservice.WithReports(reportStore, cfg.topic, cfg.location.String()))
+			exp, err := openExpenses(startCtx, pool, cfg, logger)
+			if err != nil {
+				return err
+			}
+			apiOptions = append(apiOptions, orderservice.WithExpenses(exp))
 		}
 		go purgeSessions(ctx, acc, logger)
 		apiOptions = append(apiOptions,

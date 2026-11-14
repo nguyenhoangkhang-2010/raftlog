@@ -61,6 +61,8 @@ type State struct {
 	takes map[order.ID][]stock.Take
 	// ledger is the history of each ingredient (see ledger.go).
 	ledger        map[stock.Ingredient][]LedgerEntry
+	// observe, if set, is told of every movement of the stock as it is applied.
+	observe func(LedgerEntry)
 	// cash is, for each cashier, the cash that orders put into their drawer and took out of it.
 	cash map[string][]CashEntry
 	ledgerDropped map[stock.Ingredient]bool

@@ -6,6 +6,7 @@ The test that compares this file with the code fails when they differ.
 | Permission | customer | cashier | kitchen | runner | manager | storekeeper | admin |
 |---|---|---|---|---|---|---|---|
 | `audit.view` |  |  |  |  | ✓ |  | ✓ |
+| `expense.manage` |  |  |  |  | ✓ |  |  |
 | `menu.manage` |  |  |  |  | ✓ |  |  |
 | `order.approve_cancel` |  |  |  |  | ✓ |  |  |
 | `order.cancel_unpaid` | ✓ | ✓ |  |  | ✓ |  |  |

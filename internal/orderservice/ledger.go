@@ -34,8 +34,12 @@ type LedgerEntry struct {
 	ValueMilli int64 `json:"value_milli,omitempty"`
 }
 
-// note adds an entry to the history of an ingredient.
+// note adds an entry to the history of an ingredient, and tells the observer, if there is one, who
+// sees every entry and not only the latest ones that are kept.
 func (s *State) note(e LedgerEntry) {
+	if s.observe != nil {
+		s.observe(e)
+	}
 	ing := stock.Ingredient(e.Ingredient)
 	list := append(s.ledger[ing], e)
 	if len(list) > ledgerCap {

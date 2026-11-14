@@ -355,6 +355,8 @@ code.code { font: 700 12px var(--mono); padding: .1rem .45rem; border: 1px dashe
 svg.chart { display: block; width: 100%; height: 9rem; }
 svg.chart .bar { fill: var(--ac); transition: opacity .15s; }
 svg.chart .bar.none { fill: var(--bd); }
+svg.chart .bar.neg { fill: var(--bad); }
+svg.chart .axis { stroke: var(--mu); stroke-width: 1; opacity: .5; vector-effect: non-scaling-stroke; }
 svg.chart .bar:hover { opacity: .75; }
 .countgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr)); gap: .5rem .9rem; }
 .countrow { display: grid; grid-template-columns: 5.6rem 5rem minmax(0, 1fr); align-items: center; gap: .4rem; }

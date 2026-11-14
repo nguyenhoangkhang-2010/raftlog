@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/expenses"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/order"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/rbac"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/reports"
@@ -99,6 +100,13 @@ type table struct {
 
 func num(n int64) string { return strconv.FormatInt(n, 10) }
 
+func abs64(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
 func (a *API) report(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
 	if !actor.Can(rbac.ViewReports) {
 		a.fail(w, fmt.Errorf("%w: needs %s", order.ErrNotAllowed, rbac.ViewReports))
@@ -109,7 +117,36 @@ func (a *API) report(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
 	var data any
 	var t table
 	var err error
+	extra := map[string]any{}
+	if (name == "profit" || name == "item-costs") && !mayReadCosts(actor) {
+		a.fail(w, fmt.Errorf("%w: needs %s", order.ErrNotAllowed, rbac.ViewCosts))
+		return
+	}
 	switch name {
+	case "profit":
+		var rows []ProfitDay
+		var spent []expenses.DayAmount
+		if rows, spent, err = a.profit(r, p); err == nil {
+			data = rows
+			extra["expenses_by_category"] = categoriesOf(spent)
+			t = table{columns: []string{"date", "collected", "refunds", "net", "goods_cost", "waste", "gross_profit", "expenses", "profit"}, text: map[int]bool{0: true}}
+			for _, x := range rows {
+				t.rows = append(t.rows, []string{x.Date, num(x.Collected), num(x.Refunds), num(x.Net), num(x.GoodsCost), num(x.Waste), num(x.GrossProfit), num(x.Expenses), num(x.Profit)})
+			}
+		}
+	case "item-costs":
+		var rows []ItemCost
+		if rows, err = a.itemCosts(r); err == nil {
+			data = rows
+			t = table{columns: []string{"id", "name", "category", "price", "goods_cost", "margin", "margin_percent", "all_ingredients_priced"}, text: map[int]bool{0: true, 1: true, 2: true, 7: true}}
+			for _, x := range rows {
+				complete := "yes"
+				if !x.Complete {
+					complete = "no"
+				}
+				t.rows = append(t.rows, []string{x.ID, x.Name, x.Category, num(x.Price), num(x.Cost), num(x.Margin), fmt.Sprintf("%d.%d", x.MarginPermille/10, abs64(x.MarginPermille%10)), complete})
+			}
+		}
 	case "sales":
 		var rows []reports.DayRow
 		if rows, err = a.reports.SalesByDay(r.Context(), p); err == nil {
@@ -173,7 +210,11 @@ func (a *API) report(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
 		a.failReport(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"from": p.From, "to": p.To, "zone": p.Zone, "as_of": f.AsOf, "behind": f.Behind, "rows": data})
+	body := map[string]any{"from": p.From, "to": p.To, "zone": p.Zone, "as_of": f.AsOf, "behind": f.Behind, "rows": data}
+	for k, v := range extra {
+		body[k] = v
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // csvSafe keeps a text cell from being read as a formula by a spreadsheet: one that begins with =, +,

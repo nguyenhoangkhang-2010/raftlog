@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/expenses"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/inventory"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/menu"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/promo"
@@ -166,4 +167,18 @@ func openReports(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *sl
 		return nil, nil
 	}
 	return store, nil
+}
+
+// openExpenses brings the schema of the expenses up to date (unless told not to) and returns its store.
+func openExpenses(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *slog.Logger) (*expenses.Store, error) {
+	if !cfg.noMigrate {
+		applied, err := pgmigrate.Apply(ctx, pool, expenses.Migrations(), pgmigrate.WithTable(expenses.MigrationsTable))
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range applied {
+			logger.Info("database migration applied", "migration", name)
+		}
+	}
+	return expenses.New(pool, nil), nil
 }

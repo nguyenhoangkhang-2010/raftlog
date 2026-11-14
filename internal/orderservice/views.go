@@ -207,6 +207,34 @@ type ComboView struct {
 	Slots []SlotView `json:"slots"`
 }
 
+// ItemRecipe is an item of the menu with what one of it takes from the stock, for the reports of costs.
+type ItemRecipe struct {
+	ID       string
+	Name     string
+	Category string
+	// Price is the base price, without options and without a price by time of day.
+	Price  int64
+	Recipe map[string]int64
+}
+
+// Recipes lists the items that are for sale, with their base recipes.
+func (s *Service) Recipes() []ItemRecipe {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []ItemRecipe
+	for _, it := range s.st.menu.Items() {
+		if !it.Active {
+			continue
+		}
+		r := ItemRecipe{ID: string(it.ID), Name: it.Name, Category: it.Category, Price: int64(it.Price), Recipe: map[string]int64{}}
+		for ing, n := range it.Recipe {
+			r.Recipe[string(ing)] = n
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // MenuView is what a customer may order now.
 type MenuView struct {
 	Categories []string    `json:"categories"`
