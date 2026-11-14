@@ -376,6 +376,7 @@
     if (can("stock.view")) out.push("stock");
     if (can("menu.manage")) out.push("menu");
     if (can("promo.manage")) out.push("promotions");
+    if (can("report.view")) out.push("reports");
     if (can("user.manage")) out.push("users");
     return out;
   }

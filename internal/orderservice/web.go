@@ -12,7 +12,7 @@ import (
 // with a content security policy that allows only these files, so a page cannot run a script or
 // load a style that is not one of them; the notes that customers type are put on the page as text.
 
-//go:embed web/index.html web/app.css web/i18n.js web/vi.js web/logic.js web/admin.js web/warehouse.js web/shifts.js web/board.html web/board.js web/app.js web/favicon.svg web/fonts/*.woff2
+//go:embed web/index.html web/app.css web/i18n.js web/vi.js web/logic.js web/admin.js web/warehouse.js web/shifts.js web/reports.js web/board.html web/board.js web/app.js web/favicon.svg web/fonts/*.woff2
 var webFS embed.FS
 
 // contentSecurityPolicy lets the page load its own script, style, fonts and icon, and talk to the
@@ -37,13 +37,14 @@ var assets = func() map[string]asset {
 		"/admin.js":     "web/admin.js",
 		"/warehouse.js": "web/warehouse.js",
 		"/shifts.js":    "web/shifts.js",
+		"/reports.js":   "web/reports.js",
 		"/board":        "web/board.html",
 		"/board.js":     "web/board.js",
 		"/app.js":       "web/app.js",
 		"/favicon.svg":  "web/favicon.svg",
 	}
 	types := map[string]string{
-		"/": "text/html; charset=utf-8", "/app.css": "text/css; charset=utf-8", "/i18n.js": "text/javascript; charset=utf-8", "/vi.js": "text/javascript; charset=utf-8", "/logic.js": "text/javascript; charset=utf-8", "/admin.js": "text/javascript; charset=utf-8", "/warehouse.js": "text/javascript; charset=utf-8", "/shifts.js": "text/javascript; charset=utf-8", "/board": "text/html; charset=utf-8", "/board.js": "text/javascript; charset=utf-8",
+		"/": "text/html; charset=utf-8", "/app.css": "text/css; charset=utf-8", "/i18n.js": "text/javascript; charset=utf-8", "/vi.js": "text/javascript; charset=utf-8", "/logic.js": "text/javascript; charset=utf-8", "/admin.js": "text/javascript; charset=utf-8", "/warehouse.js": "text/javascript; charset=utf-8", "/shifts.js": "text/javascript; charset=utf-8", "/reports.js": "text/javascript; charset=utf-8", "/board": "text/html; charset=utf-8", "/board.js": "text/javascript; charset=utf-8",
 		"/app.js": "text/javascript; charset=utf-8", "/favicon.svg": "image/svg+xml",
 	}
 	// The fonts are files of web/fonts, each served at /fonts/<name>.
