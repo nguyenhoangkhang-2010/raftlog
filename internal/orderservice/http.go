@@ -22,6 +22,7 @@ import (
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/order"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/rbac"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/stock"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/shifts"
 )
 
 const maxBody = 64 << 10
@@ -42,6 +43,10 @@ type API struct {
 
 	// Set by WithInventory: suppliers, ingredient names and units, and stocktakes.
 	inv *inventory.Store
+
+	// Set by WithShifts: the shifts of the cashiers and the count of their drawers.
+	shifts       *shifts.Store
+	requireShift bool
 
 	// Set by WithAccounts: people who sign in with a password and keep a session.
 	acc   *accounts.Service
@@ -79,6 +84,9 @@ func NewAPI(svc *Service, authn Authenticator, logger *slog.Logger, options ...A
 	a.boardRoutes(mux)
 	if a.inv != nil {
 		a.inventoryRoutes(mux)
+	}
+	if a.shifts != nil {
+		a.shiftRoutes(mux)
 	}
 
 	mux.HandleFunc("POST /api/orders", a.auth(a.placeOrder))
@@ -215,6 +223,8 @@ func status(err error) (int, string) {
 	case errors.Is(err, order.ErrWrongState), errors.Is(err, order.ErrCancelPending), errors.Is(err, order.ErrNoCancelRequest),
 		errors.Is(err, order.ErrRefundPolicy), errors.Is(err, order.ErrNoSuchTicket), errors.Is(err, ErrConflict):
 		return http.StatusConflict, "conflict"
+	case errors.Is(err, ErrNoShift):
+		return http.StatusConflict, "no_shift"
 	case errors.Is(err, ErrUnavailable):
 		return http.StatusServiceUnavailable, "unavailable"
 	}
@@ -450,6 +460,10 @@ type payBody struct {
 func (a *API) pay(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
 	var b payBody
 	if err := decode(w, r, &b); err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err := a.requireOpenShift(r, actor, b.Method); err != nil {
 		a.fail(w, err)
 		return
 	}

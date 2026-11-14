@@ -60,6 +60,7 @@ const (
 	ManageUsers     Permission = "user.manage"
 	OpenShift       Permission = "shift.open"
 	CloseShift      Permission = "shift.close"
+	ReviewShift     Permission = "shift.review"
 	ViewAudit       Permission = "audit.view"
 )
 
@@ -75,7 +76,7 @@ var matrix = map[Role][]Permission{
 	Manager: {
 		ViewAllOrders, CancelUnpaid, RequestCancel, ApproveCancel, IssueRefund,
 		ManageMenu, ManagePromos, ViewReports, ViewStock, AdjustStock, ViewCosts, ManageWarehouse,
-		OpenShift, CloseShift, ViewAudit,
+		OpenShift, CloseShift, ReviewShift, ViewAudit,
 	},
 	Storekeeper: {ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse},
 	Admin:       {ManageUsers, ViewAudit},
@@ -111,7 +112,7 @@ func AllPermissions() []Permission {
 var declared = []Permission{
 	PlaceOrder, ViewOwnOrders, ViewAllOrders, RecordPayment, CancelUnpaid, RequestCancel,
 	ApproveCancel, IssueRefund, StartTicket, FinishTicket, HandOver, ManageMenu, ManagePromos,
-	ViewReports, ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse, ManageUsers, OpenShift, CloseShift, ViewAudit,
+	ViewReports, ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse, ManageUsers, OpenShift, CloseShift, ReviewShift, ViewAudit,
 }
 
 // Valid reports whether r is one of the roles.

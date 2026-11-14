@@ -352,6 +352,11 @@ code.code { font: 700 12px var(--mono); padding: .1rem .45rem; border: 1px dashe
 .subnav button:hover { color: var(--tx); filter: none; }
 .subnav button[aria-selected="true"] { color: var(--tx); border-bottom-color: var(--ac); font-weight: 600; }
 .ok-text { color: var(--ok); font-weight: 600; }
+.countgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr)); gap: .5rem .9rem; }
+.countrow { display: grid; grid-template-columns: 5.6rem 5rem minmax(0, 1fr); align-items: center; gap: .4rem; }
+.countrow label { color: var(--tx); font: 600 13px var(--sans); white-space: nowrap; }
+.countrow input { width: 100%; min-width: 0; text-align: right; }
+.countrow .fine { margin: 0; text-align: right; white-space: nowrap; }
 a.linkbtn { display: inline-flex; align-items: center; min-height: 38px; padding: .45rem .95rem; border: 1px solid var(--bd); border-radius: 4px; color: var(--tx); font: 600 13px var(--sans); text-decoration: none; transition: background .15s, border-color .15s; }
 a.linkbtn:hover { background: var(--sf2); border-color: var(--mu); }
 a.linkbtn:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }

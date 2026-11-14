@@ -61,6 +61,8 @@ type State struct {
 	takes map[order.ID][]stock.Take
 	// ledger is the history of each ingredient (see ledger.go).
 	ledger        map[stock.Ingredient][]LedgerEntry
+	// cash is, for each cashier, the cash that orders put into their drawer and took out of it.
+	cash map[string][]CashEntry
 	ledgerDropped map[stock.Ingredient]bool
 
 	next    uint64 // the offset of the next record to apply
@@ -86,6 +88,7 @@ func NewState(m *menu.Menu, p *promo.Set, lowAt map[stock.Ingredient]int64) (*St
 		moveSeen: map[string]bool{},
 		redeemed: map[redeemKey]bool{},
 		takes:    map[order.ID][]stock.Take{},
+		cash:     map[string][]CashEntry{},
 		ledger:   map[stock.Ingredient][]LedgerEntry{}, ledgerDropped: map[stock.Ingredient]bool{},
 	}, nil
 }
@@ -208,6 +211,9 @@ func (s *State) applyEvent(ch Change, rec Record) (Change, error) {
 			return ch, rollbackPaid(s, ev, err)
 		}
 		ch.StockChanged = true
+		s.cashSale(o, ev)
+	case order.EvRefunded:
+		s.cashRefund(o, ev, int64(ev.Refund.Amount))
 	case order.EvCancelled:
 		if ev.Cancelled.Restock && hadStock {
 			needs := o.Needs()
@@ -222,6 +228,9 @@ func (s *State) applyEvent(ch Change, rec Record) (Change, error) {
 			ch.StockChanged = true
 		}
 		delete(s.takes, o.ID)
+		if ev.Cancelled != nil {
+			s.cashRefund(o, ev, int64(ev.Cancelled.Refund))
+		}
 	case order.EvHandedOver:
 		delete(s.takes, o.ID)
 	}

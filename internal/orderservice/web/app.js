@@ -59,6 +59,7 @@
     till: ["M3 7h18v10H3z", "M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5", "M6 10v4M18 10v4"],
     kitchen: ["M12 3c1 3 4 4.5 4 8.5a4 4 0 0 1-8 0c0-1.5.5-2.5 1.5-3.5.5 1 1.5 2 2.5 2 0-3-.5-5 0-7z"],
     manager: ["M5 20V10M12 20V4M19 20v-7"],
+    shift: ["M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16", "M12 8v4.5l3 1.8"],
     runner: ["M5 8h14l-1.2 11H6.2z", "M9 8V6a3 3 0 0 1 6 0v2"],
     stock: ["M3 8l9-5 9 5v8l-9 5-9-5z", "M3 8l9 5 9-5", "M12 13v8"],
     users: ["M10 4.8a3.2 3.2 0 1 0 0 6.4a3.2 3.2 0 1 0 0-6.4", "M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20", "M17 5a3 3 0 0 1 0 5.8M21 20v-1.5a3.5 3.5 0 0 0-2.5-3.3"],
@@ -474,6 +475,7 @@
       case "myorders": return T("My orders");
       case "till": return T("Till");
       case "runner": return T("Runner");
+      case "shift": return T("Shift");
       case "kitchen": return T("Kitchen");
       case "manager": return T("Manager");
       case "stock": return T("Stock");
@@ -1329,7 +1331,9 @@
   var admin = window.KitchenAdmin({ h: h, clear: clear, T: T, api: api, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S, loadMenu: loadMenu, run: run });
   var warehouse = window.KitchenWarehouse({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
+  var shiftScreens = window.KitchenShifts({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
+
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, shift: shiftScreens.shift, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 

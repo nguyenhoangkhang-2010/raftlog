@@ -167,6 +167,7 @@
         }
         break;
       case "invalid_document": msg = T("Not saved: the service checked the document and says:") + " " + (body.error || ""); break;
+      case "no_shift": msg = T("Open a shift before taking cash."); break;
       case "unavailable": msg = T("The kitchen system could not reach its log. Try again in a moment."); break;
       case "unauthorized": msg = T("The token was not accepted."); break;
       case "bad_credentials": msg = T("Wrong login name or password."); break;
@@ -368,6 +369,7 @@
     if (can("order.place")) out.push("order");
     if (can("order.view_own") && !can("order.view_all")) out.push("myorders");
     if (can("order.record_payment")) out.push("till");
+    if (can("shift.open") || can("shift.close") || can("shift.review")) out.push("shift");
     if (can("order.hand_over")) out.push("runner");
     if (can("ticket.start") || can("ticket.finish")) out.push("kitchen");
     if (can("order.approve_cancel") || can("order.issue_refund")) out.push("manager");

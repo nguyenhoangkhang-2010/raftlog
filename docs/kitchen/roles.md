@@ -20,6 +20,7 @@ The test that compares this file with the code fails when they differ.
 | `report.view` |  |  |  |  | ✓ |  |  |
 | `shift.close` |  | ✓ |  |  | ✓ |  |  |
 | `shift.open` |  | ✓ |  |  | ✓ |  |  |
+| `shift.review` |  |  |  |  | ✓ |  |  |
 | `stock.adjust` |  |  |  |  | ✓ | ✓ |  |
 | `stock.receive` |  |  |  |  |  | ✓ |  |
 | `stock.view` |  |  | ✓ |  | ✓ | ✓ |  |
