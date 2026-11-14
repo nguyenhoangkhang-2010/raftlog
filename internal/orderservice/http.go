@@ -22,6 +22,7 @@ import (
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/order"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/rbac"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/stock"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/reports"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/shifts"
 )
 
@@ -47,6 +48,11 @@ type API struct {
 	// Set by WithShifts: the shifts of the cashiers and the count of their drawers.
 	shifts       *shifts.Store
 	requireShift bool
+
+	// Set by WithReports: the reports, read from the copy of the log that the projector keeps.
+	reports     *reports.Store
+	reportTopic string
+	reportZone  string
 
 	// Set by WithAccounts: people who sign in with a password and keep a session.
 	acc   *accounts.Service
@@ -87,6 +93,9 @@ func NewAPI(svc *Service, authn Authenticator, logger *slog.Logger, options ...A
 	}
 	if a.shifts != nil {
 		a.shiftRoutes(mux)
+	}
+	if a.reports != nil {
+		a.reportRoutes(mux)
 	}
 
 	mux.HandleFunc("POST /api/orders", a.auth(a.placeOrder))

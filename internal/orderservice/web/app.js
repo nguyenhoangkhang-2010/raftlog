@@ -59,6 +59,7 @@
     till: ["M3 7h18v10H3z", "M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5", "M6 10v4M18 10v4"],
     kitchen: ["M12 3c1 3 4 4.5 4 8.5a4 4 0 0 1-8 0c0-1.5.5-2.5 1.5-3.5.5 1 1.5 2 2.5 2 0-3-.5-5 0-7z"],
     manager: ["M5 20V10M12 20V4M19 20v-7"],
+    reports: ["M4 20h16", "M7 16v-5M12 16V6M17 16v-8"],
     shift: ["M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16", "M12 8v4.5l3 1.8"],
     runner: ["M5 8h14l-1.2 11H6.2z", "M9 8V6a3 3 0 0 1 6 0v2"],
     stock: ["M3 8l9-5 9 5v8l-9 5-9-5z", "M3 8l9 5 9-5", "M12 13v8"],
@@ -476,6 +477,7 @@
       case "till": return T("Till");
       case "runner": return T("Runner");
       case "shift": return T("Shift");
+      case "reports": return T("Reports");
       case "kitchen": return T("Kitchen");
       case "manager": return T("Manager");
       case "stock": return T("Stock");
@@ -1333,7 +1335,9 @@
 
   var shiftScreens = window.KitchenShifts({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, shift: shiftScreens.shift, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
+  var reportScreens = window.KitchenReports({ h: h, clear: clear, T: T, api: api, toast: toast, when: when, money: money });
+
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, shift: shiftScreens.shift, reports: reportScreens.reports, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 

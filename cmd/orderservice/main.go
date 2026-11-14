@@ -33,6 +33,7 @@ import (
 	"github.com/nguyenhoangkhang-2010/raftlog/client"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/orderservice"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/reports"
 )
 
 // version is set at build time via -ldflags.
@@ -86,6 +87,8 @@ type config struct {
 	publicBoard bool
 	// requireShift refuses a payment in cash from a cashier who has no shift open.
 	requireShift bool
+	// rebuildReports throws away the reports at start and builds them again from the log.
+	rebuildReports bool
 	startTO    time.Duration
 	readBatch  int
 	jsonLogs   bool
@@ -178,6 +181,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	fs.StringVar(&tz, "timezone", tz, "the venue's time zone, such as Asia/Ho_Chi_Minh: prices by time of day follow its clock ["+envTimezone+"]")
 	fs.BoolVar(&cfg.publicBoard, "public-board", cfg.publicBoard, "let anyone who can reach the service read the call board (/board) without signing in, so that a screen in the shop can show it ["+envBoard+"]")
 	fs.BoolVar(&cfg.requireShift, "require-shift", cfg.requireShift, "refuse a payment in cash unless the cashier who takes it has a shift open (needs -database-url) ["+envShift+"]")
+	fs.BoolVar(&cfg.rebuildReports, "rebuild-reports", false, "throw away the reports at start and build them again from the whole log (needs -database-url)")
 	fs.DurationVar(&cfg.expiryWarn, "expiry-warning", cfg.expiryWarn, "how long before it expires a lot of goods is flagged on the warehouse screen ["+envExpiry+"]")
 	fs.DurationVar(&cfg.commandTO, "command-timeout", defaultCommandTime, "time allowed to one command, including the wait for the log")
 	fs.DurationVar(&cfg.startTO, "start-timeout", defaultStartTime, "time allowed to connect and read the whole log at start")
@@ -205,6 +209,8 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		return config{}, errors.New("-users and -database-url are two ways to sign in: give one")
 	case cfg.requireShift && cfg.databaseURL == "":
 		return config{}, errors.New("-require-shift needs -database-url: the shifts are kept in the database")
+	case cfg.rebuildReports && cfg.databaseURL == "":
+		return config{}, errors.New("-rebuild-reports needs -database-url: the reports are kept in the database")
 	case cfg.expiryWarn <= 0:
 		return config{}, errors.New("-expiry-warning must be positive")
 	case cfg.commandTO <= 0 || cfg.startTO <= 0 || cfg.readBatch < 1:
@@ -253,6 +259,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	defer cancel()
 	var apiOptions []orderservice.APIOption
 	var store *catalog.Store
+	var reportStore *reports.Store
 	if cfg.withAccounts() {
 		pool, acc, err := openAccounts(startCtx, cfg, logger)
 		if err != nil {
@@ -269,6 +276,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 		sh, err := openShifts(startCtx, pool, cfg, logger)
 		if err != nil {
 			return err
+		}
+		if reportStore, err = openReports(startCtx, pool, cfg, logger); err != nil {
+			return err
+		}
+		if reportStore != nil {
+			apiOptions = append(apiOptions, orderservice.WithReports(reportStore, cfg.topic, cfg.location.String()))
 		}
 		go purgeSessions(ctx, acc, logger)
 		apiOptions = append(apiOptions,
@@ -304,6 +317,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 			return err
 		}
 		svc.SetImages(hashes)
+	}
+	if reportStore != nil {
+		if cfg.rebuildReports {
+			if err := reportStore.Reset(startCtx, cfg.topic); err != nil {
+				return err
+			}
+			logger.Info("the reports were thrown away and are built again from the log")
+		}
+		go orderservice.NewProjector(reportStore, l, cfg.topic, cfg.readBatch, logger).Run(ctx)
 	}
 	health := svc.Health()
 	logger.Info("state rebuilt from the log", "topic", cfg.topic, "orders", health.Orders, "records", health.Next, "skipped", health.Skipped)

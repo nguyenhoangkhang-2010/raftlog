@@ -16,6 +16,7 @@ import (
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/stock"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/orderservice"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/pgmigrate"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/reports"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/shifts"
 )
 
@@ -140,4 +141,29 @@ func openShifts(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *slo
 		}
 	}
 	return shifts.New(pool, nil), nil
+}
+
+// openReports brings the schema of the reports up to date (unless told not to) and returns their store,
+// or nil, with a warning, when the venue's time zone is not one that PostgreSQL knows: a day of a report
+// is a day in that zone, and "Local" is not a name it understands.
+func openReports(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *slog.Logger) (*reports.Store, error) {
+	if !cfg.noMigrate {
+		applied, err := pgmigrate.Apply(ctx, pool, reports.Migrations(), pgmigrate.WithTable(reports.MigrationsTable))
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range applied {
+			logger.Info("database migration applied", "migration", name)
+		}
+	}
+	store := reports.New(pool)
+	ok, err := store.ValidZone(ctx, cfg.location.String())
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		logger.Warn("the reports are off: give -timezone a name such as Asia/Ho_Chi_Minh, which the database knows", "timezone", cfg.location.String())
+		return nil, nil
+	}
+	return store, nil
 }
