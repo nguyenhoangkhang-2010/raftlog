@@ -59,6 +59,7 @@
     till: ["M3 7h18v10H3z", "M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5", "M6 10v4M18 10v4"],
     kitchen: ["M12 3c1 3 4 4.5 4 8.5a4 4 0 0 1-8 0c0-1.5.5-2.5 1.5-3.5.5 1 1.5 2 2.5 2 0-3-.5-5 0-7z"],
     manager: ["M5 20V10M12 20V4M19 20v-7"],
+    runner: ["M5 8h14l-1.2 11H6.2z", "M9 8V6a3 3 0 0 1 6 0v2"],
     stock: ["M3 8l9-5 9 5v8l-9 5-9-5z", "M3 8l9 5 9-5", "M12 13v8"],
     users: ["M10 4.8a3.2 3.2 0 1 0 0 6.4a3.2 3.2 0 1 0 0-6.4", "M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20", "M17 5a3 3 0 0 1 0 5.8M21 20v-1.5a3.5 3.5 0 0 0-2.5-3.3"],
     account: ["M12 4.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7", "M5 20a7 7 0 0 1 14 0"],
@@ -472,6 +473,7 @@
       case "order": return T("Order");
       case "myorders": return T("My orders");
       case "till": return T("Till");
+      case "runner": return T("Runner");
       case "kitchen": return T("Kitchen");
       case "manager": return T("Manager");
       case "stock": return T("Stock");
@@ -921,6 +923,51 @@
     return { update: update };
   }
 
+  // ---- the runner -----------------------------------------------------------------------
+
+  // The runner takes what is ready to the customers. The cards are large and in the order of waiting,
+  // the one that has waited longest first, and go red after a few minutes.
+  var RUNNER_LATE_MIN = 5;
+
+  function runnerCard(o) {
+    var since = L.readySince(o);
+    var late = (Date.now() - Date.parse(since)) / 60000 > RUNNER_LATE_MIN;
+    var btn = h("button", { type: "button", class: "big ok", onclick: function () {
+      run("handover:" + o.id, btn, function (id) { return api("POST", "/api/orders/" + encodeURIComponent(o.id) + "/handover", { command_id: id }); }).then(function (v) {
+        if (v) { putOrder(v); toast(T("Order #{n} handed over.", { n: v.number }), "ok"); }
+      });
+    } }, T("Hand over"));
+    var move = motion("r:" + o.id, "ready");
+    return h("article", { class: "order ticket" + (move ? " enter" : "") + (late ? " late" : ""), "aria-label": T("Order {n}", { n: o.number }) },
+      h("div", { class: "head" }, h("span", { class: "num" }, "#" + o.number), late ? h("span", { class: "badge cancelled" }, T("late")) : null,
+        o.customer ? h("span", { class: "chip" }, T("for {name}", { name: o.customer })) : null,
+        h("span", { class: "age", title: since }, T("ready {age}", { age: L.ageText(since) }))),
+      h("ul", { class: "pieces" }, (o.lines || []).map(function (l) { return h("li", {}, h("b", {}, l.quantity + "×"), l.name); })),
+      h("div", { class: "row" }, btn));
+  }
+
+  function screenRunner(root) {
+    var ready = h("div", { class: "stack" }), coming = h("div", { class: "stack" });
+    root.appendChild(h("div", { class: "row" }, h("h1", {}, T("Runner")), h("span", { class: "grow" }),
+      h("a", { class: "linkbtn", href: "/board", target: "_blank", rel: "noopener" }, T("Open the call board"))));
+    root.appendChild(h("div", { class: "cols board" }, h("section", {}, h("h2", {}, T("Ready to hand over")), ready), h("section", {}, h("h2", {}, T("In the kitchen")), coming)));
+    function update() {
+      var cols = L.groupForTill(orderList());
+      var list = cols.ready.slice().sort(function (a, b) { return Date.parse(L.readySince(a)) - Date.parse(L.readySince(b)); });
+      clear(ready);
+      if (!list.length) ready.appendChild(h("p", { class: "empty" }, T("Nothing ready.")));
+      list.forEach(function (o) { ready.appendChild(runnerCard(o)); });
+      clear(coming);
+      if (!cols.inKitchen.length) coming.appendChild(h("p", { class: "empty" }, T("Nothing in the kitchen.")));
+      cols.inKitchen.forEach(function (o) {
+        coming.appendChild(h("article", { class: "order", "aria-label": T("Order {n}", { n: o.number }) },
+          h("div", { class: "head" }, h("span", { class: "num" }, "#" + o.number), h("span", { class: "age" }, L.ageText(o.placed_at))),
+          h("div", { class: "tickets" }, (o.tickets || []).map(function (t) { return h("span", { class: "chip " + t.status }, t.station + ": " + T(t.status)); }))));
+      });
+    }
+    return { update: update };
+  }
+
   // ---- the kitchen board ----------------------------------------------------------------
 
   function ticketCard(w, station) {
@@ -1282,7 +1329,7 @@
   var admin = window.KitchenAdmin({ h: h, clear: clear, T: T, api: api, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S, loadMenu: loadMenu, run: run });
   var warehouse = window.KitchenWarehouse({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 

@@ -19,7 +19,7 @@ import (
 func TestTheScreensAreServedWithTheRightTypesAndASecurityPolicy(t *testing.T) {
 	h := newHTTPRig(t)
 	cases := []struct{ path, ctype string }{
-		{"/", "text/html"}, {"/app.css", "text/css"}, {"/logic.js", "text/javascript"}, {"/admin.js", "text/javascript"}, {"/warehouse.js", "text/javascript"}, {"/app.js", "text/javascript"}, {"/favicon.svg", "image/svg+xml"},
+		{"/", "text/html"}, {"/app.css", "text/css"}, {"/logic.js", "text/javascript"}, {"/admin.js", "text/javascript"}, {"/warehouse.js", "text/javascript"}, {"/board", "text/html"}, {"/board.js", "text/javascript"}, {"/app.js", "text/javascript"}, {"/favicon.svg", "image/svg+xml"},
 	}
 	for _, c := range cases {
 		resp, err := http.Get(h.srv.URL + c.path)
@@ -229,7 +229,7 @@ func TestTheScriptsPutDataOnThePageAsTextNeverAsHTML(t *testing.T) {
 	// A note that a customer types is shown on the kitchen's screen. Setting it as HTML would let
 	// them run script there; the policy would stop it, and this keeps the code from trying.
 	banned := regexp.MustCompile(`innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new\s+Function|setAttribute\(\s*["']style|srcdoc|javascript:`)
-	for _, name := range []string{"app.js", "logic.js", "admin.js", "warehouse.js"} {
+	for _, name := range []string{"app.js", "logic.js", "admin.js", "warehouse.js", "board.js"} {
 		src := readEmbedded(t, name)
 		if m := banned.FindString(src); m != "" {
 			t.Errorf("%s uses %q", name, m)
@@ -332,7 +332,7 @@ func TestTheScreensLogicPassesItsOwnTests(t *testing.T) {
 	if _, err := os.Stat("web/logic.test.js"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js", "web/admin.test.js", "web/warehouse.test.js").CombinedOutput()
+	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js", "web/admin.test.js", "web/warehouse.test.js", "web/board.test.js").CombinedOutput()
 	if err != nil {
 		t.Fatalf("the tests of web/logic.js failed: %v\n%s", err, out)
 	}

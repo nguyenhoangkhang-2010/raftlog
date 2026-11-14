@@ -48,6 +48,7 @@ const (
 	envUsers    = "ORDERSERVICE_USERS"
 	envTimezone = "ORDERSERVICE_TIMEZONE"
 	envExpiry   = "ORDERSERVICE_EXPIRY_WARNING"
+	envBoard    = "ORDERSERVICE_PUBLIC_BOARD"
 
 	envDatabase      = "ORDERSERVICE_DATABASE_URL"
 	envSessionIdle   = "ORDERSERVICE_SESSION_IDLE"
@@ -80,6 +81,8 @@ type config struct {
 	commandTO  time.Duration
 	// expiryWarn is how long before it expires a lot of goods is flagged.
 	expiryWarn time.Duration
+	// publicBoard lets anyone read the call board without signing in.
+	publicBoard bool
 	startTO    time.Duration
 	readBatch  int
 	jsonLogs   bool
@@ -130,6 +133,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	tz := orDefault(getenv(envTimezone), defaultTimezone)
 	cfg.databaseURL = getenv(envDatabase)
 	cfg.expiryWarn = 72 * time.Hour
+	cfg.publicBoard = getenv(envBoard) == "1" || getenv(envBoard) == "true"
 	if v := getenv(envExpiry); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -168,6 +172,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	fs.DurationVar(&cfg.sessionMax, "session-max", cfg.sessionMax, "a session ends this long after sign-in at the latest ["+envSessionMax+"]")
 	fs.BoolVar(&cfg.secureCookies, "secure-cookies", cfg.secureCookies, "mark the session cookie Secure although the service listens on plain HTTP: set it behind a proxy that does TLS ["+envSecureCookies+"]")
 	fs.StringVar(&tz, "timezone", tz, "the venue's time zone, such as Asia/Ho_Chi_Minh: prices by time of day follow its clock ["+envTimezone+"]")
+	fs.BoolVar(&cfg.publicBoard, "public-board", cfg.publicBoard, "let anyone who can reach the service read the call board (/board) without signing in, so that a screen in the shop can show it ["+envBoard+"]")
 	fs.DurationVar(&cfg.expiryWarn, "expiry-warning", cfg.expiryWarn, "how long before it expires a lot of goods is flagged on the warehouse screen ["+envExpiry+"]")
 	fs.DurationVar(&cfg.commandTO, "command-timeout", defaultCommandTime, "time allowed to one command, including the wait for the log")
 	fs.DurationVar(&cfg.startTO, "start-timeout", defaultStartTime, "time allowed to connect and read the whole log at start")
@@ -301,6 +306,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.listen, err)
 	}
+	if cfg.publicBoard {
+		logger.Info("the call board at /board is public: it shows the numbers of the orders and nothing else")
+	}
+	apiOptions = append(apiOptions, orderservice.WithPublicBoard(cfg.publicBoard))
 	srv := &http.Server{Handler: orderservice.NewAPI(svc, authn, logger, apiOptions...), ReadHeaderTimeout: defaultHeaderTime}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(lis) }()

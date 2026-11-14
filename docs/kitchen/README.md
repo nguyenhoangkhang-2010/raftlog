@@ -90,7 +90,7 @@ edits on a screen ([ADR 15](../adr/0015-menu-in-postgresql.md)), accounts with a
 PostgreSQL ([ADR 14](../adr/0014-accounts-in-postgresql.md)), and the screens for the customer,
 the till, the kitchen, the manager, the storekeeper and the administrator, served by the service
 itself. The stock is kept in lots with dates, prices and suppliers, and has a warehouse screen
-([ADR 16](../adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md)). Not done yet, and planned: shifts and the cash
+([ADR 16](../adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md)). A screen for the customers waiting and one for the runner exist ([ADR 17](../adr/0017-the-call-board.md)). Not done yet, and planned: shifts and the cash
 drawer, reports, and customers who register and earn points. Not done: automated tests that drive
 the screens in a browser (they were checked by hand), a display for customers who are waiting, and
 printed receipts.

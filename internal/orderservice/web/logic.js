@@ -353,13 +353,22 @@
     return { events: events, rest: rest };
   }
 
+  // readySince is when an order became ready: the time its last station finished, or when it was
+  // placed if the order does not say.
+  function readySince(o) {
+    var best = "";
+    (o.tickets || []).forEach(function (t) { if (t.ready_at && (!best || Date.parse(t.ready_at) > Date.parse(best))) best = t.ready_at; });
+    return best || o.placed_at;
+  }
+
   // screensFor lists the screens a person may use, from the permissions that /api/me reports.
   function screensFor(perms) {
     var can = function (p) { return !!(perms && perms[p]); };
     var out = [];
     if (can("order.place")) out.push("order");
     if (can("order.view_own") && !can("order.view_all")) out.push("myorders");
-    if (can("order.record_payment") || can("order.hand_over")) out.push("till");
+    if (can("order.record_payment")) out.push("till");
+    if (can("order.hand_over")) out.push("runner");
     if (can("ticket.start") || can("ticket.finish")) out.push("kitchen");
     if (can("order.approve_cancel") || can("order.issue_refund")) out.push("manager");
     if (can("stock.view")) out.push("stock");
@@ -442,7 +451,7 @@
     describeError: describeError, groupForTill: groupForTill, stationWork: stationWork, stationsOf: stationsOf,
     cancelQueue: cancelQueue, refundPolicy: refundPolicy, workStarted: workStarted, summary: summary,
     ageText: ageText, agoText: agoText, statusLabel: statusLabel, cashChange: cashChange, quickAmounts: quickAmounts,
-    newCommandID: newCommandID, parseStream: parseStream, screensFor: screensFor, ACTIVE: ACTIVE,
+    newCommandID: newCommandID, parseStream: parseStream, screensFor: screensFor, readySince: readySince, ACTIVE: ACTIVE,
     userState: userState, passwordProblem: passwordProblem, describeEvent: describeEvent, shortAgent: shortAgent,
   };
 });

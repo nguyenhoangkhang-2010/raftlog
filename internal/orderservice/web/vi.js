@@ -579,6 +579,22 @@
       "A shelf life is a whole number of days, or empty.": "Thời hạn bảo quản là số ngày nguyên, hoặc để trống.",
       "Give a name and a unit.": "Hãy nhập tên và đơn vị.",
       "Receive": "Nhập hàng",
+
+      // the runner and the call board
+      "Runner": "Giao món",
+      "for {name}": "cho {name}",
+      "ready {age}": "xong {age}",
+      "Open the call board": "Mở màn hình gọi số",
+      "Nothing is ready yet.": "Chưa có đơn nào sẵn sàng.",
+      "Nothing is being made right now.": "Hiện không có đơn nào đang làm.",
+      "Call board": "Màn hình gọi số",
+      "Preparing": "Đang chuẩn bị",
+      "Please collect your order at the counter when your number is ready.": "Khi số của bạn sẵn sàng, xin mời đến quầy nhận món.",
+      "Full screen": "Toàn màn hình",
+      "Sound on": "Âm báo: bật",
+      "Sound off": "Âm báo: tắt",
+      "Sign in on the main page, or have the board made public.": "Hãy đăng nhập ở trang chính, hoặc bật chế độ công khai cho màn hình này.",
+      "The board cannot be reached. Trying again…": "Không kết nối được màn hình gọi số. Đang thử lại…",
     },
 
     // names that come from data, looked up by value
