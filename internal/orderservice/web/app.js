@@ -61,6 +61,7 @@
     manager: ["M5 20V10M12 20V4M19 20v-7"],
     reports: ["M4 20h16", "M7 16v-5M12 16V6M17 16v-8"],
     shift: ["M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16", "M12 8v4.5l3 1.8"],
+    schedule: ["M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M4 10h16", "M8 3v4M16 3v4", "M8 14h3"],
     runner: ["M5 8h14l-1.2 11H6.2z", "M9 8V6a3 3 0 0 1 6 0v2"],
     stock: ["M3 8l9-5 9 5v8l-9 5-9-5z", "M3 8l9 5 9-5", "M12 13v8"],
     users: ["M10 4.8a3.2 3.2 0 1 0 0 6.4a3.2 3.2 0 1 0 0-6.4", "M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20", "M17 5a3 3 0 0 1 0 5.8M21 20v-1.5a3.5 3.5 0 0 0-2.5-3.3"],
@@ -477,6 +478,7 @@
       case "till": return T("Till");
       case "runner": return T("Runner");
       case "shift": return T("Shift");
+      case "schedule": return T("Schedule");
       case "reports": return T("Reports");
       case "kitchen": return T("Kitchen");
       case "manager": return T("Manager");
@@ -1335,9 +1337,11 @@
 
   var shiftScreens = window.KitchenShifts({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
+  var staffScreens = window.KitchenStaff({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
+
   var reportScreens = window.KitchenReports({ h: h, clear: clear, T: T, api: api, run: run, toast: toast, fieldOf: fieldOf, twoStep: twoStep, when: when, money: money, S: S });
 
-  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, shift: shiftScreens.shift, reports: reportScreens.reports, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
+  var SCREENS = { order: screenOrder, myorders: screenMyOrders, till: screenTill, shift: shiftScreens.shift, schedule: staffScreens.schedule, reports: reportScreens.reports, runner: screenRunner, kitchen: screenKitchen, manager: screenManager, stock: warehouse.stock, menu: admin.menu, promotions: admin.promotions, users: screenUsers, account: screenAccount };
 
   // ---- start ----------------------------------------------------------------------------
 

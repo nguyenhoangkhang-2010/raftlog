@@ -93,10 +93,10 @@ test("a part in thousandths is written as a percentage with a decimal only when 
 
 test("the days of the profit report add up, and the margin is of the net sales", () => {
   const t = P.sumsOf([
-    { collected: 100000, refunds: 10000, net: 90000, goods_cost: 30000, waste: 5000, gross_profit: 55000, expenses: 20000, profit: 35000 },
-    { collected: 0, refunds: 0, net: 0, goods_cost: 0, waste: 0, gross_profit: 0, expenses: 20000, profit: -20000 },
+    { collected: 100000, refunds: 10000, net: 90000, goods_cost: 30000, waste: 5000, gross_profit: 55000, expenses: 20000, labour: 5000, profit: 30000 },
+    { collected: 0, refunds: 0, net: 0, goods_cost: 0, waste: 0, gross_profit: 0, expenses: 20000, labour: 0, profit: -20000 },
   ]);
-  assert.deepEqual(t, { collected: 100000, refunds: 10000, net: 90000, goods_cost: 30000, waste: 5000, gross_profit: 55000, expenses: 40000, profit: 15000, margin: 167 });
+  assert.deepEqual(t, { collected: 100000, refunds: 10000, net: 90000, goods_cost: 30000, waste: 5000, gross_profit: 55000, expenses: 40000, labour: 5000, profit: 10000, margin: 111 });
   assert.equal(P.sumsOf([{ net: 0, profit: -5 }]).margin, null, "no sales, no margin");
   assert.equal(P.sumsOf([]).margin, null);
 });

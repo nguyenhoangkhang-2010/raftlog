@@ -126,12 +126,14 @@ func (a *API) report(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
 	case "profit":
 		var rows []ProfitDay
 		var spent []expenses.DayAmount
-		if rows, spent, err = a.profit(r, p); err == nil {
+		var unrated int64
+		if rows, spent, unrated, err = a.profit(r, p); err == nil {
 			data = rows
 			extra["expenses_by_category"] = categoriesOf(spent)
-			t = table{columns: []string{"date", "collected", "refunds", "net", "goods_cost", "waste", "gross_profit", "expenses", "profit"}, text: map[int]bool{0: true}}
+			extra["labour_unrated_minutes"] = unrated
+			t = table{columns: []string{"date", "collected", "refunds", "net", "goods_cost", "waste", "gross_profit", "expenses", "labour", "profit"}, text: map[int]bool{0: true}}
 			for _, x := range rows {
-				t.rows = append(t.rows, []string{x.Date, num(x.Collected), num(x.Refunds), num(x.Net), num(x.GoodsCost), num(x.Waste), num(x.GrossProfit), num(x.Expenses), num(x.Profit)})
+				t.rows = append(t.rows, []string{x.Date, num(x.Collected), num(x.Refunds), num(x.Net), num(x.GoodsCost), num(x.Waste), num(x.GrossProfit), num(x.Expenses), num(x.Labour), num(x.Profit)})
 			}
 		}
 	case "item-costs":

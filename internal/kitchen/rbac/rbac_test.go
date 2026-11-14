@@ -211,3 +211,19 @@ func TestMarkdownListsEveryRoleAndPermission(t *testing.T) {
 		t.Errorf("%d lines for %d permissions", rows, len(AllPermissions()))
 	}
 }
+
+func TestTheClockIsForStaffAndOnlyAManagerRunsTheSchedule(t *testing.T) {
+	for _, r := range []Role{Cashier, Kitchen, Runner, Manager, Storekeeper} {
+		if !Allowed(r, UseClock) {
+			t.Errorf("%s works shifts and should clock in", r)
+		}
+	}
+	for _, r := range []Role{Customer, Admin} {
+		if Allowed(r, UseClock) {
+			t.Errorf("%s does not clock in", r)
+		}
+	}
+	if got := holders(ManageStaff); len(got) != 1 || got[0] != Manager {
+		t.Errorf("the schedule, the corrections and the rates are the manager's: %v", got)
+	}
+}

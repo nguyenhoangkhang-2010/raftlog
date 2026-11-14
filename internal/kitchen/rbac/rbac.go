@@ -62,6 +62,8 @@ const (
 	CloseShift      Permission = "shift.close"
 	ReviewShift     Permission = "shift.review"
 	ManageExpenses  Permission = "expense.manage"
+	UseClock        Permission = "clock.use"
+	ManageStaff     Permission = "staff.manage"
 	ViewAudit       Permission = "audit.view"
 )
 
@@ -70,16 +72,16 @@ var matrix = map[Role][]Permission{
 	Customer: {PlaceOrder, ViewOwnOrders, CancelUnpaid, RequestCancel},
 	Cashier: {
 		PlaceOrder, ViewAllOrders, RecordPayment, CancelUnpaid, RequestCancel, HandOver,
-		OpenShift, CloseShift,
+		OpenShift, CloseShift, UseClock,
 	},
-	Kitchen: {ViewAllOrders, StartTicket, FinishTicket, ViewStock},
-	Runner:  {ViewAllOrders, HandOver},
+	Kitchen: {ViewAllOrders, StartTicket, FinishTicket, ViewStock, UseClock},
+	Runner:  {ViewAllOrders, HandOver, UseClock},
 	Manager: {
 		ViewAllOrders, CancelUnpaid, RequestCancel, ApproveCancel, IssueRefund,
 		ManageMenu, ManagePromos, ViewReports, ViewStock, AdjustStock, ViewCosts, ManageWarehouse,
-		OpenShift, CloseShift, ReviewShift, ManageExpenses, ViewAudit,
+		OpenShift, CloseShift, ReviewShift, ManageExpenses, UseClock, ManageStaff, ViewAudit,
 	},
-	Storekeeper: {ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse},
+	Storekeeper: {ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse, UseClock},
 	Admin:       {ManageUsers, ViewAudit},
 }
 
@@ -113,7 +115,7 @@ func AllPermissions() []Permission {
 var declared = []Permission{
 	PlaceOrder, ViewOwnOrders, ViewAllOrders, RecordPayment, CancelUnpaid, RequestCancel,
 	ApproveCancel, IssueRefund, StartTicket, FinishTicket, HandOver, ManageMenu, ManagePromos,
-	ViewReports, ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse, ManageUsers, OpenShift, CloseShift, ReviewShift, ManageExpenses, ViewAudit,
+	ViewReports, ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse, ManageUsers, OpenShift, CloseShift, ReviewShift, ManageExpenses, UseClock, ManageStaff, ViewAudit,
 }
 
 // Valid reports whether r is one of the roles.

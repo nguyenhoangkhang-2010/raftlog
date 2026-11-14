@@ -352,6 +352,15 @@ code.code { font: 700 12px var(--mono); padding: .1rem .45rem; border: 1px dashe
 .subnav button:hover { color: var(--tx); filter: none; }
 .subnav button[aria-selected="true"] { color: var(--tx); border-bottom-color: var(--ac); font-weight: 600; }
 .ok-text { color: var(--ok); font-weight: 600; }
+
+/* the schedule and the time clock */
+.center { text-align: center; }
+.clock.on { border-color: var(--ok); box-shadow: inset 4px 0 0 var(--ok); }
+.clockline { font: 600 18px/1.3 var(--sans); margin: 0; }
+.clockline .fine { font-weight: 400; }
+.clock button.big { min-width: 10rem; }
+.daycard.today { border-color: var(--ac); box-shadow: inset 4px 0 0 var(--ac); }
+.daycard h2 { margin: 0; }
 svg.chart { display: block; width: 100%; height: 9rem; }
 svg.chart .bar { fill: var(--ac); transition: opacity .15s; }
 svg.chart .bar.none { fill: var(--bd); }

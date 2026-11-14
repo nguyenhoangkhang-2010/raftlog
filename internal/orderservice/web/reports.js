@@ -82,7 +82,7 @@
 
     // sumsOf adds up the days of the profit report.
     function sumsOf(days) {
-      var t = { collected: 0, refunds: 0, net: 0, goods_cost: 0, waste: 0, gross_profit: 0, expenses: 0, profit: 0 };
+      var t = { collected: 0, refunds: 0, net: 0, goods_cost: 0, waste: 0, gross_profit: 0, expenses: 0, labour: 0, profit: 0 };
       days.forEach(function (d) { Object.keys(t).forEach(function (k) { t[k] += d[k] || 0; }); });
       t.margin = t.net > 0 ? Math.round(t.profit / t.net * 1000) : null;
       return t;
@@ -253,6 +253,7 @@
         tile(T("Goods used"), money(t.goods_cost), T("and {a} wasted", { a: money(t.waste) })),
         tile(T("Gross profit"), signed(t.gross_profit)),
         tile(T("Expenses"), money(t.expenses)),
+        tile(T("Labour"), money(t.labour), d.labour_unrated_minutes ? T("{n} minutes of work have no hourly rate yet", { n: d.labour_unrated_minutes }) : ""),
         tile(T("Profit"), signed(t.profit), t.margin === null ? "" : T("{p} of net sales", { p: p.permille(t.margin) }))));
       if (days.length > 1) {
         box.appendChild(h("div", { class: "card stack" }, h("h2", {}, T("Profit by day")),
@@ -260,10 +261,10 @@
           h("div", { class: "row" }, h("span", { class: "fine" }, days[0].date), h("span", { class: "grow" }), h("span", { class: "fine" }, days[days.length - 1].date))));
       }
       box.appendChild(h("div", { class: "card stack" }, h("h2", {}, T("By day")),
-        table([T("Day"), T("Net sales"), T("Goods used"), T("Wasted"), T("Gross profit"), T("Expenses"), T("Profit")],
-          days.map(function (x) { return [x.date, money(x.net), money(x.goods_cost), money(x.waste), signed(x.gross_profit), money(x.expenses), signed(x.profit)]; })
-            .concat([[T("Total"), money(t.net), money(t.goods_cost), money(t.waste), signed(t.gross_profit), money(t.expenses), signed(t.profit)]]), [false, true, true, true, true, true, true]),
-        h("p", { class: "fine" }, T("Goods used is what the orders paid that day took from the stock, at the price of the lots it came from; an ingredient that came with no price counts for nothing. Expenses are spread evenly over the days they cover.") )));
+        table([T("Day"), T("Net sales"), T("Goods used"), T("Wasted"), T("Gross profit"), T("Expenses"), T("Labour"), T("Profit")],
+          days.map(function (x) { return [x.date, money(x.net), money(x.goods_cost), money(x.waste), signed(x.gross_profit), money(x.expenses), money(x.labour), signed(x.profit)]; })
+            .concat([[T("Total"), money(t.net), money(t.goods_cost), money(t.waste), signed(t.gross_profit), money(t.expenses), money(t.labour), signed(t.profit)]]), [false, true, true, true, true, true, true, true]),
+        h("p", { class: "fine" }, T("Goods used is what the orders paid that day took from the stock, at the price of the lots it came from; an ingredient that came with no price counts for nothing. Expenses are spread evenly over the days they cover. Labour is the work clocked that day, at the hourly rate in force.") )));
       var cats = d.expenses_by_category || [];
       if (cats.length) {
         box.appendChild(h("div", { class: "card stack" }, h("h2", {}, T("Expenses by category")),

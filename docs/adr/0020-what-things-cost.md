@@ -67,5 +67,5 @@ spent besides goods, and whether a day made or lost money. Two kinds of cost, wi
 - **Cash accounting for money, not accrual for everything.** Sales count on the day they are paid and refunds on
   the day they are given; goods on the day they are used, not bought; expenses on the days they cover, not the
   day they were written. A delivery bought on the 1st and used over three weeks costs the three weeks.
-- **Not done:** wages by shift (the next branch could read them from the schedule), taxes, depreciation of
+- **Not done:** wages by shift (done in [ADR 21](0021-the-schedule-and-the-time-clock.md), from the time clock), taxes, depreciation of
   equipment, a budget, and the comparison of two periods.

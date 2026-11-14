@@ -175,6 +175,10 @@ func (a *API) openShift(w http.ResponseWriter, r *http.Request, actor rbac.Actor
 		a.fail(w, fmt.Errorf("%w: needs %s", order.ErrNotAllowed, rbac.OpenShift))
 		return
 	}
+	if err := a.requireClockedIn(r, actor); err != nil {
+		a.fail(w, err)
+		return
+	}
 	sh, err := a.shifts.Open(r.Context(), actor.ID, b.Till, b.Counts)
 	if err != nil {
 		a.failShift(w, err)
