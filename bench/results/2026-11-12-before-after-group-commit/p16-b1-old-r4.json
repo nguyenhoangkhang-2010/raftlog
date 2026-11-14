@@ -1,0 +1,40 @@
+{
+  "environment": {
+    "tool": "raftlogbench 292dd9f",
+    "go_version": "go1.27.3",
+    "goos": "windows",
+    "goarch": "amd64",
+    "cpus": 20,
+    "nodes": 3,
+    "nodes_started_by_the_tool": true
+  },
+  "produce": {
+    "config": {
+      "topic": "bench-dmtdzhxgwclw",
+      "partitions": 3,
+      "producers": 16,
+      "message_size_bytes": 128,
+      "batch": 1,
+      "warmup_ns": 3000000000,
+      "duration_ns": 8000000000,
+      "request_timeout_ns": 15000000000
+    },
+    "requests": 1002,
+    "messages": 1002,
+    "bytes": 128256,
+    "elapsed_ns": 8000000000,
+    "errors": 0,
+    "latency": {
+      "count": 1002,
+      "min_ns": 103726500,
+      "mean_ns": 125733399,
+      "p50_ns": 122906900,
+      "p95_ns": 152479600,
+      "p99_ns": 168979600,
+      "max_ns": 174669600
+    },
+    "messages_per_sec": 125.25,
+    "megabytes_per_sec": 0.016032
+  },
+  "messages_in_topic_afterwards": 0
+}

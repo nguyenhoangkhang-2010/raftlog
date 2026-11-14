@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package raftlog.v1;
+
+option go_package = "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1;raftlogv1";
+
+// Node-to-node API of the Raft protocol. Clients never call it.
+service Raft {
+  // Send delivers one Raft message. Raft RPCs are modelled as one-way
+  // messages: the answer to a RequestVote is a separate RequestVoteResp message
+  // sent back through this same call in the other direction.
+  rpc Send(RaftMessage) returns (SendResponse);
+}
+
+enum RaftMessageType {
+  RAFT_MESSAGE_TYPE_UNSPECIFIED = 0;
+  RAFT_MESSAGE_TYPE_REQUEST_VOTE = 1;
+  RAFT_MESSAGE_TYPE_REQUEST_VOTE_RESP = 2;
+  // AppendEntries; with no entries it is a heartbeat.
+  RAFT_MESSAGE_TYPE_APPEND_ENTRIES = 3;
+  RAFT_MESSAGE_TYPE_APPEND_ENTRIES_RESP = 4;
+  // InstallSnapshot: the leader no longer has the entries a follower needs.
+  RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT = 5;
+  RAFT_MESSAGE_TYPE_INSTALL_SNAPSHOT_RESP = 6;
+  // PreVote: a node whose election timer ran out asks whether it would win an
+  // election, before it changes its term. `term` is the term it would start, and
+  // the last_log_* fields are as in RequestVote. The response uses `granted`.
+  RAFT_MESSAGE_TYPE_PRE_VOTE = 7;
+  RAFT_MESSAGE_TYPE_PRE_VOTE_RESP = 8;
+}
+
+enum LogEntryType {
+  // A command proposed by a client.
+  LOG_ENTRY_TYPE_NORMAL = 0;
+  // Appended by a new leader; carries no command.
+  LOG_ENTRY_TYPE_NOOP = 1;
+}
+
+message LogEntry {
+  uint64 index = 1;
+  uint64 term = 2;
+  LogEntryType type = 3;
+  bytes data = 4;
+}
+
+// The state of the state machine after applying every entry up to `index`.
+message SnapshotData {
+  uint64 index = 1;
+  uint64 term = 2;
+  bytes data = 3;
+}
+
+message RaftMessage {
+  RaftMessageType type = 1;
+  uint64 from = 2;
+  uint64 to = 3;
+  uint64 term = 4;
+
+  // RequestVote: the candidate's last log entry.
+  uint64 last_log_index = 5;
+  uint64 last_log_term = 6;
+
+  // RequestVoteResp.
+  bool granted = 7;
+  // AppendEntriesResp: whether the follower's log matched at prev_log_index.
+  bool success = 8;
+
+  // AppendEntries: the entry just before `entries`, the entries to store, and
+  // the leader's commit index.
+  uint64 prev_log_index = 9;
+  uint64 prev_log_term = 10;
+  repeated LogEntry entries = 11;
+  uint64 leader_commit = 12;
+
+  // AppendEntriesResp: on success the last index known to match the leader's
+  // log, on failure the last index the leader may assume to match.
+  uint64 match_index = 13;
+  uint64 hint_index = 14;
+
+  // InstallSnapshot: the complete snapshot. The response reuses `success` and
+  // `match_index`.
+  SnapshotData snapshot = 15;
+}
+
+message SendResponse {}

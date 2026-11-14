@@ -8,6 +8,24 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The tests of the accounts run against a real PostgreSQL; without this they are skipped.
+    # The password is that of a container that lives as long as this job.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: raftlog_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d raftlog_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      RAFTLOG_TEST_DATABASE_URL: postgres://ci:ci-only@127.0.0.1:5432/raftlog_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -17,6 +35,18 @@ jobs:
         run: make build
       - name: Test (race detector)
         run: make test
+
+  # Real processes, killed and cut off from each other while clients write. It
+  # runs apart from the unit tests because it takes a couple of minutes.
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Chaos tests
+        run: make chaos
 
   lint:
     runs-on: ubuntu-latest
@@ -29,9 +59,32 @@ jobs:
         with:
           version: latest
 
+  # The TLA+ specifications of docs/formal-spec, with TLC: the real models must pass and the models with a
+  # deliberate mistake must fail. Without the one that takes the longest.
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Get the model checker
+        run: curl -sSL -o "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+      - name: Check the specifications
+        run: TLA2TOOLS="$RUNNER_TEMP/tla2tools.jar" docs/formal-spec/check.sh quick
+
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build -f deploy/Dockerfile -t raftlog:ci .
+      - name: Check the Compose file
+        run: docker compose -f deploy/docker-compose.yml config -q
+      # The image holds the cluster node, the kitchen service and the console: each must start, and say what it is.
+      - name: The programs of the image start
+        run: |
+          docker run --rm raftlog:ci -h > /dev/null
+          docker run --rm --entrypoint /usr/local/bin/orderservice raftlog:ci -h > /dev/null
+          docker run --rm --entrypoint /usr/local/bin/raftlogconsole raftlog:ci -h > /dev/null

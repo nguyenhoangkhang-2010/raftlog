@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call board</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="boardpage">
+<header class="board-top">
+  <div class="board-brand"><span class="wordmark">KITCHEN<i>.</i></span></div>
+  <div class="grow"></div>
+  <div class="pill off" id="board-live" role="status"></div>
+  <time class="board-clock" id="board-clock"></time>
+  <div class="board-tools">
+    <button type="button" class="ghost" id="board-sound" aria-pressed="false"></button>
+    <button type="button" class="ghost" id="board-full"></button>
+    <div class="langsw" id="board-lang" role="group">
+      <button type="button" data-lang="vi" lang="vi" title="Tiếng Việt">VI</button>
+      <button type="button" data-lang="en" lang="en" title="English">EN</button>
+    </div>
+  </div>
+</header>
+<main class="board" id="board" tabindex="-1">
+  <section class="board-col ready" aria-labelledby="board-ready-title">
+    <h1 id="board-ready-title"></h1>
+    <div class="board-grid" id="board-ready" aria-live="polite"></div>
+  </section>
+  <section class="board-col making" aria-labelledby="board-making-title">
+    <h1 id="board-making-title"></h1>
+    <div class="board-grid" id="board-making"></div>
+  </section>
+</main>
+<footer class="board-foot" id="board-foot"></footer>
+<script src="/i18n.js"></script>
+<script src="/vi.js"></script>
+<script src="/board.js"></script>
+</body>
+</html>

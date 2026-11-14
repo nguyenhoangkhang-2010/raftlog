@@ -1,0 +1,135 @@
+{
+  "environment": {
+    "tool": "raftlogbench dev",
+    "go_version": "go1.27.3",
+    "goos": "windows",
+    "goarch": "amd64",
+    "cpus": 20,
+    "nodes": 3,
+    "nodes_started_by_the_tool": true,
+    "node_args": [
+      "-tick-interval",
+      "20ms"
+    ]
+  },
+  "failover": {
+    "config": {
+      "topic": "bench-dmteii1sffso",
+      "addrs": [
+        "127.0.0.1:19291",
+        "127.0.0.1:19292",
+        "127.0.0.1:19293"
+      ],
+      "rounds": 10,
+      "steady_ns": 2000000000,
+      "settle_timeout_ns": 30000000000,
+      "request_timeout_ns": 15000000000,
+      "poll_every_ns": 10000000
+    },
+    "rounds": [
+      {
+        "killed_leader": 1,
+        "new_leader": 2,
+        "leader_visible_ns": 291935600,
+        "first_write_ns": 326754300
+      },
+      {
+        "killed_leader": 2,
+        "new_leader": 1,
+        "leader_visible_ns": 351741400,
+        "first_write_ns": 378038500
+      },
+      {
+        "killed_leader": 1,
+        "new_leader": 3,
+        "leader_visible_ns": 172010900,
+        "first_write_ns": 207615400
+      },
+      {
+        "killed_leader": 3,
+        "new_leader": 2,
+        "leader_visible_ns": 167976900,
+        "first_write_ns": 206534600
+      },
+      {
+        "killed_leader": 2,
+        "new_leader": 1,
+        "leader_visible_ns": 161675200,
+        "first_write_ns": 207126200
+      },
+      {
+        "killed_leader": 1,
+        "new_leader": 3,
+        "leader_visible_ns": 190267700,
+        "first_write_ns": 207588400
+      },
+      {
+        "killed_leader": 3,
+        "new_leader": 2,
+        "leader_visible_ns": 219678300,
+        "first_write_ns": 254912800
+      },
+      {
+        "killed_leader": 2,
+        "new_leader": 3,
+        "leader_visible_ns": 281198100,
+        "first_write_ns": 311991600
+      },
+      {
+        "killed_leader": 3,
+        "new_leader": 2,
+        "leader_visible_ns": 184696400,
+        "first_write_ns": 210408100
+      },
+      {
+        "killed_leader": 2,
+        "new_leader": 3,
+        "leader_visible_ns": 273886300,
+        "first_write_ns": 309305300
+      }
+    ],
+    "leader_visible": {
+      "count": 10,
+      "min_ns": 161675200,
+      "mean_ns": 229506680,
+      "p50_ns": 190267700,
+      "p95_ns": 351741400,
+      "p99_ns": 351741400,
+      "max_ns": 351741400
+    },
+    "first_write": {
+      "count": 10,
+      "min_ns": 206534600,
+      "mean_ns": 262027520,
+      "p50_ns": 210408100,
+      "p95_ns": 378038500,
+      "p99_ns": 378038500,
+      "max_ns": 378038500
+    },
+    "acked": 5664,
+    "failed": 0,
+    "missing_acknowledged": 0,
+    "duplicates": 9,
+    "nodes": [
+      {
+        "node": 1,
+        "missing_acknowledged": 0,
+        "caught_up_after_ns": 0,
+        "duplicates": 9
+      },
+      {
+        "node": 2,
+        "missing_acknowledged": 0,
+        "caught_up_after_ns": 0,
+        "duplicates": 9
+      },
+      {
+        "node": 3,
+        "missing_acknowledged": 0,
+        "caught_up_after_ns": 0,
+        "duplicates": 9
+      }
+    ],
+    "last_acked_seq": 5663
+  }
+}

@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>raftlog console</title>
+<style>
+  :root {
+    --bg: #f3f5fb; --bg2: #e8ecf8; --card: #ffffff; --text: #151a2b; --muted: #5d6783; --line: #dfe4f1;
+    --accent: #4b5df0; --accent2: #7b4bf0; --on-accent: #ffffff;
+    --ok: #0f9d58; --ok-soft: #e1f5ea; --warn: #b26a00; --warn-soft: #fdf1dc; --bad: #d6336c; --bad-soft: #fde4ee;
+    --leader: #7b4bf0; --leader-soft: #ece4ff; --track: #e5e9f6; --shadow: 0 1px 2px rgba(20,30,70,.06), 0 8px 30px rgba(20,30,70,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1020; --bg2: #121733; --card: #171c33; --text: #eef0fb; --muted: #98a2c3; --line: #272e4d;
+      --accent: #7f8dff; --accent2: #a77bff; --on-accent: #0b0f26;
+      --ok: #4ade96; --ok-soft: #12352a; --warn: #f0b95b; --warn-soft: #33270e; --bad: #ff7aa8; --bad-soft: #3a1626;
+      --leader: #b394ff; --leader-soft: #2a2152; --track: #252c4f; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 40px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: var(--text); min-height: 100vh; background: radial-gradient(1200px 500px at 50% -10%, var(--bg2), transparent 70%), var(--bg);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 72rem; margin: 0 auto; padding: 0 1rem 3rem; }
+  .top { display: flex; align-items: center; gap: .8rem; padding: 1.1rem 0; flex-wrap: wrap; }
+  .logo { width: 2.2rem; height: 2.2rem; border-radius: .7rem; background: linear-gradient(135deg, var(--accent), var(--accent2)); display: grid; place-items: center; }
+  .logo svg { width: 1.2rem; height: 1.2rem; }
+  .brand { font-weight: 700; } .brand small { display: block; font-weight: 500; color: var(--muted); font-size: .78rem; }
+  .status { margin-left: auto; padding: .45rem .9rem; border-radius: 999px; font-weight: 600; font-size: .9rem; border: 1px solid var(--line); background: var(--card); }
+  .status.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+  .status.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+  .status.bad { color: var(--bad); background: var(--bad-soft); border-color: transparent; }
+  h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 .8rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 1.1rem; padding: 1.1rem; box-shadow: var(--shadow); }
+  .nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+  .node { position: relative; }
+  .node .id { font-size: 1.1rem; font-weight: 700; }
+  .badge { display: inline-block; padding: .15rem .6rem; border-radius: 999px; font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .badge.leader { background: var(--leader-soft); color: var(--leader); }
+  .badge.follower { background: var(--ok-soft); color: var(--ok); }
+  .badge.candidate { background: var(--warn-soft); color: var(--warn); }
+  .badge.down { background: var(--bad-soft); color: var(--bad); }
+  .node.isleader { outline: 2px solid var(--leader); }
+  .node.isdown { opacity: .75; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: .15rem .8rem; margin: .8rem 0; color: var(--muted); font-size: .88rem; }
+  .kv b { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  button { font: inherit; font-weight: 600; cursor: pointer; border: 0; border-radius: .7rem; padding: .5rem .9rem; color: var(--on-accent); background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+  button.danger { background: var(--bad); color: #fff; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=number] { font: inherit; padding: .45rem .6rem; width: 7rem; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: .6rem; }
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  a { color: var(--accent); }
+  .cols { display: grid; grid-template-columns: 1.5fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+  @media (max-width: 52rem) { .cols { grid-template-columns: 1fr; } }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: .6rem; margin: .9rem 0; }
+  .tile { background: var(--bg); border: 1px solid var(--line); border-radius: .8rem; padding: .55rem .75rem; }
+  .tile .k { color: var(--muted); font-size: .75rem; } .tile .v { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile.bad .v { color: var(--bad); }
+  canvas { width: 100%; height: 7.5rem; display: block; }
+  .legend { display: flex; gap: 1rem; color: var(--muted); font-size: .8rem; margin-top: .3rem; }
+  .legend i { display: inline-block; width: .7rem; height: .7rem; border-radius: 3px; margin-right: .35rem; vertical-align: -.05rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  td, th { text-align: left; padding: .3rem .4rem; border-bottom: 1px solid var(--line); } th { color: var(--muted); font-weight: 600; font-size: .78rem; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .events { max-height: 15rem; overflow: auto; font-size: .88rem; }
+  .events div { display: flex; gap: .7rem; padding: .25rem 0; border-bottom: 1px solid var(--line); }
+  .events time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+  .events .leader { color: var(--leader); font-weight: 600; } .events .node { color: var(--warn); } .events .action { color: var(--accent); }
+  .verdict { margin-top: .8rem; padding: .8rem 1rem; border-radius: .8rem; font-weight: 600; }
+  .verdict.ok { background: var(--ok-soft); color: var(--ok); } .verdict.bad { background: var(--bad-soft); color: var(--bad); }
+  .fine { color: var(--muted); font-size: .82rem; margin: .4rem 0 0; }
+  .err { color: var(--bad); font-size: .88rem; min-height: 1.3em; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="18" cy="12" r="2.2"/></svg></div>
+    <div class="brand">raftlog console<small>Cluster state, failover and write load</small></div>
+    <div class="status" id="status" role="status">connecting…</div>
+  </div>
+
+  <div class="nodes" id="nodes"></div>
+
+  <div class="cols">
+    <div class="card">
+      <h2>Write load</h2>
+      <div class="row">
+        <label for="rate">Messages per second</label>
+        <input id="rate" type="number" min="1" value="50">
+        <button id="startLoad" type="button">Start writing</button>
+        <button id="stopLoad" type="button" class="ghost">Stop</button>
+        <button id="resetLoad" type="button" class="ghost">Reset counters</button>
+      </div>
+      <div class="tiles">
+        <div class="tile"><div class="k">Acknowledged</div><div class="v" id="lAcked">0</div></div>
+        <div class="tile"><div class="k">Per second</div><div class="v" id="lTput">0</div></div>
+        <div class="tile"><div class="k">p50 latency</div><div class="v" id="lP50">–</div></div>
+        <div class="tile"><div class="k">p99 latency</div><div class="v" id="lP99">–</div></div>
+        <div class="tile" id="tFailed"><div class="k">Failed</div><div class="v" id="lFailed">0</div></div>
+        <div class="tile" id="tDropped"><div class="k">Not sent</div><div class="v" id="lDropped">0</div></div>
+      </div>
+      <canvas id="chart" role="img" aria-label="Acknowledged writes per second and p99 latency over the last minute"></canvas>
+      <div class="legend"><span><i style="background:var(--accent)"></i>acknowledged / s</span><span><i style="background:var(--warn)"></i>p99 latency (ms)</span></div>
+      <p class="fine" id="lErr"></p>
+      <p class="fine">Figures are measured by this page's own writer over the last few seconds. "Not sent" counts writes that were due while every writer was waiting for the cluster, for instance during an election.</p>
+    </div>
+
+    <div class="card">
+      <h2>Did anything acknowledged get lost?</h2>
+      <p class="fine" style="margin-top:0">Reads the whole topic back and looks for every write the cluster acknowledged, including the ones made while a node was down.</p>
+      <div class="row"><button id="verify" type="button">Verify</button><span class="fine" id="verifyBusy" hidden>reading the topic…</span></div>
+      <div id="verdict" hidden></div>
+      <h2 style="margin-top:1.2rem">Topics</h2>
+      <table><thead><tr><th>Topic</th><th class="n">Partitions</th><th class="n">Messages</th></tr></thead><tbody id="topics"></tbody></table>
+      <p class="fine" id="topicsErr"></p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Timeline</h2>
+    <div class="events" id="events" aria-live="polite"></div>
+  </div>
+  <p class="fine" id="control"></p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var HIST = 90, tput = [], p99 = [], busy = false;
+
+  function post(path, body) {
+    return fetch(path, { method: "POST", headers: { "X-Requested-With": "console", "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().then(function (b) { if (!r.ok) throw new Error(b.error || r.statusText); return b; }); });
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
+  function fmt(n) { return Number(n).toLocaleString("en-US"); }
+  function css(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+  function renderStatus(s) {
+    var el = $("status"), text, cls;
+    if (!s.can_commit) {
+      cls = "bad"; text = s.leader_id ? "Down: " + s.up + " of " + s.total + " nodes up, a majority is needed" : "No leader: writes cannot be accepted";
+    } else if (s.up < s.total) {
+      cls = "warn"; text = "Degraded: " + s.up + " of " + s.total + " nodes up, writes still work. Leader node " + s.leader_id + ", term " + s.term;
+    } else {
+      cls = "ok"; text = "Healthy: " + s.up + " of " + s.total + " nodes up. Leader node " + s.leader_id + ", term " + s.term;
+    }
+    el.className = "status " + cls; el.textContent = text;
+  }
+
+  function renderNodes(st) {
+    var html = "";
+    st.nodes.forEach(function (n) {
+      var role = n.reachable ? n.role : "down";
+      var cls = "node card" + (role === "leader" ? " isleader" : "") + (role === "down" ? " isdown" : "");
+      var behind = n.reachable && n.behind !== undefined ? (n.behind === 0 ? "in step" : n.behind + " entries") : "–";
+      html += '<div class="' + cls + '"><div class="row" style="justify-content:space-between"><span class="id">Node ' + n.id + '</span><span class="badge ' + role + '">' + role + '</span></div>' +
+        '<div class="kv"><span>Address</span><b>' + esc(n.addr) + '</b>' +
+        '<span>Term</span><b>' + (n.reachable ? fmt(n.term) : "–") + '</b>' +
+        '<span>Commit index</span><b>' + (n.reachable ? fmt(n.commit_index || 0) : "–") + '</b>' +
+        '<span>Last log index</span><b>' + (n.reachable ? fmt(n.last_index || 0) : "–") + '</b>' +
+        '<span>Behind the leader</span><b>' + behind + '</b></div>' +
+        '<div class="row">' +
+        (st.control ? '<button class="danger" data-act="kill" data-id="' + n.id + '"' + (n.running ? "" : " disabled") + '>Kill</button>' +
+          '<button class="ghost" data-act="start" data-id="' + n.id + '"' + (n.running ? " disabled" : "") + '>Start</button>' : "") +
+        (n.metrics_addr ? '<a href="http://' + esc(n.metrics_addr) + '/metrics" target="_blank" rel="noopener">metrics</a>' : "") +
+        '</div></div>';
+    });
+    $("nodes").innerHTML = html;
+  }
+
+  function renderLoad(l) {
+    $("lAcked").textContent = fmt(l.acked); $("lTput").textContent = l.throughput.toFixed(l.throughput < 10 ? 1 : 0);
+    $("lP50").textContent = l.acked ? l.p50_ms.toFixed(1) + " ms" : "–"; $("lP99").textContent = l.acked ? l.p99_ms.toFixed(1) + " ms" : "–";
+    $("lFailed").textContent = fmt(l.failed); $("lDropped").textContent = fmt(l.dropped);
+    $("tFailed").className = "tile" + (l.failed ? " bad" : ""); $("tDropped").className = "tile" + (l.dropped ? " bad" : "");
+    $("lErr").textContent = l.last_error ? "Last error: " + l.last_error : "";
+    $("startLoad").disabled = l.running; $("stopLoad").disabled = !l.running; $("resetLoad").disabled = l.running;
+    tput.push(l.throughput); p99.push(l.p99_ms);
+    if (tput.length > HIST) { tput.shift(); p99.shift(); }
+    drawChart();
+  }
+
+  function drawChart() {
+    var cv = $("chart"), dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = w * dpr; cv.height = h * dpr;
+    var c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, h);
+    c.strokeStyle = css("--line"); c.lineWidth = 1;
+    for (var g = 1; g < 4; g++) { c.beginPath(); c.moveTo(0, h * g / 4); c.lineTo(w, h * g / 4); c.stroke(); }
+    function line(data, color) {
+      var max = Math.max.apply(null, data.concat([1])); c.strokeStyle = color; c.lineWidth = 2; c.beginPath();
+      data.forEach(function (v, i) { var x = w * i / (HIST - 1) + w * (HIST - data.length) / (HIST - 1), y = h - 4 - (h - 8) * v / max; if (i === 0) c.moveTo(x, y); else c.lineTo(x, y); });
+      c.stroke();
+    }
+    if (tput.length > 1) { line(tput, css("--accent")); line(p99, css("--warn")); }
+  }
+
+  function renderTopics(st) {
+    $("topics").innerHTML = st.topics.length ? st.topics.map(function (t) { return "<tr><td>" + esc(t.name) + '</td><td class="n">' + t.partitions + '</td><td class="n">' + fmt(t.messages) + "</td></tr>"; }).join("")
+      : '<tr><td colspan="3" class="fine">No topics yet. Start the writes to create one.</td></tr>';
+    $("topicsErr").textContent = st.topics_error ? "Could not read the topics just now: " + st.topics_error : "";
+  }
+
+  function renderEvents(ev) {
+    $("events").innerHTML = ev.slice().reverse().map(function (e) {
+      var t = new Date(e.at).toLocaleTimeString([], { hour12: false });
+      return '<div><time>' + t + '</time><span class="' + esc(e.kind) + '">' + esc(e.text) + "</span></div>";
+    }).join("") || '<div class="fine">Nothing has happened yet.</div>';
+  }
+
+  function tick() {
+    fetch("/api/state", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (st) {
+      renderStatus(st.summary); renderNodes(st); renderLoad(st.load); renderTopics(st); renderEvents(st.events);
+      $("control").textContent = st.control ? "This console runs the nodes: Kill stops a node's process at once, as a crash would; Start brings it back with the data it had."
+        : "This console only watches the cluster; it does not run the nodes, so it cannot stop them.";
+    }).catch(function () { $("status").className = "status bad"; $("status").textContent = "The console cannot reach its server"; });
+  }
+
+  $("nodes").addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-act]"); if (!b) return;
+    b.disabled = true;
+    post("/api/nodes/" + b.dataset.id + "/" + b.dataset.act).then(tick).catch(function (err) { alert(err.message); tick(); });
+  });
+  $("startLoad").addEventListener("click", function () { post("/api/load", { rate: parseInt($("rate").value, 10) || 0 }).then(tick).catch(function (err) { alert(err.message); }); });
+  $("stopLoad").addEventListener("click", function () { post("/api/load/stop").then(tick); });
+  $("resetLoad").addEventListener("click", function () { post("/api/load/reset").then(function () { tput = []; p99 = []; $("verdict").hidden = true; tick(); }).catch(function (err) { alert(err.message); }); });
+  $("verify").addEventListener("click", function () {
+    if (busy) return; busy = true; $("verify").disabled = true; $("verifyBusy").hidden = false;
+    post("/api/verify").then(function (v) {
+      var el = $("verdict"); el.hidden = false;
+      if (v.missing === 0) {
+        el.className = "verdict ok";
+        el.textContent = "Nothing lost: all " + fmt(v.acked) + " acknowledged writes are in the log (" + fmt(v.stored) + " messages stored" + (v.duplicates ? ", " + v.duplicates + " stored twice by retries" : "") + ")." + (v.untracked ? " " + fmt(v.untracked) + " later writes were not tracked." : "");
+      } else {
+        el.className = "verdict bad";
+        el.textContent = fmt(v.missing) + " of " + fmt(v.acked) + " acknowledged writes are MISSING from the log, for example " + (v.missing_examples || []).join(", ");
+      }
+    }).catch(function (err) { alert(err.message); }).then(function () { busy = false; $("verify").disabled = false; $("verifyBusy").hidden = true; tick(); });
+  });
+  window.addEventListener("resize", drawChart);
+
+  tick(); setInterval(tick, 700);
+})();
+</script>
+</body>
+</html>

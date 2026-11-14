@@ -1,12 +1,508 @@
 // Command raftlogctl is the command-line client for raftlog.
+//
+// Usage:
+//
+//	raftlogctl [-addr host:port[,host:port...]] [-timeout 10s] <command> [flags] <args>
+//
+// With several addresses, requests follow the cluster's leader and skip nodes
+// that are down. status asks only the first address.
+//
+// Commands:
+//
+//	status
+//	create-topic [-partitions N] <topic>
+//	produce      [-key K] [-value V | -lines] [-partition P] <topic>
+//	fetch        [-partition P] [-offset O] [-max N] [-wait D] <topic>
+//	commit       -group G [-partition P] -offset O <topic>
+//	offsets      -group G [-partition P] <topic>
+//	consume      -group G [-partition P] [-max N] [-wait D] <topic>
+//	topics
+//	groups
+//
+// consume reads from the group's committed offset (or from 0 if none), prints
+// the messages, then commits the offset after the last one it printed, so
+// running it again continues where it stopped (at-least-once delivery).
+//
+// With -wait, fetch and consume wait up to that long for a message when there is
+// nothing to read yet, and return as soon as one arrives. -timeout must be longer.
+//
+// produce reads the value from stdin when -value is not given. With -lines,
+// every line of stdin is sent as one message.
 package main
 
-import "fmt"
+import (
+	"bufio"
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"time"
+
+	"google.golang.org/grpc/status"
+
+	pb "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1"
+	"github.com/nguyenhoangkhang-2010/raftlog/client"
+)
 
 // version is set at build time via -ldflags.
 var version = "dev"
 
+const (
+	envAddr     = "RAFTLOG_ADDR"
+	defaultAddr = "localhost:9092"
+)
+
 func main() {
-	// TODO(phase 1): subcommands: create-topic, produce, fetch, commit.
-	fmt.Printf("raftlogctl %s\n", version)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	code := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv)
+	stop()
+	os.Exit(code)
+}
+
+// run executes one command and returns the process exit code:
+// 0 success, 1 failure, 2 usage error.
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	addr := defaultAddr
+	if v := getenv(envAddr); v != "" {
+		addr = v
+	}
+
+	fs := flag.NewFlagSet("raftlogctl", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&addr, "addr", addr, "broker address, or several separated by commas for a cluster ["+envAddr+"]")
+	timeout := fs.Duration("timeout", 10*time.Second, "request timeout")
+	retries := fs.Int("retries", 0, "maximum attempts per request when following the leader or skipping unreachable nodes; 0 = keep trying until -timeout")
+	pause := fs.Duration("retry-pause", 100*time.Millisecond, "wait before retrying when no node can answer yet")
+	showVersion := fs.Bool("version", false, "print the version and exit")
+	fs.Usage = func() { usage(stderr) }
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if *showVersion {
+		fmt.Fprintln(stdout, "raftlogctl", version)
+		return 0
+	}
+	if fs.NArg() == 0 {
+		usage(stderr)
+		return 2
+	}
+	cmd, rest := fs.Arg(0), fs.Args()[1:]
+
+	addrs, err := splitAddrs(addr)
+	if err != nil || *retries < 0 {
+		fmt.Fprintln(stderr, "raftlogctl: need at least one -addr and a -retries that is not negative")
+		return 2
+	}
+	cluster, err := client.NewRouter(addrs, client.WithMaxAttempts(*retries), client.WithRetryPause(*pause))
+	if err != nil {
+		fmt.Fprintln(stderr, "raftlogctl:", err)
+		return 2
+	}
+	defer cluster.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+
+	var code int
+	switch cmd {
+	case "create-topic":
+		code = cmdCreateTopic(ctx, cluster, rest, stderr)
+	case "produce":
+		code = cmdProduce(ctx, cluster, rest, stdin, stdout, stderr)
+	case "fetch":
+		code = cmdFetch(ctx, cluster, rest, stdout, stderr)
+	case "status":
+		code = cmdStatus(ctx, cluster, rest, stdout, stderr)
+	case "commit":
+		code = cmdCommit(ctx, cluster, rest, stderr)
+	case "offsets":
+		code = cmdOffsets(ctx, cluster, rest, stdout, stderr)
+	case "consume":
+		code = cmdConsume(ctx, cluster, rest, stdout, stderr)
+	case "topics":
+		code = cmdTopics(ctx, cluster, rest, stdout, stderr)
+	case "groups":
+		code = cmdGroups(ctx, cluster, rest, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "raftlogctl: unknown command %q\n", cmd)
+		usage(stderr)
+		return 2
+	}
+	return code
+}
+
+func usage(w io.Writer) {
+	fmt.Fprint(w, `usage: raftlogctl [-addr host:port[,host:port...]] [-timeout 10s] <command> [flags] <args>
+
+commands:
+  status
+  create-topic [-partitions N] <topic>
+  produce      [-key K] [-value V | -lines] [-partition P] <topic>
+  fetch        [-partition P] [-offset O] [-max N] [-wait D] <topic>
+  commit       -group G [-partition P] -offset O <topic>
+  offsets      -group G [-partition P] <topic>
+  consume      -group G [-partition P] [-max N] [-wait D] <topic>
+  topics       (every topic, its partitions and how many messages each holds)
+  groups       (every consumer group, its position and lag per partition)
+`)
+}
+
+// newFlags returns a flag set for a subcommand that reports errors to stderr.
+func newFlags(name string, stderr io.Writer) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	return fs
+}
+
+// parse parses subcommand arguments and requires exactly one positional argument (the topic).
+func parse(fs *flag.FlagSet, args []string, stderr io.Writer) (topic string, code int, ok bool) {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return "", 0, false
+		}
+		return "", 2, false
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintf(stderr, "raftlogctl %s: expected exactly one <topic> argument\n", fs.Name())
+		return "", 2, false
+	}
+	return fs.Arg(0), 0, true
+}
+
+// fail prints a gRPC error as "<code>: <message>" and returns exit code 1.
+func fail(stderr io.Writer, err error) int {
+	if st, ok := status.FromError(err); ok {
+		fmt.Fprintf(stderr, "raftlogctl: %s: %s\n", st.Code(), st.Message())
+	} else {
+		fmt.Fprintln(stderr, "raftlogctl:", err)
+	}
+	return 1
+}
+
+func cmdCreateTopic(ctx context.Context, c pb.BrokerClient, args []string, stderr io.Writer) int {
+	fs := newFlags("create-topic", stderr)
+	partitions := fs.Uint("partitions", 1, "number of partitions")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+	if _, err := c.CreateTopic(ctx, &pb.CreateTopicRequest{Topic: topic, Partitions: uint32(*partitions)}); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
+}
+
+func cmdProduce(ctx context.Context, c pb.BrokerClient, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := newFlags("produce", stderr)
+	key := fs.String("key", "", "message key (decides the partition)")
+	value := fs.String("value", "", "message value; read from stdin if not given")
+	lines := fs.Bool("lines", false, "send every line of stdin as one message")
+	partition := fs.Int("partition", -1, "partition to write to; -1 lets the broker choose")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+
+	valueSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "value" {
+			valueSet = true
+		}
+	})
+	if valueSet && *lines {
+		fmt.Fprintln(stderr, "raftlogctl produce: -value and -lines cannot be used together")
+		return 2
+	}
+
+	var msgs []*pb.Message
+	switch {
+	case valueSet:
+		msgs = append(msgs, &pb.Message{Key: []byte(*key), Value: []byte(*value)})
+	case *lines:
+		sc := bufio.NewScanner(stdin)
+		sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+		for sc.Scan() {
+			msgs = append(msgs, &pb.Message{Key: []byte(*key), Value: append([]byte(nil), sc.Bytes()...)})
+		}
+		if err := sc.Err(); err != nil {
+			fmt.Fprintln(stderr, "raftlogctl: read stdin:", err)
+			return 1
+		}
+	default:
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			fmt.Fprintln(stderr, "raftlogctl: read stdin:", err)
+			return 1
+		}
+		msgs = append(msgs, &pb.Message{Key: []byte(*key), Value: data})
+	}
+	if len(msgs) == 0 {
+		fmt.Fprintln(stderr, "raftlogctl produce: nothing to send")
+		return 1
+	}
+
+	req := &pb.ProduceRequest{Topic: topic, Messages: msgs}
+	if *partition >= 0 {
+		p := uint32(*partition)
+		req.Partition = &p
+	}
+	resp, err := c.Produce(ctx, req)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "partition=%d base_offset=%d count=%d\n", resp.Partition, resp.BaseOffset, len(msgs))
+	return 0
+}
+
+// cmdStatus prints the Raft state of the node that -addr points to. To see the
+// whole cluster, run it once per node.
+func cmdStatus(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	fs := newFlags("status", stderr)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "raftlogctl status: takes no arguments")
+		return 2
+	}
+	resp, err := c.NodeStatus(ctx, &pb.NodeStatusRequest{})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if !resp.RaftEnabled {
+		fmt.Fprintln(stdout, "raft=disabled (standalone node)")
+		return 0
+	}
+	fmt.Fprintf(stdout, "node=%d role=%s term=%d leader=%d commit=%d last=%d snapshot=%d\n",
+		resp.NodeId, resp.Role, resp.Term, resp.LeaderId, resp.CommitIndex, resp.LastIndex, resp.SnapshotIndex)
+	return 0
+}
+
+// noArgs parses a subcommand that takes no flags and no arguments.
+func noArgs(name string, args []string, stderr io.Writer) (code int, ok bool) {
+	fs := newFlags(name, stderr)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0, false
+		}
+		return 2, false
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "raftlogctl %s: takes no arguments\n", name)
+		return 2, false
+	}
+	return 0, true
+}
+
+// cmdTopics lists the topics of the node that answers: one line each, with the end
+// offset of every partition.
+func cmdTopics(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	if code, ok := noArgs("topics", args, stderr); !ok {
+		return code
+	}
+	resp, err := c.ListTopics(ctx, &pb.ListTopicsRequest{})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	for _, t := range resp.Topics {
+		var total uint64
+		ends := make([]string, len(t.EndOffsets))
+		for i, e := range t.EndOffsets {
+			total += e
+			ends[i] = strconv.FormatUint(e, 10)
+		}
+		fmt.Fprintf(stdout, "topic=%s partitions=%d messages=%d ends=%s\n", t.Name, len(t.EndOffsets), total, strings.Join(ends, ","))
+	}
+	return 0
+}
+
+// cmdGroups lists the consumer groups of the node that answers: one line for every
+// partition a group has committed in.
+func cmdGroups(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	if code, ok := noArgs("groups", args, stderr); !ok {
+		return code
+	}
+	resp, err := c.ListGroups(ctx, &pb.ListGroupsRequest{})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	for _, g := range resp.Groups {
+		for _, p := range g.Partitions {
+			fmt.Fprintf(stdout, "group=%s topic=%s partition=%d offset=%d end=%d lag=%d\n", g.Group, p.Topic, p.Partition, p.Offset, p.EndOffset, p.Lag)
+		}
+	}
+	return 0
+}
+
+// requireGroup checks that -group was given.
+func requireGroup(name, group string, stderr io.Writer) bool {
+	if group == "" {
+		fmt.Fprintf(stderr, "raftlogctl %s: -group is required\n", name)
+		return false
+	}
+	return true
+}
+
+func cmdCommit(ctx context.Context, c pb.BrokerClient, args []string, stderr io.Writer) int {
+	fs := newFlags("commit", stderr)
+	group := fs.String("group", "", "consumer group name (required)")
+	partition := fs.Uint("partition", 0, "partition")
+	offset := fs.Uint64("offset", 0, "next offset the group will read (required)")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+	offsetSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "offset" {
+			offsetSet = true
+		}
+	})
+	if !requireGroup("commit", *group, stderr) {
+		return 2
+	}
+	if !offsetSet {
+		fmt.Fprintln(stderr, "raftlogctl commit: -offset is required")
+		return 2
+	}
+	if _, err := c.CommitOffset(ctx, &pb.CommitOffsetRequest{
+		Group: *group, Topic: topic, Partition: uint32(*partition), Offset: *offset,
+	}); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
+}
+
+func cmdOffsets(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	fs := newFlags("offsets", stderr)
+	group := fs.String("group", "", "consumer group name (required)")
+	partition := fs.Uint("partition", 0, "partition")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+	if !requireGroup("offsets", *group, stderr) {
+		return 2
+	}
+	resp, err := c.FetchOffset(ctx, &pb.FetchOffsetRequest{Group: *group, Topic: topic, Partition: uint32(*partition)})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "group=%s topic=%s partition=%d committed=%t offset=%d end=%d lag=%d\n",
+		*group, topic, *partition, resp.Committed, resp.Offset, resp.EndOffset, resp.Lag)
+	return 0
+}
+
+// checkWait refuses a -wait that the request deadline would cut short: the
+// command would then fail with a timeout instead of returning "nothing yet".
+func checkWait(ctx context.Context, wait time.Duration, stderr io.Writer) bool {
+	if wait < 0 {
+		fmt.Fprintln(stderr, "raftlogctl: -wait must not be negative")
+		return false
+	}
+	if dl, ok := ctx.Deadline(); ok && wait > 0 && time.Until(dl) <= wait {
+		fmt.Fprintf(stderr, "raftlogctl: -wait %v does not fit in -timeout; raise -timeout above it\n", wait)
+		return false
+	}
+	return true
+}
+
+// waitMillis converts a wait to the milliseconds the API carries, capped at the
+// largest it can express.
+func waitMillis(wait time.Duration) uint32 {
+	if ms := wait.Milliseconds(); ms < math.MaxUint32 {
+		return uint32(ms)
+	}
+	return math.MaxUint32
+}
+
+func cmdConsume(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	fs := newFlags("consume", stderr)
+	group := fs.String("group", "", "consumer group name (required)")
+	partition := fs.Uint("partition", 0, "partition to read")
+	limit := fs.Uint("max", 10, "maximum number of messages")
+	wait := fs.Duration("wait", 0, "if there is nothing to read, wait up to this long for a message (must be shorter than -timeout)")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+	if !requireGroup("consume", *group, stderr) {
+		return 2
+	}
+	if !checkWait(ctx, *wait, stderr) {
+		return 2
+	}
+
+	pos, err := c.FetchOffset(ctx, &pb.FetchOffsetRequest{Group: *group, Topic: topic, Partition: uint32(*partition)})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	resp, err := c.Fetch(ctx, &pb.FetchRequest{
+		Topic:       topic,
+		Partition:   uint32(*partition),
+		Offset:      pos.Offset,
+		MaxMessages: uint32(*limit),
+		MaxWaitMs:   waitMillis(*wait),
+	})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(resp.Messages) == 0 {
+		return 0
+	}
+	for _, m := range resp.Messages {
+		fmt.Fprintf(stdout, "%d\t%d\t%s\t%s\n", m.Offset, m.TimestampMs, strconv.Quote(string(m.Key)), strconv.Quote(string(m.Value)))
+	}
+
+	// Commit only after the messages were printed: a crash in between means the
+	// next run prints them again (at-least-once), never that they are skipped.
+	next := resp.Messages[len(resp.Messages)-1].Offset + 1
+	if _, err := c.CommitOffset(ctx, &pb.CommitOffsetRequest{
+		Group: *group, Topic: topic, Partition: uint32(*partition), Offset: next,
+	}); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
+}
+
+func cmdFetch(ctx context.Context, c pb.BrokerClient, args []string, stdout, stderr io.Writer) int {
+	fs := newFlags("fetch", stderr)
+	partition := fs.Uint("partition", 0, "partition to read")
+	offset := fs.Uint64("offset", 0, "first offset to read")
+	limit := fs.Uint("max", 10, "maximum number of messages")
+	wait := fs.Duration("wait", 0, "if there is nothing to read, wait up to this long for a message (must be shorter than -timeout)")
+	topic, code, ok := parse(fs, args, stderr)
+	if !ok {
+		return code
+	}
+	if !checkWait(ctx, *wait, stderr) {
+		return 2
+	}
+
+	resp, err := c.Fetch(ctx, &pb.FetchRequest{
+		Topic:       topic,
+		Partition:   uint32(*partition),
+		Offset:      *offset,
+		MaxMessages: uint32(*limit),
+		MaxWaitMs:   waitMillis(*wait),
+	})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	for _, m := range resp.Messages {
+		fmt.Fprintf(stdout, "%d\t%d\t%s\t%s\n", m.Offset, m.TimestampMs, strconv.Quote(string(m.Key)), strconv.Quote(string(m.Value)))
+	}
+	return 0
 }

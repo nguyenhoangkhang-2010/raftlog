@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package raftlog.v1;
+
+option go_package = "github.com/nguyenhoangkhang-2010/raftlog/api/raftlog/v1;raftlogv1";
+
+// What goes into the replicated Raft log. Every node applies the same commands
+// in the same order, so applying one must depend on nothing but the command and
+// the state built by earlier commands: the leader decides the partition and the
+// timestamps before it proposes, and the offsets follow from the order.
+message Command {
+  oneof command {
+    CreateTopicCommand create_topic = 1;
+    ProduceCommand produce = 2;
+    CommitOffsetCommand commit_offset = 3;
+  }
+}
+
+message CreateTopicCommand {
+  string topic = 1;
+  uint32 partitions = 2;
+}
+
+message ProduceCommand {
+  string topic = 1;
+  // Already chosen by the leader.
+  uint32 partition = 2;
+  repeated StoredMessage messages = 3;
+}
+
+message CommitOffsetCommand {
+  string group = 1;
+  string topic = 2;
+  uint32 partition = 3;
+  uint64 offset = 4;
+}
+
+// A message as stored. Its offset is its position in the partition.
+message StoredMessage {
+  bytes key = 1;
+  bytes value = 2;
+  // Set by the leader when the producer left it empty.
+  int64 timestamp_ms = 3;
+}
+
+// The whole state of the broker, for Raft snapshots.
+message StateSnapshot {
+  // Index of the last Raft log entry that is reflected in this state.
+  uint64 applied_index = 1;
+  repeated TopicState topics = 2;
+  repeated GroupOffset offsets = 3;
+}
+
+message TopicState {
+  string name = 1;
+  repeated PartitionState partitions = 2;
+}
+
+message PartitionState {
+  repeated StoredMessage messages = 1;
+}
+
+message GroupOffset {
+  string group = 1;
+  string topic = 2;
+  uint32 partition = 3;
+  uint64 offset = 4;
+}

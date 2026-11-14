@@ -10,6 +10,15 @@ service Broker {
   rpc Produce(ProduceRequest) returns (ProduceResponse);
   rpc Fetch(FetchRequest) returns (FetchResponse);
   rpc CommitOffset(CommitOffsetRequest) returns (CommitOffsetResponse);
+  rpc FetchOffset(FetchOffsetRequest) returns (FetchOffsetResponse);
+  // NodeStatus reports the Raft state of the node that answers.
+  rpc NodeStatus(NodeStatusRequest) returns (NodeStatusResponse);
+  // ListTopics describes every topic of the node that answers, with the end offset
+  // of each partition.
+  rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
+  // ListGroups describes every consumer group that has committed an offset, with
+  // its position and lag in each partition.
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
 }
 
 message Message {
@@ -29,6 +38,9 @@ message CreateTopicResponse {}
 message ProduceRequest {
   string topic = 1;
   repeated Message messages = 2;
+  // If unset, the broker picks the partition from the key of the first message.
+  // All messages in one request go to the same partition.
+  optional uint32 partition = 3;
 }
 message ProduceResponse {
   uint32 partition = 1;
@@ -40,6 +52,10 @@ message FetchRequest {
   uint32 partition = 2;
   uint64 offset = 3;
   uint32 max_messages = 4;
+  // If there is nothing to read at offset, wait up to this many milliseconds for
+  // a message to arrive before answering with an empty response (long poll).
+  // 0 answers at once. The server may shorten the wait to its own limit.
+  uint32 max_wait_ms = 5;
 }
 message FetchResponse {
   repeated Message messages = 1;
@@ -53,5 +69,71 @@ message CommitOffsetRequest {
 }
 message CommitOffsetResponse {}
 
+message NodeStatusRequest {}
+message NodeStatusResponse {
+  // False when the node runs standalone (no node ID configured).
+  bool raft_enabled = 1;
+  uint64 node_id = 2;
+  // "follower", "candidate" or "leader".
+  string role = 3;
+  uint64 term = 4;
+  // The node this node believes is the leader; 0 if it does not know.
+  uint64 leader_id = 5;
+  // Highest log index known to be committed, and the last index of the log.
+  uint64 commit_index = 6;
+  uint64 last_index = 7;
+  // Last log index covered by the latest snapshot; 0 if there is none.
+  uint64 snapshot_index = 8;
+}
+
+message FetchOffsetRequest {
+  string group = 1;
+  string topic = 2;
+  uint32 partition = 3;
+}
+message FetchOffsetResponse {
+  // False if the group has not committed an offset for this partition yet;
+  // offset is then 0 and the consumer should start from the beginning.
+  bool committed = 1;
+  // The committed offset: the next offset the group will consume.
+  uint64 offset = 2;
+  // The offset the next produced message will get.
+  uint64 end_offset = 3;
+  // end_offset - offset, i.e. how many messages the group has not consumed.
+  uint64 lag = 4;
+}
+
 // TODO(phase 3): internal Raft RPCs (RequestVote, AppendEntries, InstallSnapshot)
 // live in api/raftlog/v1/raft.proto.
+
+message ListTopicsRequest {}
+message TopicDescription {
+  string name = 1;
+  // end_offsets[i] is the offset the next message of partition i will get, which
+  // is also how many messages the partition holds.
+  repeated uint64 end_offsets = 2;
+}
+message ListTopicsResponse {
+  // Sorted by name.
+  repeated TopicDescription topics = 1;
+}
+
+message ListGroupsRequest {}
+message GroupPartitionInfo {
+  string topic = 1;
+  uint32 partition = 2;
+  // The committed offset: the next one the group will read.
+  uint64 offset = 3;
+  uint64 end_offset = 4;
+  // end_offset - offset.
+  uint64 lag = 5;
+}
+message GroupDescription {
+  string group = 1;
+  // Sorted by topic, then partition.
+  repeated GroupPartitionInfo partitions = 2;
+}
+message ListGroupsResponse {
+  // Sorted by group.
+  repeated GroupDescription groups = 1;
+}
