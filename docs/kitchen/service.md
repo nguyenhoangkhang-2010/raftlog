@@ -7,7 +7,7 @@ topic**. Its orders and its stock are built by reading that topic, so a service 
 and started again, or a new one on another machine, comes back with the same state. The people
 who may use it are accounts in a PostgreSQL database (or, to try it out, a file of tokens). The
 design and its costs are in [ADR 13](../adr/0013-order-service-on-one-log.md) for the orders and
-[ADR 14](../adr/0014-accounts-in-postgresql.md) for the accounts, [ADR 15](../adr/0015-menu-in-postgresql.md) for the menu.
+[ADR 14](../adr/0014-accounts-in-postgresql.md) for the accounts, [ADR 15](../adr/0015-menu-in-postgresql.md) for the menu, [ADR 16](../adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md) for the warehouse.
 
 ## Run it
 
@@ -80,6 +80,7 @@ resets it on the Users screen, or this does).
 | `-listen` | HTTP address (`ORDERSERVICE_LISTEN`) | `127.0.0.1:8100` |
 | `-topic` | the topic of the log, created with one partition if missing (`ORDERSERVICE_TOPIC`) | `kitchen` |
 | `-timezone` | the venue's zone; prices by time of day follow its clock (`ORDERSERVICE_TIMEZONE`) | `Local` |
+| `-expiry-warning` | how long before it expires a lot of goods is flagged on the warehouse screen (`ORDERSERVICE_EXPIRY_WARNING`) | `72h` |
 | `-command-timeout` | time allowed to one command, including the wait for the log | `10s` |
 
 ## The menu, the promotions and the users
@@ -180,8 +181,14 @@ answer or a timeout, does not do it twice.
 | `POST /api/orders/{id}/cancel-request` | customer, cashier, manager | `reason`; for a paid order |
 | `POST /api/orders/{id}/cancel-approve`, `cancel-reject` | manager (never for their own request) | `refund`; `reason` |
 | `POST /api/orders/{id}/refund` | manager | `amount`, `reason`; for a completed order |
-| `GET /api/stock` | kitchen, manager, storekeeper | |
-| `POST /api/stock/receive`, `write-off`, `count` | storekeeper (`receive`); storekeeper, manager (the others) | `ingredient`, `qty`, `reason` (needed for `write-off` and `count`) |
+| `GET /api/stock` | kitchen, manager, storekeeper | the quantity of each ingredient |
+| `GET /api/warehouse` | `stock.view` (kitchen, manager, storekeeper) | each ingredient with its lots (date, supplier, document, left) and what needs attention; prices and values only for `stock.view_cost` (manager, storekeeper); with a database also the names and units of the ingredients and the suppliers |
+| `POST /api/warehouse/receive` | storekeeper | a delivery: `command_id`, `supplier`, `document`, and `lines` of `ingredient`, `qty`, `total_cost` (đồng, for the whole line) and `expires` (the last day it may be used, `2026-12-31`). Written line by line under `<command_id>-01`, ...; sending it again finishes it |
+| `POST /api/stock/receive`, `write-off`, `count`, `adjust` | storekeeper (`receive`); storekeeper, manager (the others) | `ingredient`, `qty`, `reason` (needed for all but `receive`); `receive` also takes `expires`, `total_cost`, `supplier`, `document`; `write-off` takes `lot` and `cause` (`spoiled`, `expired`, `spilled`, `other`); `adjust` takes a signed `qty` |
+| `GET /api/warehouse/ledger?ingredient=&limit=` | `stock.view` | the movements of an ingredient, newest first (the latest 1000 are kept) |
+| `GET /api/warehouse/receipts`, `GET /api/warehouse/waste?from=&to=` | `stock.view` | the latest deliveries; what was written off or found missing, by ingredient and cause, between two days (default: the last 30) |
+| `GET /api/suppliers`, `POST /api/suppliers`, `PUT /api/suppliers/{id}`, `PUT /api/ingredients/{ingredient}` | read: `stock.view`; write: `warehouse.manage` (storekeeper, manager) | suppliers (made inactive, never deleted) and the name, unit and shelf life of an ingredient; only with a database |
+| `GET /api/stocktakes`, `GET /api/stocktakes/current`, `POST /api/stocktakes`, `PUT /api/stocktakes/{id}/lines`, `DELETE .../lines/{ingredient}`, `POST .../apply`, `POST .../cancel` | `stock.adjust` (storekeeper, manager) | a stocktake: start it, count ingredient by ingredient (`ingredient`, `counted`), apply it once (the differences are written to the log) or throw it away; only with a database |
 | `GET /api/stream` | anyone signed in | server-sent events, see below |
 | `GET /healthz` | anyone | `status`, number of orders, offset of the next record, skipped records, and with accounts whether the database answers |
 
@@ -273,7 +280,7 @@ signs out. A browser holds one session per site: two people on one browser profi
 | **Till** | cashier, runner | three columns: to pay, in the kitchen, ready to hand over. Payment by cash (with the change, and quick amounts), card or transfer (with a reference); "Hand over" |
 | **Kitchen** | kitchen, for their own station | what is waiting and what is being made, with customer notes. When a cancellation is waiting for the manager, "Done" is held back and the card says so |
 | **Manager** | manager | the day's counts and money (taken, refunded, net), cancellation requests with the refund that the rules allow (from 0 to the total once work began, the whole total before), refunds for completed orders, and a lookup of one order's audit trail |
-| **Stock** | storekeeper (receive, write off, count); kitchen and manager (look) | the quantity of each ingredient, flagged when low or out |
+| **Stock** (the warehouse) | storekeeper (everything); manager (look, write off, stocktake, suppliers); kitchen (look) | tabs: **Stock**, each ingredient with its lots and what needs attention (low, expires soon, expired), a way to write off from a lot with a cause; **Receive**, a delivery with its supplier, document and a line for each ingredient with a price and a last day, the date suggested from the ingredient's shelf life; **History**, the movements of an ingredient and the latest deliveries; **Waste**, what was lost by ingredient and cause over a period; **Stocktake**, counting ingredient by ingredient over as long as it takes and applying the differences once; **Suppliers**, with the names, units and shelf lives of the ingredients. Prices and values are shown to the manager and the storekeeper only; the last three tabs need a database |
 | **Menu** | manager | the items with a photo, a price and a switch to hide one; an editor for one item (name, category, station, price, recipe, groups of options with their extra price and ingredients, prices by day and time, a photo to upload), combos, the thresholds at which an ingredient is flagged as low, the history of versions with "Put back", and the whole document as text for anything the forms do not cover. A save is in use at once; if another manager saved first, the screen says so instead of overwriting |
 | **Promotions** | manager | the offers with an editor for one (percent off, amount off, buy some and get some free; a code or automatic; least subtotal, dates, categories or items, once for each customer, priority), the history and the text view |
 | **Users** | administrator | the accounts with their state (active, must change password, locked, disabled), a form to create and edit them (roles; a station for kitchen workers), and per account: unlock, disable or enable, reset password, end sessions, history. A temporary password is shown once, with a copy button. Below, the trail of sign-ins and changes. On a phone the table becomes a stack of cards |
@@ -341,6 +348,7 @@ browser tests yet.
 - **Deciding a command.** Under one lock the service reads the order from its state, asks the
   domain core whether the command is allowed, checks the stock for a payment or the movement for a
   stock command, appends the event, and applies it. Nothing is written for a command that is refused.
+- **The stock is in lots** ([ADR 16](../adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md)). A delivery makes a lot with a date and a price; an order takes from the lot that expires first, never from one that has expired by the time of the payment (the time in the event decides, so a restart decides alike), and a cancellation before work began gives back to the same lot. The quantity of an ingredient is the sum of its lots. A record written before lots existed is a lot with no date and no price.
 - **Order numbers** count from 1 in the order the log holds the orders. They are chosen when the
   order is placed, from the state, so unlike an offset they cannot be known before the write: this
   is why there must be one writer.
@@ -360,7 +368,7 @@ browser tests yet.
 
 ## What is not here
 
-Shifts and the cash drawer, reports, a note typed with a save of the menu and a comparison of two
+Shifts and the cash drawer, reports (the warehouse keeps only the latest 1000 movements of an ingredient in memory, so its waste report is not an audit), units that convert, reorder points, a correction of a delivery already received, a note typed with a save of the menu and a comparison of two
 versions, customers who register themselves and points (the accounts are made by an administrator for now),
 several writers or read-only replicas, snapshots of the state, automated browser tests of the
 screens, and a printed receipt or a display for customers waiting. A change of the menu is seen at once

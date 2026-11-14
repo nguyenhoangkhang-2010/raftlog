@@ -47,6 +47,7 @@ const (
 	envPromos   = "ORDERSERVICE_PROMOTIONS"
 	envUsers    = "ORDERSERVICE_USERS"
 	envTimezone = "ORDERSERVICE_TIMEZONE"
+	envExpiry   = "ORDERSERVICE_EXPIRY_WARNING"
 
 	envDatabase      = "ORDERSERVICE_DATABASE_URL"
 	envSessionIdle   = "ORDERSERVICE_SESSION_IDLE"
@@ -77,6 +78,8 @@ type config struct {
 	usersFile  string
 	location   *time.Location
 	commandTO  time.Duration
+	// expiryWarn is how long before it expires a lot of goods is flagged.
+	expiryWarn time.Duration
 	startTO    time.Duration
 	readBatch  int
 	jsonLogs   bool
@@ -126,6 +129,14 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	menuFile, promoFile, usersFile := getenv(envMenu), getenv(envPromos), getenv(envUsers)
 	tz := orDefault(getenv(envTimezone), defaultTimezone)
 	cfg.databaseURL = getenv(envDatabase)
+	cfg.expiryWarn = 72 * time.Hour
+	if v := getenv(envExpiry); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return config{}, fmt.Errorf("%s: %w", envExpiry, err)
+		}
+		cfg.expiryWarn = d
+	}
 	cfg.sessionIdle, cfg.sessionMax = defaultSessionIdle, defaultSessionMax
 	if v := getenv(envSessionIdle); v != "" {
 		d, err := time.ParseDuration(v)
@@ -157,6 +168,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	fs.DurationVar(&cfg.sessionMax, "session-max", cfg.sessionMax, "a session ends this long after sign-in at the latest ["+envSessionMax+"]")
 	fs.BoolVar(&cfg.secureCookies, "secure-cookies", cfg.secureCookies, "mark the session cookie Secure although the service listens on plain HTTP: set it behind a proxy that does TLS ["+envSecureCookies+"]")
 	fs.StringVar(&tz, "timezone", tz, "the venue's time zone, such as Asia/Ho_Chi_Minh: prices by time of day follow its clock ["+envTimezone+"]")
+	fs.DurationVar(&cfg.expiryWarn, "expiry-warning", cfg.expiryWarn, "how long before it expires a lot of goods is flagged on the warehouse screen ["+envExpiry+"]")
 	fs.DurationVar(&cfg.commandTO, "command-timeout", defaultCommandTime, "time allowed to one command, including the wait for the log")
 	fs.DurationVar(&cfg.startTO, "start-timeout", defaultStartTime, "time allowed to connect and read the whole log at start")
 	fs.IntVar(&cfg.readBatch, "read-batch", defaultReadBatch, "log entries read at a time when rebuilding the state")
@@ -181,6 +193,8 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		return config{}, errors.New("nobody could use the service: give -database-url (people sign in with a password) or -users (tokens, for trying it out)")
 	case usersFile != "" && cfg.databaseURL != "":
 		return config{}, errors.New("-users and -database-url are two ways to sign in: give one")
+	case cfg.expiryWarn <= 0:
+		return config{}, errors.New("-expiry-warning must be positive")
 	case cfg.commandTO <= 0 || cfg.startTO <= 0 || cfg.readBatch < 1:
 		return config{}, errors.New("-command-timeout, -start-timeout and -read-batch must be positive")
 	case cfg.sessionIdle <= 0 || cfg.sessionMax <= 0 || cfg.sessionIdle > cfg.sessionMax:
@@ -236,10 +250,14 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 		if store, err = openCatalog(startCtx, pool, cfg, logger); err != nil {
 			return err
 		}
+		inv, err := openInventory(startCtx, pool, cfg, logger)
+		if err != nil {
+			return err
+		}
 		go purgeSessions(ctx, acc, logger)
 		apiOptions = append(apiOptions,
 			orderservice.WithAccounts(acc, orderservice.AccountsOptions{SecureCookies: cfg.secureCookies, MaxLifetime: cfg.sessionMax}),
-			orderservice.WithCatalog(store))
+			orderservice.WithCatalog(store), orderservice.WithInventory(inv))
 	}
 	// The menu and the promotions: from the database when there is one, else from the files.
 	m, lowAt, promos, err := startCatalog(startCtx, cfg, store, logger)
@@ -259,7 +277,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	}
 	svc, err := orderservice.Open(startCtx, l, orderservice.Options{
 		Menu: m, Promos: promos, LowAt: lowAt, Location: cfg.location, Logger: logger,
-		CommandTimeout: cfg.commandTO, ReadBatch: cfg.readBatch,
+		CommandTimeout: cfg.commandTO, ReadBatch: cfg.readBatch, ExpiryWarning: cfg.expiryWarn,
 	})
 	if err != nil {
 		return err

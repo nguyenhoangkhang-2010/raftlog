@@ -220,7 +220,7 @@ func (s *Service) Menu() MenuView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	at := s.at()
-	soldOut := s.st.stock.SoldOut(s.st.menu)
+	soldOut := s.st.stock.SoldOutAt(s.st.menu, at)
 	v := MenuView{Categories: s.st.menu.Categories()}
 	for _, it := range s.st.menu.Items() {
 		if !it.Active {

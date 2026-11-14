@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/inventory"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/menu"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/promo"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/stock"
@@ -109,4 +110,19 @@ func documentOf(ctx context.Context, store *catalog.Store, kind, file string, wi
 	}
 	logger.Info("the database had no "+kind+": version 1 was filled in", "from", note)
 	return saved, nil
+}
+
+// openInventory brings the schema of the warehouse data up to date (unless told not to) and returns
+// its store.
+func openInventory(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *slog.Logger) (*inventory.Store, error) {
+	if !cfg.noMigrate {
+		applied, err := pgmigrate.Apply(ctx, pool, inventory.Migrations(), pgmigrate.WithTable(inventory.MigrationsTable))
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range applied {
+			logger.Info("database migration applied", "migration", name)
+		}
+	}
+	return inventory.New(pool, nil), nil
 }

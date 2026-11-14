@@ -63,13 +63,29 @@ type StockMove struct {
 	At         time.Time   `json:"at"`
 	Kind       stock.Kind  `json:"kind"`
 	Ingredient string      `json:"ingredient"`
-	Qty        int64       `json:"qty"`
-	Reason     string      `json:"reason,omitempty"`
+	// Qty is the amount; for an adjustment it is signed.
+	Qty    int64  `json:"qty"`
+	Reason string `json:"reason,omitempty"`
+
+	// For goods received: when the lot expires (not set if it has no date), what was paid for all
+	// of it in whole đồng, who it came from (the ID of a supplier) and the number of the document.
+	Expires   *time.Time `json:"expires,omitempty"`
+	TotalCost int64      `json:"total_cost,omitempty"`
+	Supplier  string     `json:"supplier,omitempty"`
+	Document  string     `json:"document,omitempty"`
+	// For a write-off: the lot it was taken from, if one was named, and the cause.
+	Lot   string `json:"lot,omitempty"`
+	Cause string `json:"cause,omitempty"`
 }
 
 // Movement is the stock movement that this record stands for.
 func (m StockMove) Movement() stock.Movement {
-	return stock.Movement{Kind: m.Kind, Ingredient: stock.Ingredient(m.Ingredient), Qty: m.Qty, Reason: m.Reason, Ref: m.ID}
+	mv := stock.Movement{Kind: m.Kind, Ingredient: stock.Ingredient(m.Ingredient), Qty: m.Qty, Reason: m.Reason, Ref: m.ID, At: m.At,
+		TotalCost: m.TotalCost, Supplier: m.Supplier, Document: m.Document, FromLot: m.Lot, Cause: m.Cause}
+	if m.Expires != nil {
+		mv.ExpiresAt = *m.Expires
+	}
+	return mv
 }
 
 // ErrBadRecord is returned for a log entry that this version cannot read.
@@ -112,7 +128,7 @@ func DecodeRecord(data []byte) (Record, error) {
 		switch {
 		case m.ID == "" || m.By == "" || m.At.IsZero():
 			return Record{}, fmt.Errorf("%w: a stock movement needs an ID, a person and a time", ErrBadRecord)
-		case m.Kind != stock.Receive && m.Kind != stock.WriteOff && m.Kind != stock.Count:
+		case m.Kind != stock.Receive && m.Kind != stock.WriteOff && m.Kind != stock.Count && m.Kind != stock.Adjust:
 			return Record{}, fmt.Errorf("%w: a person cannot make a %q movement", ErrBadRecord, m.Kind)
 		}
 	}

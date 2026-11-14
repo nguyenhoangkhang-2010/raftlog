@@ -38,27 +38,29 @@ type Permission string
 
 // The permissions.
 const (
-	PlaceOrder    Permission = "order.place"
-	ViewOwnOrders Permission = "order.view_own"
-	ViewAllOrders Permission = "order.view_all"
-	RecordPayment Permission = "order.record_payment"
-	CancelUnpaid  Permission = "order.cancel_unpaid"
-	RequestCancel Permission = "order.request_cancel"
-	ApproveCancel Permission = "order.approve_cancel"
-	IssueRefund   Permission = "order.issue_refund"
-	StartTicket   Permission = "ticket.start"
-	FinishTicket  Permission = "ticket.finish"
-	HandOver      Permission = "order.hand_over"
-	ManageMenu    Permission = "menu.manage"
-	ManagePromos  Permission = "promo.manage"
-	ViewReports   Permission = "report.view"
-	ViewStock     Permission = "stock.view"
-	ReceiveStock  Permission = "stock.receive"
-	AdjustStock   Permission = "stock.adjust"
-	ManageUsers   Permission = "user.manage"
-	OpenShift     Permission = "shift.open"
-	CloseShift    Permission = "shift.close"
-	ViewAudit     Permission = "audit.view"
+	PlaceOrder      Permission = "order.place"
+	ViewOwnOrders   Permission = "order.view_own"
+	ViewAllOrders   Permission = "order.view_all"
+	RecordPayment   Permission = "order.record_payment"
+	CancelUnpaid    Permission = "order.cancel_unpaid"
+	RequestCancel   Permission = "order.request_cancel"
+	ApproveCancel   Permission = "order.approve_cancel"
+	IssueRefund     Permission = "order.issue_refund"
+	StartTicket     Permission = "ticket.start"
+	FinishTicket    Permission = "ticket.finish"
+	HandOver        Permission = "order.hand_over"
+	ManageMenu      Permission = "menu.manage"
+	ManagePromos    Permission = "promo.manage"
+	ViewReports     Permission = "report.view"
+	ViewStock       Permission = "stock.view"
+	ReceiveStock    Permission = "stock.receive"
+	AdjustStock     Permission = "stock.adjust"
+	ViewCosts       Permission = "stock.view_cost"
+	ManageWarehouse Permission = "warehouse.manage"
+	ManageUsers     Permission = "user.manage"
+	OpenShift       Permission = "shift.open"
+	CloseShift      Permission = "shift.close"
+	ViewAudit       Permission = "audit.view"
 )
 
 // matrix is the whole policy: the permissions of each role.
@@ -72,10 +74,10 @@ var matrix = map[Role][]Permission{
 	Runner:  {ViewAllOrders, HandOver},
 	Manager: {
 		ViewAllOrders, CancelUnpaid, RequestCancel, ApproveCancel, IssueRefund,
-		ManageMenu, ManagePromos, ViewReports, ViewStock, AdjustStock,
+		ManageMenu, ManagePromos, ViewReports, ViewStock, AdjustStock, ViewCosts, ManageWarehouse,
 		OpenShift, CloseShift, ViewAudit,
 	},
-	Storekeeper: {ViewStock, ReceiveStock, AdjustStock},
+	Storekeeper: {ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse},
 	Admin:       {ManageUsers, ViewAudit},
 }
 
@@ -109,7 +111,7 @@ func AllPermissions() []Permission {
 var declared = []Permission{
 	PlaceOrder, ViewOwnOrders, ViewAllOrders, RecordPayment, CancelUnpaid, RequestCancel,
 	ApproveCancel, IssueRefund, StartTicket, FinishTicket, HandOver, ManageMenu, ManagePromos,
-	ViewReports, ViewStock, ReceiveStock, AdjustStock, ManageUsers, OpenShift, CloseShift, ViewAudit,
+	ViewReports, ViewStock, ReceiveStock, AdjustStock, ViewCosts, ManageWarehouse, ManageUsers, OpenShift, CloseShift, ViewAudit,
 }
 
 // Valid reports whether r is one of the roles.

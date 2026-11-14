@@ -17,7 +17,7 @@ database, network or screen. The service that puts them on raftlog is described 
 | `rbac` | Seven roles and what each may do ([the table](roles.md)) |
 | `menu` | Items with options, combos, time-of-day prices; checks a customer's choice and freezes it into a priced line |
 | `promo` | Percentage, fixed and buy-x-get-y offers, with codes, limits and stacking rules |
-| `stock` | Ingredients as a count that never goes below zero, changed only by movements |
+| `stock` | Ingredients as lots (date, price, supplier) whose sum never goes below zero, changed only by movements; the lot that expires first is used first, an expired lot never |
 | `order` | The life of an order as events, who may cause each, and how it is rebuilt |
 
 ## The life of an order
@@ -89,7 +89,8 @@ enforced at the API, the menu and promotions kept in PostgreSQL as numbered vers
 edits on a screen ([ADR 15](../adr/0015-menu-in-postgresql.md)), accounts with a login in
 PostgreSQL ([ADR 14](../adr/0014-accounts-in-postgresql.md)), and the screens for the customer,
 the till, the kitchen, the manager, the storekeeper and the administrator, served by the service
-itself. Not done yet, and planned: shifts and the cash
+itself. The stock is kept in lots with dates, prices and suppliers, and has a warehouse screen
+([ADR 16](../adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md)). Not done yet, and planned: shifts and the cash
 drawer, reports, and customers who register and earn points. Not done: automated tests that drive
 the screens in a browser (they were checked by hand), a display for customers who are waiting, and
 printed receipts.
