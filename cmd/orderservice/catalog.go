@@ -16,6 +16,7 @@ import (
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/stock"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/orderservice"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/pgmigrate"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/shifts"
 )
 
 // openCatalog brings the schema of the catalog up to date (unless told not to) and returns its store.
@@ -125,4 +126,18 @@ func openInventory(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *
 		}
 	}
 	return inventory.New(pool, nil), nil
+}
+
+// openShifts brings the schema of the shifts up to date (unless told not to) and returns its store.
+func openShifts(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *slog.Logger) (*shifts.Store, error) {
+	if !cfg.noMigrate {
+		applied, err := pgmigrate.Apply(ctx, pool, shifts.Migrations(), pgmigrate.WithTable(shifts.MigrationsTable))
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range applied {
+			logger.Info("database migration applied", "migration", name)
+		}
+	}
+	return shifts.New(pool, nil), nil
 }

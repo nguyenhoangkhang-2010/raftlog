@@ -49,6 +49,7 @@ const (
 	envTimezone = "ORDERSERVICE_TIMEZONE"
 	envExpiry   = "ORDERSERVICE_EXPIRY_WARNING"
 	envBoard    = "ORDERSERVICE_PUBLIC_BOARD"
+	envShift    = "ORDERSERVICE_REQUIRE_SHIFT"
 
 	envDatabase      = "ORDERSERVICE_DATABASE_URL"
 	envSessionIdle   = "ORDERSERVICE_SESSION_IDLE"
@@ -83,6 +84,8 @@ type config struct {
 	expiryWarn time.Duration
 	// publicBoard lets anyone read the call board without signing in.
 	publicBoard bool
+	// requireShift refuses a payment in cash from a cashier who has no shift open.
+	requireShift bool
 	startTO    time.Duration
 	readBatch  int
 	jsonLogs   bool
@@ -134,6 +137,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	cfg.databaseURL = getenv(envDatabase)
 	cfg.expiryWarn = 72 * time.Hour
 	cfg.publicBoard = getenv(envBoard) == "1" || getenv(envBoard) == "true"
+	cfg.requireShift = getenv(envShift) == "1" || getenv(envShift) == "true"
 	if v := getenv(envExpiry); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -173,6 +177,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	fs.BoolVar(&cfg.secureCookies, "secure-cookies", cfg.secureCookies, "mark the session cookie Secure although the service listens on plain HTTP: set it behind a proxy that does TLS ["+envSecureCookies+"]")
 	fs.StringVar(&tz, "timezone", tz, "the venue's time zone, such as Asia/Ho_Chi_Minh: prices by time of day follow its clock ["+envTimezone+"]")
 	fs.BoolVar(&cfg.publicBoard, "public-board", cfg.publicBoard, "let anyone who can reach the service read the call board (/board) without signing in, so that a screen in the shop can show it ["+envBoard+"]")
+	fs.BoolVar(&cfg.requireShift, "require-shift", cfg.requireShift, "refuse a payment in cash unless the cashier who takes it has a shift open (needs -database-url) ["+envShift+"]")
 	fs.DurationVar(&cfg.expiryWarn, "expiry-warning", cfg.expiryWarn, "how long before it expires a lot of goods is flagged on the warehouse screen ["+envExpiry+"]")
 	fs.DurationVar(&cfg.commandTO, "command-timeout", defaultCommandTime, "time allowed to one command, including the wait for the log")
 	fs.DurationVar(&cfg.startTO, "start-timeout", defaultStartTime, "time allowed to connect and read the whole log at start")
@@ -198,6 +203,8 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		return config{}, errors.New("nobody could use the service: give -database-url (people sign in with a password) or -users (tokens, for trying it out)")
 	case usersFile != "" && cfg.databaseURL != "":
 		return config{}, errors.New("-users and -database-url are two ways to sign in: give one")
+	case cfg.requireShift && cfg.databaseURL == "":
+		return config{}, errors.New("-require-shift needs -database-url: the shifts are kept in the database")
 	case cfg.expiryWarn <= 0:
 		return config{}, errors.New("-expiry-warning must be positive")
 	case cfg.commandTO <= 0 || cfg.startTO <= 0 || cfg.readBatch < 1:
@@ -259,10 +266,14 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 		if err != nil {
 			return err
 		}
+		sh, err := openShifts(startCtx, pool, cfg, logger)
+		if err != nil {
+			return err
+		}
 		go purgeSessions(ctx, acc, logger)
 		apiOptions = append(apiOptions,
 			orderservice.WithAccounts(acc, orderservice.AccountsOptions{SecureCookies: cfg.secureCookies, MaxLifetime: cfg.sessionMax}),
-			orderservice.WithCatalog(store), orderservice.WithInventory(inv))
+			orderservice.WithCatalog(store), orderservice.WithInventory(inv), orderservice.WithShifts(sh, cfg.requireShift))
 	}
 	// The menu and the promotions: from the database when there is one, else from the files.
 	m, lowAt, promos, err := startCatalog(startCtx, cfg, store, logger)
