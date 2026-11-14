@@ -218,6 +218,8 @@ test("an account says what is the matter with it, the most serious first", () =>
 });
 
 test("a new password is checked here the way the service will check it", () => {
+  assert.equal(L.passwordType(false), "password", "a password box starts hidden");
+  assert.equal(L.passwordType(true), "text", "and shows what was typed when asked");
   assert.match(L.passwordProblem("short", "short", "thu-ngan"), /at least 10/);
   assert.match(L.passwordProblem("tám chữ", "tám chữ", "x"), /at least 10/, "characters are counted, not bytes");
   assert.equal(L.passwordProblem("tám chữ Việt đẹp", "tám chữ Việt đẹp", "thu-ngan"), "");

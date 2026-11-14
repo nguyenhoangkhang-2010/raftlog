@@ -411,6 +411,9 @@
     return /^[a-z0-9][a-z0-9._-]{2,31}$/.test(id) ? "" : T("A login name is 3 to 32 letters, digits, dots, dashes or underscores, starting with a letter or digit.");
   }
 
+  // passwordType is the type of a password box: plain text while the person has asked to see what they typed.
+  function passwordType(shown) { return shown ? "text" : "password"; }
+
   // passwordProblem checks a new password before it is sent, to say at once what the service
   // would say. The service decides; this only saves a round trip. It returns "" when nothing is
   // wrong that can be seen here.
@@ -475,6 +478,6 @@
     cancelQueue: cancelQueue, refundPolicy: refundPolicy, workStarted: workStarted, summary: summary,
     ageText: ageText, agoText: agoText, statusLabel: statusLabel, cashChange: cashChange, quickAmounts: quickAmounts,
     newCommandID: newCommandID, parseStream: parseStream, screensFor: screensFor, readySince: readySince, ACTIVE: ACTIVE,
-    userState: userState, loginProblem: loginProblem, passwordProblem: passwordProblem, describeEvent: describeEvent, shortAgent: shortAgent,
+    userState: userState, loginProblem: loginProblem, passwordProblem: passwordProblem, passwordType: passwordType, describeEvent: describeEvent, shortAgent: shortAgent,
   };
 });
