@@ -132,8 +132,10 @@ type ProfitDay struct {
 	GoodsCost   int64 `json:"goods_cost"`
 	Waste       int64 `json:"waste"`
 	GrossProfit int64 `json:"gross_profit"`
-	// Expenses is what the venue spent, spread over the days that it covers; Profit is what is left.
+	// Expenses is what the venue spent, spread over the days that it covers; Labour is what the work that
+	// was clocked on the day cost at the hourly rates. Profit is what is left.
 	Expenses int64 `json:"expenses"`
+	Labour   int64 `json:"labour"`
 	Profit   int64 `json:"profit"`
 }
 
@@ -145,20 +147,33 @@ func milliToDong(m int64) int64 {
 	return (m + 500) / 1000
 }
 
-// profit puts the sales, the cost of the goods, the waste and the expenses of each day side by side.
-func (a *API) profit(r *http.Request, p reports.Period) ([]ProfitDay, []expenses.DayAmount, error) {
+// profit puts the sales, the cost of the goods, the waste, the expenses and the labour of each day side by
+// side. It also says how many minutes of work had no hourly rate, and so cost nothing.
+func (a *API) profit(r *http.Request, p reports.Period) ([]ProfitDay, []expenses.DayAmount, int64, error) {
 	sales, err := a.reports.SalesByDay(r.Context(), p)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	costs, err := a.reports.CostsByDay(r.Context(), p)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	var spent []expenses.DayAmount
 	if a.expenses != nil {
 		if spent, err = a.expenses.Allocated(r.Context(), p.From, p.To); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
+		}
+	}
+	labour := map[string]int64{}
+	var unrated int64
+	if a.staff != nil {
+		days, err := a.staff.LabourByDay(r.Context(), p.From, p.To)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		for _, d := range days {
+			labour[d.Day] = d.Cost
+			unrated += d.UnratedMin
 		}
 	}
 	perDay := map[string]int64{}
@@ -172,12 +187,12 @@ func (a *API) profit(r *http.Request, p reports.Period) ([]ProfitDay, []expenses
 	out := make([]ProfitDay, 0, len(sales))
 	for _, s := range sales {
 		c := byDate[s.Date]
-		d := ProfitDay{Date: s.Date, Collected: s.Total, Refunds: s.Refunds, Net: s.Net, GoodsCost: milliToDong(c.CogsMilli), Waste: milliToDong(c.WasteMilli), Expenses: perDay[s.Date]}
+		d := ProfitDay{Date: s.Date, Collected: s.Total, Refunds: s.Refunds, Net: s.Net, GoodsCost: milliToDong(c.CogsMilli), Waste: milliToDong(c.WasteMilli), Expenses: perDay[s.Date], Labour: labour[s.Date]}
 		d.GrossProfit = d.Net - d.GoodsCost - d.Waste
-		d.Profit = d.GrossProfit - d.Expenses
+		d.Profit = d.GrossProfit - d.Expenses - d.Labour
 		out = append(out, d)
 	}
-	return out, spent, nil
+	return out, spent, unrated, nil
 }
 
 // categoriesOf adds up what was spent, by category over the period.

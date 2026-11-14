@@ -6,6 +6,7 @@ The test that compares this file with the code fails when they differ.
 | Permission | customer | cashier | kitchen | runner | manager | storekeeper | admin |
 |---|---|---|---|---|---|---|---|
 | `audit.view` |  |  |  |  | ✓ |  | ✓ |
+| `clock.use` |  | ✓ | ✓ | ✓ | ✓ | ✓ |  |
 | `expense.manage` |  |  |  |  | ✓ |  |  |
 | `menu.manage` |  |  |  |  | ✓ |  |  |
 | `order.approve_cancel` |  |  |  |  | ✓ |  |  |
@@ -22,6 +23,7 @@ The test that compares this file with the code fails when they differ.
 | `shift.close` |  | ✓ |  |  | ✓ |  |  |
 | `shift.open` |  | ✓ |  |  | ✓ |  |  |
 | `shift.review` |  |  |  |  | ✓ |  |  |
+| `staff.manage` |  |  |  |  | ✓ |  |  |
 | `stock.adjust` |  |  |  |  | ✓ | ✓ |  |
 | `stock.receive` |  |  |  |  |  | ✓ |  |
 | `stock.view` |  |  | ✓ |  | ✓ | ✓ |  |

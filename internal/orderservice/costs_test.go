@@ -235,7 +235,7 @@ func TestProfitIsWhatWasEarnedLessTheGoodsTheWasteAndWhatWasSpent(t *testing.T) 
 		t.Fatalf("csv: %d", code)
 	}
 	rows, _ := csv.NewReader(bytes.NewReader(bytes.TrimPrefix(body, []byte("\xEF\xBB\xBF")))).ReadAll()
-	if len(rows) != 2 || rows[0][8] != "profit" || rows[1][4] != "18000" || rows[1][5] != "15000" || rows[1][7] != "150000" {
+	if len(rows) != 2 || rows[0][8] != "labour" || rows[0][9] != "profit" || rows[1][4] != "18000" || rows[1][5] != "15000" || rows[1][7] != "150000" {
 		t.Fatalf("csv rows: %v", rows)
 	}
 }

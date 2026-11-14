@@ -3,6 +3,7 @@ package orderservice
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,12 +15,13 @@ import (
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/accounts"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
+	staffing "github.com/nguyenhoangkhang-2010/raftlog/internal/staff"
 )
 
 func TestTheScreensAreServedWithTheRightTypesAndASecurityPolicy(t *testing.T) {
 	h := newHTTPRig(t)
 	cases := []struct{ path, ctype string }{
-		{"/", "text/html"}, {"/app.css", "text/css"}, {"/logic.js", "text/javascript"}, {"/admin.js", "text/javascript"}, {"/warehouse.js", "text/javascript"}, {"/shifts.js", "text/javascript"}, {"/reports.js", "text/javascript"}, {"/board", "text/html"}, {"/board.js", "text/javascript"}, {"/app.js", "text/javascript"}, {"/favicon.svg", "image/svg+xml"},
+		{"/", "text/html"}, {"/app.css", "text/css"}, {"/logic.js", "text/javascript"}, {"/admin.js", "text/javascript"}, {"/warehouse.js", "text/javascript"}, {"/shifts.js", "text/javascript"}, {"/staff.js", "text/javascript"}, {"/reports.js", "text/javascript"}, {"/board", "text/html"}, {"/board.js", "text/javascript"}, {"/app.js", "text/javascript"}, {"/favicon.svg", "image/svg+xml"},
 	}
 	for _, c := range cases {
 		resp, err := http.Get(h.srv.URL + c.path)
@@ -145,7 +147,7 @@ func TestThePageLoadsOnlyItsOwnFilesAndHasNoInlineCode(t *testing.T) {
 		t.Error("logic.js must be loaded before app.js")
 	}
 	// app.js builds the screens of the managers from what admin.js defines, at once when it loads.
-	for _, script := range []string{"admin.js", "warehouse.js", "shifts.js", "reports.js"} {
+	for _, script := range []string{"admin.js", "warehouse.js", "shifts.js", "staff.js", "reports.js"} {
 		if !strings.Contains(html, `src="/`+script+`"`) || strings.Index(html, `src="/`+script+`"`) > strings.Index(html, `src="/app.js"`) {
 			t.Error(script + " must be loaded before app.js")
 		}
@@ -229,7 +231,7 @@ func TestTheScriptsPutDataOnThePageAsTextNeverAsHTML(t *testing.T) {
 	// A note that a customer types is shown on the kitchen's screen. Setting it as HTML would let
 	// them run script there; the policy would stop it, and this keeps the code from trying.
 	banned := regexp.MustCompile(`innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new\s+Function|setAttribute\(\s*["']style|srcdoc|javascript:`)
-	for _, name := range []string{"app.js", "logic.js", "admin.js", "warehouse.js", "shifts.js", "reports.js", "board.js"} {
+	for _, name := range []string{"app.js", "logic.js", "admin.js", "warehouse.js", "shifts.js", "staff.js", "reports.js", "board.js"} {
 		src := readEmbedded(t, name)
 		if m := banned.FindString(src); m != "" {
 			t.Errorf("%s uses %q", name, m)
@@ -391,6 +393,44 @@ func TestEveryFixedMessageOfTheExpensesIsInTheVietnameseDictionary(t *testing.T)
 	}
 }
 
+func TestEveryFixedMessageOfTheStaffIsInTheVietnameseDictionary(t *testing.T) {
+	dict := readEmbedded(t, "vi.js")
+	var found []string
+	scan := func(path string, patterns ...*regexp.Regexp) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range patterns {
+			for _, m := range re.FindAllStringSubmatch(string(data), -1) {
+				found = append(found, m[1])
+			}
+		}
+	}
+	scan("../staff/staff.go", regexp.MustCompile(`invalid\("([^"%\\]+)"\)`))
+	scan("http_staff.go", regexp.MustCompile(`InvalidError\{Reason: "([^"%\\]+)"\}`))
+	// the messages that are built from a field name or a number are got by writing them out; the
+	// sentinels (overlap, already clocked in, ...) are told by their codes, which the screens know
+	for _, what := range []string{"the day", "the first day", "the last day"} {
+		found = append(found, what+" is not a date like 2026-11-14")
+	}
+	found = append(found, "the station is at most 20 characters", "the note is at most 200 characters", "the reason is at most 200 characters",
+		fmt.Sprintf("a rate is a whole number of đồng for an hour, up to %d", staffing.MaxRate), "a shift is a number from 1", "an entry is a number from 1")
+	checked := 0
+	for _, msg := range found {
+		if strings.HasPrefix(msg, "say who") {
+			continue
+		}
+		checked++
+		if !strings.Contains(dict, `"`+msg+`":`) {
+			t.Errorf("the message %q of the service is not in the server section of vi.js", msg)
+		}
+	}
+	if checked < 20 {
+		t.Fatalf("only %d messages were found in the sources: the patterns no longer match what is written", checked)
+	}
+}
+
 func TestTheScreensLogicPassesItsOwnTests(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -399,7 +439,7 @@ func TestTheScreensLogicPassesItsOwnTests(t *testing.T) {
 	if _, err := os.Stat("web/logic.test.js"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js", "web/admin.test.js", "web/warehouse.test.js", "web/shifts.test.js", "web/reports.test.js", "web/board.test.js").CombinedOutput()
+	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js", "web/admin.test.js", "web/warehouse.test.js", "web/shifts.test.js", "web/staff.test.js", "web/reports.test.js", "web/board.test.js").CombinedOutput()
 	if err != nil {
 		t.Fatalf("the tests of web/logic.js failed: %v\n%s", err, out)
 	}

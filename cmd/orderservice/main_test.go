@@ -41,18 +41,28 @@ func TestSettingsAreChecked(t *testing.T) {
 		t.Fatalf("config = %+v", cfg)
 	}
 	for name, args := range map[string][]string{
-		"no nodes":        {"-menu", menu, "-users", users},
-		"no menu":         {"-addr", "a:1", "-users", users},
-		"no users":        {"-addr", "a:1", "-menu", menu},
-		"a bad listen":    append([]string{"-listen", "nonsense"}, good...),
-		"a bad time zone": append([]string{"-timezone", "Mars/Olympus"}, good...),
-		"a bad timeout":   append([]string{"-command-timeout", "0s"}, good...),
-		"an argument":     append([]string{"stray"}, good...),
-		"an empty topic":  append([]string{"-topic", ""}, good...),
+		"no nodes":                         {"-menu", menu, "-users", users},
+		"no menu":                          {"-addr", "a:1", "-users", users},
+		"no users":                         {"-addr", "a:1", "-menu", menu},
+		"a bad listen":                     append([]string{"-listen", "nonsense"}, good...),
+		"a bad time zone":                  append([]string{"-timezone", "Mars/Olympus"}, good...),
+		"a bad timeout":                    append([]string{"-command-timeout", "0s"}, good...),
+		"an argument":                      append([]string{"stray"}, good...),
+		"an empty topic":                   append([]string{"-topic", ""}, good...),
+		"a clock-in that needs a database": append([]string{"-require-clock-in"}, good...),
 	} {
 		if _, err := parseConfig(args, env(nil), io.Discard); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	// The clock-in is asked for only where the time clock is, which is in the database.
+	cfg, err = parseConfig([]string{"-addr", "a:1", "-menu", menu, "-database-url", "postgres://x", "-require-clock-in"}, env(nil), io.Discard)
+	if err != nil || !cfg.requireClockIn {
+		t.Fatalf("require-clock-in: %v %+v", err, cfg)
+	}
+	cfg, err = parseConfig([]string{"-addr", "a:1", "-menu", menu, "-database-url", "postgres://x"}, env(map[string]string{envClockIn: "true"}), io.Discard)
+	if err != nil || !cfg.requireClockIn {
+		t.Fatalf("the variable stands in for the flag: %v %+v", err, cfg)
 	}
 	// A variable stands in for a flag, and a flag wins.
 	cfg, err = parseConfig([]string{"-topic", "from-flag"}, env(map[string]string{

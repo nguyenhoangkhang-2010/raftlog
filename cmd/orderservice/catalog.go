@@ -19,6 +19,7 @@ import (
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/pgmigrate"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/reports"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/shifts"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/staff"
 )
 
 // openCatalog brings the schema of the catalog up to date (unless told not to) and returns its store.
@@ -181,4 +182,19 @@ func openExpenses(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *s
 		}
 	}
 	return expenses.New(pool, nil), nil
+}
+
+// openStaff brings the schema of the staff schedule and the time clock up to date (unless told not to) and
+// returns its store. A day is a day in the venue's time zone.
+func openStaff(ctx context.Context, pool *pgxpool.Pool, cfg config, logger *slog.Logger) (*staff.Store, error) {
+	if !cfg.noMigrate {
+		applied, err := pgmigrate.Apply(ctx, pool, staff.Migrations(), pgmigrate.WithTable(staff.MigrationsTable))
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range applied {
+			logger.Info("database migration applied", "migration", name)
+		}
+	}
+	return staff.New(pool, cfg.location, nil), nil
 }

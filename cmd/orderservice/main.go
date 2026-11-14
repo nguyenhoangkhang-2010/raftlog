@@ -51,6 +51,7 @@ const (
 	envExpiry   = "ORDERSERVICE_EXPIRY_WARNING"
 	envBoard    = "ORDERSERVICE_PUBLIC_BOARD"
 	envShift    = "ORDERSERVICE_REQUIRE_SHIFT"
+	envClockIn  = "ORDERSERVICE_REQUIRE_CLOCK_IN"
 
 	envDatabase      = "ORDERSERVICE_DATABASE_URL"
 	envSessionIdle   = "ORDERSERVICE_SESSION_IDLE"
@@ -87,6 +88,8 @@ type config struct {
 	publicBoard bool
 	// requireShift refuses a payment in cash from a cashier who has no shift open.
 	requireShift bool
+	// requireClockIn refuses to open a cash shift for a person who is not clocked in.
+	requireClockIn bool
 	// rebuildReports throws away the reports at start and builds them again from the log.
 	rebuildReports bool
 	startTO    time.Duration
@@ -141,6 +144,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	cfg.expiryWarn = 72 * time.Hour
 	cfg.publicBoard = getenv(envBoard) == "1" || getenv(envBoard) == "true"
 	cfg.requireShift = getenv(envShift) == "1" || getenv(envShift) == "true"
+	cfg.requireClockIn = getenv(envClockIn) == "1" || getenv(envClockIn) == "true"
 	if v := getenv(envExpiry); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -181,6 +185,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	fs.StringVar(&tz, "timezone", tz, "the venue's time zone, such as Asia/Ho_Chi_Minh: prices by time of day follow its clock ["+envTimezone+"]")
 	fs.BoolVar(&cfg.publicBoard, "public-board", cfg.publicBoard, "let anyone who can reach the service read the call board (/board) without signing in, so that a screen in the shop can show it ["+envBoard+"]")
 	fs.BoolVar(&cfg.requireShift, "require-shift", cfg.requireShift, "refuse a payment in cash unless the cashier who takes it has a shift open (needs -database-url) ["+envShift+"]")
+	fs.BoolVar(&cfg.requireClockIn, "require-clock-in", cfg.requireClockIn, "refuse to open a cash shift for a person who has not clocked in (needs -database-url) ["+envClockIn+"]")
 	fs.BoolVar(&cfg.rebuildReports, "rebuild-reports", false, "throw away the reports at start and build them again from the whole log (needs -database-url)")
 	fs.DurationVar(&cfg.expiryWarn, "expiry-warning", cfg.expiryWarn, "how long before it expires a lot of goods is flagged on the warehouse screen ["+envExpiry+"]")
 	fs.DurationVar(&cfg.commandTO, "command-timeout", defaultCommandTime, "time allowed to one command, including the wait for the log")
@@ -209,6 +214,8 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		return config{}, errors.New("-users and -database-url are two ways to sign in: give one")
 	case cfg.requireShift && cfg.databaseURL == "":
 		return config{}, errors.New("-require-shift needs -database-url: the shifts are kept in the database")
+	case cfg.requireClockIn && cfg.databaseURL == "":
+		return config{}, errors.New("-require-clock-in needs -database-url: the time clock is kept in the database")
 	case cfg.rebuildReports && cfg.databaseURL == "":
 		return config{}, errors.New("-rebuild-reports needs -database-url: the reports are kept in the database")
 	case cfg.expiryWarn <= 0:
@@ -277,6 +284,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 		if err != nil {
 			return err
 		}
+		stf, err := openStaff(startCtx, pool, cfg, logger)
+		if err != nil {
+			return err
+		}
 		if reportStore, err = openReports(startCtx, pool, cfg, logger); err != nil {
 			return err
 		}
@@ -291,7 +302,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 		go purgeSessions(ctx, acc, logger)
 		apiOptions = append(apiOptions,
 			orderservice.WithAccounts(acc, orderservice.AccountsOptions{SecureCookies: cfg.secureCookies, MaxLifetime: cfg.sessionMax}),
-			orderservice.WithCatalog(store), orderservice.WithInventory(inv), orderservice.WithShifts(sh, cfg.requireShift))
+			orderservice.WithCatalog(store), orderservice.WithInventory(inv), orderservice.WithShifts(sh, cfg.requireShift), orderservice.WithStaff(stf, cfg.requireClockIn))
 	}
 	// The menu and the promotions: from the database when there is one, else from the files.
 	m, lowAt, promos, err := startCatalog(startCtx, cfg, store, logger)
