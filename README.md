@@ -6,9 +6,9 @@
 
 ![CI](https://github.com/nguyenhoangkhang-2010/raftlog/actions/workflows/ci.yml/badge.svg)
 
-![The cluster console while the leader is killed: no leader for a moment, another node is elected, the writes go on, and Verify finds nothing lost](docs/media/failover.gif)
+![The kitchen system while the leader of its cluster is killed: the orders go on, and at the end every acknowledged order is read back](docs/media/kitchen-failover.gif)
 
-*A real recording of [the cluster console](docs/observability.md#3-the-cluster-console): a writer sends 50 messages a second, the leader is killed, a new one is elected, the node is started again, and Verify reads the topic back and finds every acknowledged write ([how it was made](docs/media/record-console.js)). The "not sent" count is writes that were due while no leader could take them.*
+*A real recording of the kitchen system on a three-node cluster. Below, the screen of the hot station of the kitchen, while customers' orders are placed and paid; above, [the cluster console](docs/observability.md#3-the-cluster-console). The leader (node 3) is killed, node 1 takes over, the orders go on, and the node is started again. The green line at the end is written by [the recording script](docs/media/record-kitchen.js), not by the page: of the 29 orders that were acknowledged to it, it reads all 29 back from the service. The script sends a command again, with the same ID, when no answer comes.*
 
 ## Why this project
 A message broker is a small system with a hard promise: once it has told a producer that a
@@ -102,6 +102,10 @@ take over within about a second or two while the writes go on, press **Start** o
 node, and then press **Verify**: it reads the whole topic back and checks that every write the
 cluster acknowledged is there. [docs/observability.md](docs/observability.md) describes the page.
 
+![The cluster console while the leader is killed: no leader for a moment, another node is elected, the writes go on, and Verify finds nothing lost](docs/media/failover.gif)
+
+*A real recording of [the cluster console](docs/observability.md#3-the-cluster-console): a writer sends 50 messages a second, the leader is killed, a new one is elected, the node is started again, and Verify reads the topic back and finds every acknowledged write ([how it was made](docs/media/record-console.js)). The "not sent" count is writes that were due while no leader could take them.*
+
 ## Features (roadmap)
 - [x] Append-only log storage with segments and sparse index
 - [x] gRPC API: `CreateTopic`, `Produce`, `Fetch` (`CommitOffset` comes with consumer groups)
@@ -113,18 +117,10 @@ cluster acknowledged is there. [docs/observability.md](docs/observability.md) de
 - [x] Chaos tests: real processes killed and partitioned while clients write; the history is checked for lost, duplicated or misordered writes and dirty reads (`test/chaos`)
 - [x] Long-poll `Fetch`: a reader waits for the next message instead of polling (`-wait`, `client.WaitUpTo`, `-max-fetch-wait`)
 - [x] Client library (`client`) that follows the leader and rides through failover
-- [x] Demo application: a virtual waiting room for course registration, whose whole state is two raftlog topics ([docs/waitingroom.md](docs/waitingroom.md))
-- [x] Kitchen system, the service: orders, payments, kitchen tickets, cancellations and stock as events in one raftlog topic, a JSON API with roles and a stream of changes, and the state rebuilt from the log at start ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 13](docs/adr/0013-order-service-on-one-log.md))
-- [x] Kitchen system, the screens: order, my orders, till, kitchen board, manager and stock, served by the service itself as embedded files (the look of a company's site, light and dark, in Vietnamese and English with a switch, two fonts included) with no framework and no outside request, live through the stream, under a strict content security policy (`http://127.0.0.1:8100/`; [the screens](docs/kitchen/service.md#the-screens))
-- [x] Kitchen system, the accounts: PostgreSQL beside the log; people sign in with a login name and a password (argon2id), keep a session in an `HttpOnly` cookie, are locked after five wrong passwords, and an administrator makes accounts and roles on a screen; roles count at the next request, and the trail of who did what to whom cannot be edited ([docs/kitchen/service.md](docs/kitchen/service.md#accounts), [ADR 14](docs/adr/0014-accounts-in-postgresql.md))
-- [x] Kitchen system, the menu: the menu and the promotions are numbered versions in PostgreSQL, edited by a manager on a screen (items, option groups, prices by time, combos, a photo for each item, promotions), checked like a file, in use at once without a restart, with the history and a way to put an old version back; two managers cannot overwrite each other, and an order keeps what it was sold as ([docs/kitchen/service.md](docs/kitchen/service.md#the-menu-the-promotions-and-the-users), [ADR 15](docs/adr/0015-menu-in-postgresql.md))
-- [x] Kitchen system, the warehouse: the stock is kept in lots (date, price, supplier, document) in the log; the lot that expires first is used first and an expired lot is never used for an order; a delivery with lines, the history of each ingredient, waste by cause, stocktakes counted over time and applied once, suppliers in PostgreSQL; costs only for those who may see them ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 16](docs/adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md))
-- [x] Kitchen system, the call board and the runner: a screen for a room that shows the numbers of the orders that are ready and being made, live, readable from far away, with no name and no item (public only if the venue turns it on), and a screen for the runner with the oldest ready order first ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 17](docs/adr/0017-the-call-board.md))
-- [x] Kitchen system, shifts and the cash drawer: a cashier opens a shift by counting the drawer note by note, records money put in and taken out, and closes it by counting again without being shown the expected figure; the service works out what the drawer should hold from the cash in the log, keeps the variance, a manager reviews it, and a flag can refuse cash when no shift is open ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 18](docs/adr/0018-shifts-and-the-cash-drawer.md))
-- [x] Kitchen system, the reports: a follower reads the log of the service in order and writes a copy of what happened to PostgreSQL, a batch and its checkpoint in one transaction so that nothing is counted twice; sales by day, best sellers, what the kitchen used, refunds and busy hours are queries over it, each with a spreadsheet to download, and the copy can be thrown away and built again ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 19](docs/adr/0019-reports-by-following-the-log.md))
-- [x] Kitchen system, cost and profit: the follower applies the log to a state of its own and so knows what each order took from which lot at what price; the reports give the profit of each day (net sales less goods used, waste and the expenses that a manager writes down, spread over the days they cover), what each item costs to make, and a spreadsheet of each ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 20](docs/adr/0020-what-things-cost.md))
-- [x] Kitchen system, the schedule and the time clock: a manager plans the shifts of the staff week by week, people clock in and out, and the service compares the plan with what happened (hours, late, missed); a manager corrects an entry only with a reason and the old one is kept, a person cannot clock out with a cash drawer open, and the hours at the hourly rates are the labour of the profit report ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 21](docs/adr/0021-the-schedule-and-the-time-clock.md))
-- [x] Kitchen system, customers and points: a person can sign up for a customer's account (off unless the venue turns it on, limited per address); a customer earns points when an order is paid and uses them on a later order, and the balance is kept in the log with the orders, so that it cannot disagree with them: a placement is checked against the points that are available at its place in the log, points are held until the order is paid, and a cancellation or a refund gives back and takes back ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 22](docs/adr/0022-customer-accounts-and-points.md)); a manager can give points or take them off, with a reason that the customer sees and that stays in the log ([ADR 23](docs/adr/0023-points-changed-by-a-manager.md))
+- [x] Kitchen system, the application that depends on the broker: orders, payments, kitchen tickets, cancellations and stock as events in one raftlog topic, the state rebuilt from the log at start, a JSON API with roles and a stream of changes ([docs/kitchen/service.md](docs/kitchen/service.md), [ADR 13](docs/adr/0013-order-service-on-one-log.md))
+- [x] Kitchen system, what a real venue needs around that core: screens for the customer, the till, the kitchen, the call board, the runner, the manager and the stock, served by the service itself with no framework and no outside request, in Vietnamese and English; accounts in PostgreSQL with argon2id passwords, sessions and an uneditable trail ([ADR 14](docs/adr/0014-accounts-in-postgresql.md)); the menu and promotions as numbered versions ([ADR 15](docs/adr/0015-menu-in-postgresql.md)); a warehouse kept in lots that expire first-out ([ADR 16](docs/adr/0016-the-warehouse-lots-in-the-log-suppliers-in-postgresql.md)); a call board ([ADR 17](docs/adr/0017-the-call-board.md)); shifts and the cash drawer ([ADR 18](docs/adr/0018-shifts-and-the-cash-drawer.md)); the staff schedule and time clock ([ADR 21](docs/adr/0021-the-schedule-and-the-time-clock.md))
+- [x] Kitchen system, reports by following the log: a follower copies the log into PostgreSQL, a batch and its checkpoint in one transaction so that nothing is counted twice; sales, best sellers, goods used, refunds, busy hours, cost and the profit of each day, each with a spreadsheet, and the copy can be thrown away and built again ([ADR 19](docs/adr/0019-reports-by-following-the-log.md), [ADR 20](docs/adr/0020-what-things-cost.md))
+- [x] Kitchen system, customers and points: a customer signs up, earns points when an order is paid and uses them on a later order; the balance is kept in the log with the orders, so that it cannot disagree with them; a manager can give or take points with a reason that the customer sees ([ADR 22](docs/adr/0022-customer-accounts-and-points.md), [ADR 23](docs/adr/0023-points-changed-by-a-manager.md))
 - [x] Benchmark tool (`raftlogbench`): write throughput and latency, and failover time with a check of every node's log; measured results and their limits in [bench/README.md](bench/README.md)
 - [x] Group commit: requests that arrive together share their fsyncs, the journal write and the replication round, 3.4 to 5.2 times the throughput with 16 concurrent producers on the test laptop ([ADR 12](docs/adr/0012-group-commit.md))
 - [x] Prometheus metrics (`-metrics-listen`), `raftlogctl topics` and `groups`, and a cluster console that kills nodes, writes under load and verifies that no acknowledged write was lost ([docs/observability.md](docs/observability.md))
@@ -217,12 +213,6 @@ for the next message instead of returning nothing at once.
 Delivery is at-least-once: a request that failed after the leader stored it may be
 stored again when you retry, so consumers should tolerate repeats (see `client/doc.go`).
 
-## An earlier, smaller example: a waiting room
-Before the kitchen system there was a smaller application, `cmd/waitingroom`, a virtual waiting
-room for course registration, also built only on the public `client` package: the line lives in
-two topics, so killing the leader does not cost anyone their place, and `cmd/wrsim` simulates a
-crowd. It is kept as a short example of using the client; see [docs/waitingroom.md](docs/waitingroom.md).
-
 ## Known limitations
 - A lone producer is bound by the cost of one request (about 6 ms with one node, 8 to 11 ms with three on the test laptop): requests that arrive together share their fsyncs (group commit, ADR 12), but one at a time they do not, and
   every write still waits for an fsync of the Raft log on the leader and on a follower.
@@ -233,6 +223,10 @@ crowd. It is kept as a short example of using the client; see [docs/waitingroom.
   lag on a follower and are not linearizable; node-to-node traffic is not encrypted.
 - Every node of a cluster must run with the same `-pre-vote` setting (on by default); there
   is no rolling upgrade between the two. No leadership transfer and no membership changes.
+- The kitchen system has **one writer**: a single `orderservice` decides every command, because an order number is chosen from the state and the log has no conditional append. If it stops, commands wait until it runs again (the log and reads of it still work, and the chaos test kills it every second or two and checks that nothing is lost). A standby would need a fence so that the old writer cannot write after it; this is not built ([ADR 13](docs/adr/0013-order-service-on-one-log.md)).
+- The kitchen service reads the whole log when it starts, so the start gets slower as the history grows; its state has no snapshots. Its throughput is that of one partition.
+- A manager can give a customer up to 10,000 points in one change, with a reason and a trail that cannot be edited, but with no daily limit and no second person to approve ([ADR 23](docs/adr/0023-points-changed-by-a-manager.md)).
+- The kitchen screens were checked by hand in a browser, not by automated browser tests, and not inside Compose; the passwords in the Compose file are those of a demonstration.
 - See `docs/adr` for the reasoning behind each design decision.
 
 ## Results
@@ -276,8 +270,6 @@ See [docs/design.md](docs/design.md) and [docs/adr](docs/adr).
 | `cmd/raftlogbench`, `internal/bench` | Benchmark tool: write throughput and latency, failover time, per-node check of acknowledged writes |
 | `internal/metrics`, `internal/observe` | Prometheus metrics, and what is measured in a node |
 | `client` | Go client library: finds the leader, follows failover |
-| `cmd/waitingroom`, `internal/waitingroom` | Demo application: virtual waiting room (web page, API, admission controller) |
-| `cmd/wrsim` | Simulates a crowd arriving at the waiting room |
 | `internal/kitchen` | Domain core of the kitchen system: money, roles, menu, promotions, stock, event-sourced orders ([docs/kitchen](docs/kitchen/README.md)) |
 | `cmd/orderservice`, `internal/orderservice` | The kitchen service on raftlog: commands, the state built from the log, the HTTP API, and the screens (`web/`); `orderservice user ...` makes accounts from the command line |
 | `internal/staff` | The schedule of the staff, the time clock with its corrections and history, and the hourly rates, in PostgreSQL; hours and the cost of labour are queries over it ([ADR 21](docs/adr/0021-the-schedule-and-the-time-clock.md)) |
