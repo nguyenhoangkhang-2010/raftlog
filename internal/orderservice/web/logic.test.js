@@ -196,9 +196,10 @@ test("the stream is cut into events, comments are ignored, and an unfinished eve
 
 test("each role gets the screens its permissions allow", () => {
   assert.deepEqual(L.screensFor({ "order.place": true, "order.view_own": true }), ["order", "myorders"]);
-  assert.deepEqual(L.screensFor({ "order.place": true, "order.view_all": true, "order.record_payment": true, "order.hand_over": true }), ["order", "till"]);
+  assert.deepEqual(L.screensFor({ "order.place": true, "order.view_all": true, "order.record_payment": true, "order.hand_over": true }), ["order", "till", "runner"], "a cashier who also hands over has both screens");
   assert.deepEqual(L.screensFor({ "ticket.start": true, "ticket.finish": true, "order.view_all": true, "stock.view": true }), ["kitchen", "stock"]);
-  assert.deepEqual(L.screensFor({ "order.hand_over": true, "order.view_all": true }), ["till"]);
+  assert.deepEqual(L.screensFor({ "order.hand_over": true, "order.view_all": true }), ["runner"], "a runner has a screen of their own, not the till");
+  assert.deepEqual(L.screensFor({ "order.record_payment": true, "order.view_all": true }), ["till"]);
   assert.deepEqual(L.screensFor({ "order.approve_cancel": true, "stock.view": true }), ["manager", "stock"]);
   assert.deepEqual(L.screensFor({ "user.manage": true, "audit.view": true }), ["users"], "an administrator has no kitchen screen, only the accounts");
   assert.deepEqual(L.screensFor(null), []);
@@ -241,4 +242,11 @@ test("a browser is named in a few words", () => {
   assert.equal(L.shortAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605 Version/17.0 Mobile Safari/604"), "Safari on iOS");
   assert.equal(L.shortAgent("curl/8.4.0"), "curl");
   assert.equal(L.shortAgent(""), "unknown browser");
+});
+
+test("an order is ready from the moment its last station finished", () => {
+  const o = { placed_at: "2026-11-20T10:00:00Z", tickets: [{ ready_at: "2026-11-20T10:05:00Z" }, { ready_at: "2026-11-20T10:09:00Z" }, {}] };
+  assert.equal(L.readySince(o), "2026-11-20T10:09:00Z");
+  assert.equal(L.readySince({ placed_at: "2026-11-20T10:00:00Z", tickets: [] }), "2026-11-20T10:00:00Z", "with no time of its own it is counted from when it was placed");
+  assert.equal(L.readySince({ placed_at: "2026-11-20T10:00:00Z" }), "2026-11-20T10:00:00Z");
 });

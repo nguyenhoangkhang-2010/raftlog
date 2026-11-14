@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/accounts"
@@ -46,6 +47,10 @@ type API struct {
 	acc   *accounts.Service
 	opts  AccountsOptions
 	login *limiter
+
+	// Set by WithPublicBoard: the call board needs no sign-in. boardStreams counts its open streams.
+	publicBoard  bool
+	boardStreams atomic.Int32
 }
 
 // NewAPI returns the handler of the service. authn finds out who is calling: TokenAuth for the
@@ -71,6 +76,7 @@ func NewAPI(svc *Service, authn Authenticator, logger *slog.Logger, options ...A
 		a.accountRoutes(mux)
 	}
 	a.warehouseRoutes(mux)
+	a.boardRoutes(mux)
 	if a.inv != nil {
 		a.inventoryRoutes(mux)
 	}
