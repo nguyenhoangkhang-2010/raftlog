@@ -68,6 +68,10 @@ type API struct {
 	opts  AccountsOptions
 	login *limiter
 
+	// Set by WithOpenRegistration: a person may make an account of their own. signups limits it per address.
+	registration bool
+	signups      *limiter
+
 	// Set by WithPublicBoard: the call board needs no sign-in. boardStreams counts its open streams.
 	publicBoard  bool
 	boardStreams atomic.Int32
@@ -89,6 +93,7 @@ func NewAPI(svc *Service, authn Authenticator, logger *slog.Logger, options ...A
 	mux.HandleFunc("GET /api/menu", a.menu)
 	mux.HandleFunc("GET /api/auth", a.authMode)
 	mux.HandleFunc("GET /api/me", a.identified(a.me))
+	a.pointsRoutes(mux)
 	if a.cat != nil {
 		a.catalogRoutes(mux)
 	}
@@ -203,6 +208,8 @@ type errorBody struct {
 	// RetryAfter is how many seconds to wait, for an answer that says to try later: a screen
 	// writes "try again in 15 minutes" itself, in the language of the person.
 	RetryAfter int `json:"retry_after,omitempty"`
+	// Max is the most points an order may use, for an answer that refuses more.
+	Max int64 `json:"max,omitempty"`
 }
 
 type lineProblem struct {
@@ -228,9 +235,16 @@ func status(err error) (int, string) {
 	var cart *CartError
 	var oos *OutOfStockError
 	var short *stock.ShortageError
+	var pl *PointsLimitError
 	switch {
 	case errors.As(err, &cart):
 		return http.StatusUnprocessableEntity, "cart"
+	case errors.As(err, &pl):
+		return http.StatusConflict, "points"
+	case errors.Is(err, ErrNoPoints):
+		return http.StatusConflict, "no_points"
+	case errors.Is(err, ErrNoSuchCustomer):
+		return http.StatusBadRequest, "no_customer"
 	case errors.As(err, &oos), errors.As(err, &short):
 		return http.StatusConflict, "out_of_stock"
 	case errors.Is(err, ErrBadCommandID), errors.Is(err, order.ErrInvalid), errors.Is(err, order.ErrAmount),
@@ -265,7 +279,10 @@ func (a *API) fail(w http.ResponseWriter, err error) {
 	var cart *CartError
 	var oos *OutOfStockError
 	var short *stock.ShortageError
+	var pl *PointsLimitError
 	switch {
+	case errors.As(err, &pl):
+		body.Max = pl.Max
 	case errors.As(err, &cart):
 		for _, l := range cart.Lines {
 			body.Lines = append(body.Lines, lineProblem{Line: l.Index + 1, Error: l.Err.Error()})
@@ -365,7 +382,7 @@ func (a *API) mode() string {
 
 // authMode tells a screen which way people sign in here, before anyone has.
 func (a *API) authMode(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"mode": a.mode()})
+	writeJSON(w, http.StatusOK, map[string]any{"mode": a.mode(), "registration": a.registration && a.acc != nil})
 }
 
 type pickJSON struct {
@@ -409,6 +426,8 @@ type placeBody struct {
 	Items    []selectionJSON `json:"items"`
 	Codes    []string        `json:"codes"`
 	Customer string          `json:"customer"`
+	// Points is how many points of their own the customer uses on the order.
+	Points int64 `json:"points"`
 }
 
 func (a *API) placeOrder(w http.ResponseWriter, r *http.Request, actor rbac.Actor) {
@@ -417,7 +436,12 @@ func (a *API) placeOrder(w http.ResponseWriter, r *http.Request, actor rbac.Acto
 		a.fail(w, err)
 		return
 	}
-	req := PlaceRequest{Command: b.Command, Codes: b.Codes, Customer: b.Customer}
+	customer, err := a.customerLogin(r.Context(), b.Customer)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	req := PlaceRequest{Command: b.Command, Codes: b.Codes, Customer: customer, Points: b.Points}
 	for _, it := range b.Items {
 		req.Selections = append(req.Selections, it.selection())
 	}

@@ -21,7 +21,7 @@ import (
 func TestTheScreensAreServedWithTheRightTypesAndASecurityPolicy(t *testing.T) {
 	h := newHTTPRig(t)
 	cases := []struct{ path, ctype string }{
-		{"/", "text/html"}, {"/app.css", "text/css"}, {"/logic.js", "text/javascript"}, {"/admin.js", "text/javascript"}, {"/warehouse.js", "text/javascript"}, {"/shifts.js", "text/javascript"}, {"/staff.js", "text/javascript"}, {"/reports.js", "text/javascript"}, {"/board", "text/html"}, {"/board.js", "text/javascript"}, {"/app.js", "text/javascript"}, {"/favicon.svg", "image/svg+xml"},
+		{"/", "text/html"}, {"/app.css", "text/css"}, {"/logic.js", "text/javascript"}, {"/admin.js", "text/javascript"}, {"/warehouse.js", "text/javascript"}, {"/shifts.js", "text/javascript"}, {"/staff.js", "text/javascript"}, {"/loyalty.js", "text/javascript"}, {"/reports.js", "text/javascript"}, {"/board", "text/html"}, {"/board.js", "text/javascript"}, {"/app.js", "text/javascript"}, {"/favicon.svg", "image/svg+xml"},
 	}
 	for _, c := range cases {
 		resp, err := http.Get(h.srv.URL + c.path)
@@ -147,7 +147,7 @@ func TestThePageLoadsOnlyItsOwnFilesAndHasNoInlineCode(t *testing.T) {
 		t.Error("logic.js must be loaded before app.js")
 	}
 	// app.js builds the screens of the managers from what admin.js defines, at once when it loads.
-	for _, script := range []string{"admin.js", "warehouse.js", "shifts.js", "staff.js", "reports.js"} {
+	for _, script := range []string{"admin.js", "warehouse.js", "shifts.js", "staff.js", "loyalty.js", "reports.js"} {
 		if !strings.Contains(html, `src="/`+script+`"`) || strings.Index(html, `src="/`+script+`"`) > strings.Index(html, `src="/app.js"`) {
 			t.Error(script + " must be loaded before app.js")
 		}
@@ -231,7 +231,7 @@ func TestTheScriptsPutDataOnThePageAsTextNeverAsHTML(t *testing.T) {
 	// A note that a customer types is shown on the kitchen's screen. Setting it as HTML would let
 	// them run script there; the policy would stop it, and this keeps the code from trying.
 	banned := regexp.MustCompile(`innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new\s+Function|setAttribute\(\s*["']style|srcdoc|javascript:`)
-	for _, name := range []string{"app.js", "logic.js", "admin.js", "warehouse.js", "shifts.js", "staff.js", "reports.js", "board.js"} {
+	for _, name := range []string{"app.js", "logic.js", "admin.js", "warehouse.js", "shifts.js", "staff.js", "loyalty.js", "reports.js", "board.js"} {
 		src := readEmbedded(t, name)
 		if m := banned.FindString(src); m != "" {
 			t.Errorf("%s uses %q", name, m)
@@ -439,7 +439,7 @@ func TestTheScreensLogicPassesItsOwnTests(t *testing.T) {
 	if _, err := os.Stat("web/logic.test.js"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js", "web/admin.test.js", "web/warehouse.test.js", "web/shifts.test.js", "web/staff.test.js", "web/reports.test.js", "web/board.test.js").CombinedOutput()
+	out, err := exec.Command(node, "--test", "web/logic.test.js", "web/i18n.test.js", "web/admin.test.js", "web/warehouse.test.js", "web/shifts.test.js", "web/staff.test.js", "web/loyalty.test.js", "web/reports.test.js", "web/board.test.js").CombinedOutput()
 	if err != nil {
 		t.Fatalf("the tests of web/logic.js failed: %v\n%s", err, out)
 	}

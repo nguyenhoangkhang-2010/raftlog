@@ -26,12 +26,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 	_ "time/tzdata" // the venue's time zone must be found on a machine that has no zone database
 
 	"github.com/nguyenhoangkhang-2010/raftlog/client"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/catalog"
+	"github.com/nguyenhoangkhang-2010/raftlog/internal/kitchen/money"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/orderservice"
 	"github.com/nguyenhoangkhang-2010/raftlog/internal/reports"
 )
@@ -52,6 +54,10 @@ const (
 	envBoard    = "ORDERSERVICE_PUBLIC_BOARD"
 	envShift    = "ORDERSERVICE_REQUIRE_SHIFT"
 	envClockIn  = "ORDERSERVICE_REQUIRE_CLOCK_IN"
+	envRegister = "ORDERSERVICE_OPEN_REGISTRATION"
+	envEarnPer  = "ORDERSERVICE_LOYALTY_EARN_PER"
+	envPointVal = "ORDERSERVICE_LOYALTY_VALUE"
+	envMaxShare = "ORDERSERVICE_LOYALTY_MAX_SHARE"
 
 	envDatabase      = "ORDERSERVICE_DATABASE_URL"
 	envSessionIdle   = "ORDERSERVICE_SESSION_IDLE"
@@ -90,6 +96,12 @@ type config struct {
 	requireShift bool
 	// requireClockIn refuses to open a cash shift for a person who is not clocked in.
 	requireClockIn bool
+	// openRegistration lets a person make a customer's account of their own.
+	openRegistration bool
+	// loyalty is the points program: the money that earns a point, what a point takes off, and the percentage of
+	// an order that points may pay for.
+	loyaltyEarnPer, loyaltyValue int64
+	loyaltyMaxShare              int64
 	// rebuildReports throws away the reports at start and builds them again from the log.
 	rebuildReports bool
 	startTO    time.Duration
@@ -103,6 +115,11 @@ type config struct {
 	sessionIdle   time.Duration
 	sessionMax    time.Duration
 	secureCookies bool
+}
+
+// loyalty is the points program that the settings make.
+func (c config) loyalty() orderservice.Loyalty {
+	return orderservice.Loyalty{EarnPer: money.Money(c.loyaltyEarnPer), Value: money.Money(c.loyaltyValue), MaxSharePercent: int(c.loyaltyMaxShare)}
 }
 
 // withAccounts reports whether people sign in with a password (a database) instead of a token.
@@ -145,6 +162,16 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	cfg.publicBoard = getenv(envBoard) == "1" || getenv(envBoard) == "true"
 	cfg.requireShift = getenv(envShift) == "1" || getenv(envShift) == "true"
 	cfg.requireClockIn = getenv(envClockIn) == "1" || getenv(envClockIn) == "true"
+	cfg.openRegistration = getenv(envRegister) == "1" || getenv(envRegister) == "true"
+	for name, dst := range map[string]*int64{envEarnPer: &cfg.loyaltyEarnPer, envPointVal: &cfg.loyaltyValue, envMaxShare: &cfg.loyaltyMaxShare} {
+		if v := getenv(name); v != "" {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return config{}, fmt.Errorf("%s: %w", name, err)
+			}
+			*dst = n
+		}
+	}
 	if v := getenv(envExpiry); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -186,6 +213,10 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	fs.BoolVar(&cfg.publicBoard, "public-board", cfg.publicBoard, "let anyone who can reach the service read the call board (/board) without signing in, so that a screen in the shop can show it ["+envBoard+"]")
 	fs.BoolVar(&cfg.requireShift, "require-shift", cfg.requireShift, "refuse a payment in cash unless the cashier who takes it has a shift open (needs -database-url) ["+envShift+"]")
 	fs.BoolVar(&cfg.requireClockIn, "require-clock-in", cfg.requireClockIn, "refuse to open a cash shift for a person who has not clocked in (needs -database-url) ["+envClockIn+"]")
+	fs.BoolVar(&cfg.openRegistration, "open-registration", cfg.openRegistration, "let a person make a customer's account of their own, at the sign-in page (needs -database-url) ["+envRegister+"]")
+	fs.Int64Var(&cfg.loyaltyEarnPer, "loyalty-earn-per", cfg.loyaltyEarnPer, "points program: the đồng paid that earn one point, 0 for no program; needs -loyalty-value ["+envEarnPer+"]")
+	fs.Int64Var(&cfg.loyaltyValue, "loyalty-value", cfg.loyaltyValue, "points program: the đồng that one point takes off an order ["+envPointVal+"]")
+	fs.Int64Var(&cfg.loyaltyMaxShare, "loyalty-max-share", cfg.loyaltyMaxShare, "points program: the percentage of an order that points may pay for, 50 if 0 ["+envMaxShare+"]")
 	fs.BoolVar(&cfg.rebuildReports, "rebuild-reports", false, "throw away the reports at start and build them again from the whole log (needs -database-url)")
 	fs.DurationVar(&cfg.expiryWarn, "expiry-warning", cfg.expiryWarn, "how long before it expires a lot of goods is flagged on the warehouse screen ["+envExpiry+"]")
 	fs.DurationVar(&cfg.commandTO, "command-timeout", defaultCommandTime, "time allowed to one command, including the wait for the log")
@@ -216,6 +247,10 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		return config{}, errors.New("-require-shift needs -database-url: the shifts are kept in the database")
 	case cfg.requireClockIn && cfg.databaseURL == "":
 		return config{}, errors.New("-require-clock-in needs -database-url: the time clock is kept in the database")
+	case cfg.openRegistration && cfg.databaseURL == "":
+		return config{}, errors.New("-open-registration needs -database-url: the accounts are kept in the database")
+	case cfg.loyalty().Validate() != nil:
+		return config{}, cfg.loyalty().Validate()
 	case cfg.rebuildReports && cfg.databaseURL == "":
 		return config{}, errors.New("-rebuild-reports needs -database-url: the reports are kept in the database")
 	case cfg.expiryWarn <= 0:
@@ -303,6 +338,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 		apiOptions = append(apiOptions,
 			orderservice.WithAccounts(acc, orderservice.AccountsOptions{SecureCookies: cfg.secureCookies, MaxLifetime: cfg.sessionMax}),
 			orderservice.WithCatalog(store), orderservice.WithInventory(inv), orderservice.WithShifts(sh, cfg.requireShift), orderservice.WithStaff(stf, cfg.requireClockIn))
+		if cfg.openRegistration {
+			apiOptions = append(apiOptions, orderservice.WithOpenRegistration())
+		}
 	}
 	// The menu and the promotions: from the database when there is one, else from the files.
 	m, lowAt, promos, err := startCatalog(startCtx, cfg, store, logger)
@@ -322,7 +360,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, out, er
 	}
 	svc, err := orderservice.Open(startCtx, l, orderservice.Options{
 		Menu: m, Promos: promos, LowAt: lowAt, Location: cfg.location, Logger: logger,
-		CommandTimeout: cfg.commandTO, ReadBatch: cfg.readBatch, ExpiryWarning: cfg.expiryWarn,
+		CommandTimeout: cfg.commandTO, ReadBatch: cfg.readBatch, ExpiryWarning: cfg.expiryWarn, Loyalty: cfg.loyalty(),
 	})
 	if err != nil {
 		return err

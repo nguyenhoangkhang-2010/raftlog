@@ -636,3 +636,60 @@ func TestTheDatabaseKnowsTheSameRolesAsTheCode(t *testing.T) {
 		t.Fatal("the database accepted a kitchen worker with no station")
 	}
 }
+
+func TestAPersonWhoSignsUpGetsACustomerAccountAndNothingMore(t *testing.T) {
+	s, _ := newService(t)
+	u, err := s.Register(ctx, "  Linh.Tran  ", "Linh Trần", goodPassword, Client{IP: "203.0.113.9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.ID != "linh.tran" || u.DisplayName != "Linh Trần" || len(u.Roles) != 1 || u.Roles[0] != rbac.Customer || u.Station != "" || u.MustChangePassword || u.Disabled || u.CreatedBy != "linh.tran" {
+		t.Fatalf("user: %+v", u)
+	}
+	// the password is theirs: they sign in with it
+	if _, sess, err := s.Login(ctx, "linh.tran", goodPassword, Client{}); err != nil || sess.User.ID != "linh.tran" {
+		t.Fatalf("login: %v", err)
+	}
+	// the trail says that the person made the account, from where
+	events, err := s.Events(ctx, "linh.tran", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range events {
+		if e.Action == "user.register" && e.Actor == "linh.tran" && e.IP == "203.0.113.9" {
+			found = true
+		}
+		if e.Action == "user.create" {
+			t.Errorf("a registration was written as an account made by an administrator: %+v", e)
+		}
+	}
+	if !found {
+		t.Fatalf("no registration in the trail: %+v", events)
+	}
+}
+
+func TestRegisteringFollowsTheRulesOfEveryAccount(t *testing.T) {
+	s, _ := newService(t)
+	mk(t, s, "taken-name", "", rbac.Customer)
+	for name, c := range map[string]struct{ id, name, password string }{
+		"a login that is taken":          {"taken-name", "A", goodPassword},
+		"the same in capitals":           {"TAKEN-NAME", "A", goodPassword},
+		"a short login":                  {"ab", "A", goodPassword},
+		"a login with a space":           {"two words", "A", goodPassword},
+		"no name":                        {"newcomer", "  ", goodPassword},
+		"a name with a control":          {"newcomer", "A\x00B", goodPassword},
+		"a weak password":                {"newcomer", "A", "short"},
+		"a password with the login name": {"newcomer", "A", "newcomer-is-me-1"},
+	} {
+		if _, err := s.Register(ctx, c.id, c.name, c.password, Client{}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := s.Register(ctx, "taken-name", "A", goodPassword, Client{}); !errors.Is(err, ErrExists) {
+		t.Errorf("a taken login: %v", err)
+	}
+	if users, _ := s.ListUsers(ctx); len(users) != 1 {
+		t.Errorf("a refused registration left %d accounts", len(users))
+	}
+}

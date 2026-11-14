@@ -82,6 +82,9 @@ resets it on the Users screen, or this does).
 | `-timezone` | the venue's zone; prices by time of day follow its clock (`ORDERSERVICE_TIMEZONE`) | `Local` |
 | `-rebuild-reports` | throw away the reports at start and build them again from the whole log; needs `-database-url` | off |
 | `-require-shift` | refuse a payment in cash unless the cashier who takes it has a shift open; needs `-database-url` (`ORDERSERVICE_REQUIRE_SHIFT`) | off |
+| `-open-registration` | let a person make a customer's account of their own at the sign-in page; needs `-database-url` (`ORDERSERVICE_OPEN_REGISTRATION`) | off |
+| `-loyalty-earn-per`, `-loyalty-value` | the points program: the đồng paid that earn one point, and the đồng that one point takes off an order; both or neither (`ORDERSERVICE_LOYALTY_EARN_PER`, `ORDERSERVICE_LOYALTY_VALUE`) | off |
+| `-loyalty-max-share` | the percentage of an order, after its promotions, that points may pay for (`ORDERSERVICE_LOYALTY_MAX_SHARE`) | `50` |
 | `-require-clock-in` | refuse to open a cash shift for a person who has not clocked in; needs `-database-url` (`ORDERSERVICE_REQUIRE_CLOCK_IN`) | off |
 | `-public-board` | let anyone who can reach the service read the call board at `/board` without signing in, so that a screen in the shop can show it (`ORDERSERVICE_PUBLIC_BOARD`) | off |
 | `-expiry-warning` | how long before it expires a lot of goods is flagged on the warehouse screen (`ORDERSERVICE_EXPIRY_WARNING`) | `72h` |
@@ -164,7 +167,9 @@ answer or a timeout, does not do it twice.
 | `PUT /api/admin/menu`, `PUT /api/admin/promotions` | the same | `base_version`, `note`, `doc`. The document is checked as a file is; `400 invalid_document` with the message of the checks, or `409 stale` if `base_version` is no longer the latest |
 | `GET .../versions`, `GET .../versions/{n}`, `POST .../versions/{n}/restore` | the same | the history (who, when, a note), one version, and putting one back as a new version (`base_version` in the body) |
 | `PUT /api/admin/menu/items/{id}/image`, `DELETE ...` | `menu.manage` | the bytes of a JPEG or PNG (at most 1 MiB, sides of 64 to 4096 pixels); `400` if it is anything else. Not a new version of the menu |
-| `GET /api/auth` | anyone | `{"mode": "password"}` with accounts, `"token"` otherwise |
+| `GET /api/auth` | anyone | `{"mode": "password", "registration": true}` with accounts (and whether a person may sign up), `"token"` otherwise |
+| `POST /api/register` | anyone, when the venue turned registration on | `username`, `display_name`, `password`: makes an account with the customer role and nothing else (a role or a station in the request is refused), signs the person in. Limited to 5 an hour for each address; `403 registration_closed`, `409` for a login that is taken, `400 weak_password`, `429 rate_limited` |
+| `GET /api/points?customer=` | a customer, for their own points; staff who see all orders, for any customer's | whether the program is on, what earns a point and what a point is worth, the balance, what is held for orders not paid yet, what is available, what was earned and used in all, and the last 200 entries of the history |
 | `GET /api/me` | anyone signed in | your ID, name, roles, station, permissions, whether you must change your password, when the session ends |
 | `POST /api/login` | anyone | `username`, `password`; sets the cookie. `401 bad_credentials`, `429 locked` or `rate_limited` |
 | `POST /api/logout` | anyone signed in | ends the session and clears the cookie |
@@ -174,7 +179,7 @@ answer or a timeout, does not do it twice.
 | `POST /api/admin/users` | administrator | `id`, `display_name`, `roles`, `station`; the answer has the temporary password, once |
 | `PUT /api/admin/users/{id}` | administrator | `display_name`, `roles`, `station` |
 | `POST /api/admin/users/{id}/disable`, `enable`, `unlock`, `reset-password`, `revoke-sessions`; `GET .../sessions` | administrator | |
-| `POST /api/orders` | customer (for themselves), cashier (at the counter) | `items`, `codes`, and for the cashier an optional `customer` |
+| `POST /api/orders` | customer (for themselves), cashier (at the counter) | `items`, `codes`, for the customer an optional `points` to use (more than allowed is `409 points` with `max`), and for the cashier an optional `customer` that must be the login of an active customer (`400 no_customer`); a cashier cannot use points (`409 no_points`) |
 | `GET /api/orders?status=paid,preparing&station=drinks&limit=50` | staff: all; customer: their own | |
 | `GET /api/orders/{id}` | staff; the customer for their own | |
 | `GET /api/orders/{id}/events` | manager, admin | the audit trail: who did what, when |
@@ -225,7 +230,8 @@ first), `403 cross_site` (a request made by another site), `401 bad_credentials`
 `409` with `clocked_in` and `not_clocked_in` (the clock), `clock_in_first` (a till opened by someone who has not
 clocked in, when the venue asks for it), `drawer_open` (clocking out with a cash drawer open),
 `overlap` (a shift or an entry that overlaps another of the same person) and `cancelled` (a shift that was
-called off).
+called off). Customers add `409 points` (an order asked for more points than it may use, with `max`), `409 no_points` (points cannot be used
+here) and `400 no_customer` (the login named at the counter is not an active customer's), and `403 registration_closed`.
 
 ### A session
 
@@ -298,6 +304,7 @@ signs out. A browser holds one session per site: two people on one browser profi
 | Screen | Who | What it does |
 |---|---|---|
 | **Order** | customer; cashier (at the counter, with an optional customer ID) | the menu with today's prices, options and combos, a cart, a promotion code, then "Place order". The price shown while choosing is an estimate: the total and any offer come from the service when the order is placed |
+| **Points** | customer | what the customer can use now and what it is worth, what they own and what is set aside for orders not paid yet, what they earned and used in all, how the program works, and what happened to their points, newest first. On the sign-in page, when registration is open, a person can create an account and is signed in at once. In the cart, a customer with points chooses how many to use (or the most) and sees what they take off |
 | **My orders** | customer | their orders with a live status, a note when the order is ready, "Cancel" before payment and "Ask to cancel" after |
 | **Runner** | anyone who may hand over (cashier, runner) | the orders that are ready as large cards, the one that has waited longest first and red after 5 minutes, each with its customer and a "Hand over" button; beside them, what is still in the kitchen, with the progress of each station; a link to the call board |
 | **Call board** (`/board`, a page of its own, no sign-in with `-public-board`) | the customers waiting | for a screen in the shop: the numbers that are ready, large in orange, and those being made, smaller, live; a new number pulses, and a chime can be switched on (a browser allows sound only after a click); full screen; Vietnamese and English. It is the one screen that is not signed in, so it shows nothing but numbers |

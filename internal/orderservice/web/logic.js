@@ -119,7 +119,7 @@
   }
 
   // cartBody is the request that places the order.
-  function cartBody(commandID, lines, codes, customer) {
+  function cartBody(commandID, lines, codes, customer, points) {
     var body = { command_id: commandID, items: [] };
     lines.forEach(function (l) {
       var it = { quantity: l.quantity };
@@ -139,6 +139,7 @@
     });
     if (codes && codes.length) body.codes = codes;
     if (customer) body.customer = customer;
+    if (points > 0) body.points = points;
     return body;
   }
 
@@ -168,6 +169,10 @@
         break;
       case "invalid_document": msg = T("Not saved: the service checked the document and says:") + " " + (body.error || ""); break;
       case "no_shift": msg = T("Open a shift before taking cash."); break;
+      case "registration_closed": msg = T("Registration is closed. Ask the venue for an account."); break;
+      case "points": msg = T("This order can use at most {n} points.", { n: body.max || 0 }); break;
+      case "no_points": msg = T("Points cannot be used on this order."); break;
+      case "no_customer": msg = T("There is no customer with that login."); break;
       case "drawer_open": msg = T("Close your cash drawer before you clock out."); break;
       case "clock_in_first": msg = T("Clock in before you open a till."); break;
       case "not_clocked_in": msg = T("You are not clocked in."); break;
@@ -373,7 +378,7 @@
     var can = function (p) { return !!(perms && perms[p]); };
     var out = [];
     if (can("order.place")) out.push("order");
-    if (can("order.view_own") && !can("order.view_all")) out.push("myorders");
+    if (can("order.view_own") && !can("order.view_all")) out.push("myorders", "points");
     if (can("order.record_payment")) out.push("till");
     if (can("shift.open") || can("shift.close") || can("shift.review")) out.push("shift");
     if (can("clock.use") || can("staff.manage")) out.push("schedule");
@@ -397,6 +402,11 @@
     if (u.locked_until && Date.parse(u.locked_until) > (now === undefined ? Date.now() : now)) return { key: "locked", label: T("locked") };
     if (u.must_change_password) return { key: "change", label: T("must change password") };
     return { key: "active", label: T("active") };
+  }
+
+  // loginProblem checks a login name as typed, before it is sent: the rule of the accounts.
+  function loginProblem(id) {
+    return /^[a-z0-9][a-z0-9._-]{2,31}$/.test(id) ? "" : T("A login name is 3 to 32 letters, digits, dots, dashes or underscores, starting with a letter or digit.");
   }
 
   // passwordProblem checks a new password before it is sent, to say at once what the service
@@ -427,6 +437,7 @@
     "password.change": function (e) { return T("{subject} changed their password", e); },
     "password.wrong_current": function (e) { return T("{subject} gave a wrong current password", e); },
     "user.create": function (e) { return T("{actor} created {subject}", e); },
+    "user.register": function (e) { return T("{subject} signed up", e); },
     "user.update": function (e) { return T("{actor} changed {subject}", e); },
     "user.disable": function (e) { return T("{actor} disabled {subject}", e); },
     "user.enable": function (e) { return T("{actor} enabled {subject}", e); },
@@ -462,6 +473,6 @@
     cancelQueue: cancelQueue, refundPolicy: refundPolicy, workStarted: workStarted, summary: summary,
     ageText: ageText, agoText: agoText, statusLabel: statusLabel, cashChange: cashChange, quickAmounts: quickAmounts,
     newCommandID: newCommandID, parseStream: parseStream, screensFor: screensFor, readySince: readySince, ACTIVE: ACTIVE,
-    userState: userState, passwordProblem: passwordProblem, describeEvent: describeEvent, shortAgent: shortAgent,
+    userState: userState, loginProblem: loginProblem, passwordProblem: passwordProblem, describeEvent: describeEvent, shortAgent: shortAgent,
   };
 });

@@ -139,6 +139,10 @@ type Set struct {
 	promos []Promotion
 }
 
+// PointsID is the ID under which an order shows what points took off it. No promotion may have it, so that
+// a discount of points cannot be mistaken for one, or made up with a promotion.
+const PointsID ID = "points"
+
 // NewSet validates the promotions. IDs and codes must be unique.
 func NewSet(promos []Promotion) (*Set, error) {
 	ids := map[ID]bool{}
@@ -146,6 +150,9 @@ func NewSet(promos []Promotion) (*Set, error) {
 	for _, p := range promos {
 		if err := p.Validate(); err != nil {
 			return nil, fmt.Errorf("promotion %q: %w", p.ID, err)
+		}
+		if p.ID == PointsID {
+			return nil, fmt.Errorf("promotion %q: that ID is kept for the discount of points", p.ID)
 		}
 		if ids[p.ID] {
 			return nil, fmt.Errorf("promotion %q: duplicate ID", p.ID)

@@ -79,6 +79,8 @@ type Options struct {
 	ReadBatch int
 	// ExpiryWarning is how long before a lot expires the screens warn about it; 72 hours if zero.
 	ExpiryWarning time.Duration
+	// Loyalty is the points program; off if its settings are zero.
+	Loyalty Loyalty
 }
 
 // Service decides commands and keeps the state of the kitchen, built from the log.
@@ -98,6 +100,8 @@ type Service struct {
 	timeout time.Duration
 	// expiryWarn is how long before it expires a lot is flagged.
 	expiryWarn time.Duration
+	// loyalty is the points program.
+	loyalty Loyalty
 
 	ingredients map[stock.Ingredient]bool
 	// stale is set when a write to the log failed with an unknown outcome: before the next
@@ -204,6 +208,9 @@ func Open(ctx context.Context, l Log, o Options) (*Service, error) {
 	if o.Menu == nil || o.Promos == nil {
 		return nil, errors.New("orderservice: a menu and a set of promotions are needed")
 	}
+	if err := o.Loyalty.Validate(); err != nil {
+		return nil, err
+	}
 	st, err := NewState(o.Menu, o.Promos, o.LowAt)
 	if err != nil {
 		return nil, err
@@ -224,6 +231,7 @@ func Open(ctx context.Context, l Log, o Options) (*Service, error) {
 	if s.batch <= 0 {
 		s.batch = 500
 	}
+	s.loyalty = o.Loyalty
 	s.expiryWarn = o.ExpiryWarning
 	if s.expiryWarn <= 0 {
 		s.expiryWarn = 72 * time.Hour
@@ -437,6 +445,9 @@ type PlaceRequest struct {
 	// Customer is, for an order taken at the counter, the customer's ID if they have one.
 	// For an order from the app it is ignored: the customer is the person asking.
 	Customer string
+	// Points is how many of their points the customer uses on the order, 0 for none. Only a customer ordering
+	// from the app may use points.
+	Points int64
 }
 
 // Placed is an order that was taken, and the codes that were not used.
@@ -477,8 +488,19 @@ func (s *Service) Place(ctx context.Context, actor rbac.Actor, req PlaceRequest)
 	}
 	pricing := s.st.promos.Evaluate(lines, promo.Context{At: at, Codes: req.Codes, Customer: customer, Redeemed: s.st.Redeemed})
 
+	var points *order.PointsUse
+	if req.Points != 0 {
+		switch {
+		case req.Points < 0 || !s.loyalty.On() || channel != order.ChannelApp:
+			return Placed{}, ErrNoPoints
+		}
+		if limit := s.loyalty.MaxUsable(pricing.Total, s.st.AvailablePoints(customer)); req.Points > limit {
+			return Placed{}, &PointsLimitError{Max: limit}
+		}
+		points = &order.PointsUse{Used: req.Points, Value: s.loyalty.Value}
+	}
 	ev, err := order.Place(order.Meta{Cmd: req.Command, Actor: actor, At: at}, order.PlaceInput{
-		Order: id, Number: s.st.NextNumber(), Channel: channel, Customer: customer, Lines: lines, Pricing: pricing,
+		Order: id, Number: s.st.NextNumber(), Channel: channel, Customer: customer, Lines: lines, Pricing: pricing, Points: points,
 	})
 	if err != nil {
 		return Placed{}, err
@@ -537,6 +559,9 @@ func (s *Service) command(ctx context.Context, actor rbac.Actor, id order.ID, cm
 // is written, if the stock cannot cover them.
 func (s *Service) Pay(ctx context.Context, actor rbac.Actor, id order.ID, cmd string, in order.PayInput) (OrderView, error) {
 	return s.command(ctx, actor, id, cmd, func(o *order.Order, m order.Meta) (*order.Event, error) {
+		if o.Customer != "" {
+			in.PointsEarned = s.loyalty.Earned(o.Total) // what the payment earns, written into it
+		}
 		ev, err := o.Pay(m, in)
 		if err != nil || ev == nil {
 			return ev, err

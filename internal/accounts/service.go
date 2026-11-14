@@ -367,11 +367,25 @@ func (s *Service) CreateUser(ctx context.Context, by string, in NewUser, c Clien
 	if err != nil {
 		return User{}, "", err
 	}
-	u, err := s.create(ctx, by, in, temp, true, c)
+	u, err := s.create(ctx, by, "user.create", in, temp, true, c)
 	if err != nil {
 		return User{}, "", err
 	}
 	return u, temp, nil
+}
+
+// Register makes the account of a person who signs up by themselves, with the password they chose. The account
+// is always a customer's and nothing else: what the person asked for decides only the login name, the name and
+// the password. The trail says that the account was made by its own owner.
+func (s *Service) Register(ctx context.Context, id, displayName, password string, c Client) (User, error) {
+	in, err := validateNewUser(NewUser{ID: id, DisplayName: displayName, Roles: []rbac.Role{rbac.Customer}})
+	if err != nil {
+		return User{}, err
+	}
+	if err := CheckPassword(password, in.ID, in.DisplayName); err != nil {
+		return User{}, err
+	}
+	return s.create(ctx, in.ID, "user.register", in, password, false, c)
 }
 
 // CreateWithPassword creates an account with a password that someone chose, which must follow
@@ -384,10 +398,10 @@ func (s *Service) CreateWithPassword(ctx context.Context, by string, in NewUser,
 	if err := CheckPassword(password, in.ID, in.DisplayName); err != nil {
 		return User{}, err
 	}
-	return s.create(ctx, by, in, password, false, Client{})
+	return s.create(ctx, by, "user.create", in, password, false, Client{})
 }
 
-func (s *Service) create(ctx context.Context, by string, in NewUser, password string, must bool, c Client) (User, error) {
+func (s *Service) create(ctx context.Context, by, action string, in NewUser, password string, must bool, c Client) (User, error) {
 	in, err := validateNewUser(in)
 	if err != nil {
 		return User{}, err
@@ -411,7 +425,7 @@ func (s *Service) create(ctx context.Context, by string, in NewUser, password st
 	if err != nil {
 		return User{}, err
 	}
-	if err := s.record(ctx, tx, by, "user.create", u.ID, map[string]any{"roles": rolesToStrings(u.Roles), "station": u.Station}, c.IP); err != nil {
+	if err := s.record(ctx, tx, by, action, u.ID, map[string]any{"roles": rolesToStrings(u.Roles), "station": u.Station}, c.IP); err != nil {
 		return User{}, err
 	}
 	return u, tx.Commit(ctx)

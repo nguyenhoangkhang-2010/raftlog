@@ -50,6 +50,10 @@ func TestSettingsAreChecked(t *testing.T) {
 		"an argument":                      append([]string{"stray"}, good...),
 		"an empty topic":                   append([]string{"-topic", ""}, good...),
 		"a clock-in that needs a database": append([]string{"-require-clock-in"}, good...),
+		"registration needs a database":    append([]string{"-open-registration"}, good...),
+		"a point that earns but is worth nothing": append([]string{"-loyalty-earn-per", "10000"}, good...),
+		"a point worth money that nothing earns":  append([]string{"-loyalty-value", "100"}, good...),
+		"a share over 100":                        append([]string{"-loyalty-earn-per", "10000", "-loyalty-value", "100", "-loyalty-max-share", "101"}, good...),
 	} {
 		if _, err := parseConfig(args, env(nil), io.Discard); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -63,6 +67,21 @@ func TestSettingsAreChecked(t *testing.T) {
 	cfg, err = parseConfig([]string{"-addr", "a:1", "-menu", menu, "-database-url", "postgres://x"}, env(map[string]string{envClockIn: "true"}), io.Discard)
 	if err != nil || !cfg.requireClockIn {
 		t.Fatalf("the variable stands in for the flag: %v %+v", err, cfg)
+	}
+	// The points program and the registration are set by flags or variables, and are off otherwise.
+	cfg, err = parseConfig([]string{"-addr", "a:1", "-menu", menu, "-database-url", "postgres://x", "-open-registration", "-loyalty-earn-per", "10000", "-loyalty-value", "100"}, env(nil), io.Discard)
+	if err != nil || !cfg.openRegistration || !cfg.loyalty().On() || cfg.loyalty().EarnPer != 10000 || cfg.loyalty().Value != 100 {
+		t.Fatalf("points and registration: %v %+v", err, cfg)
+	}
+	cfg, err = parseConfig([]string{"-addr", "a:1", "-menu", menu, "-database-url", "postgres://x"}, env(map[string]string{envEarnPer: "5000", envPointVal: "50", envMaxShare: "30", envRegister: "true"}), io.Discard)
+	if err != nil || !cfg.openRegistration || cfg.loyalty().EarnPer != 5000 || cfg.loyalty().Value != 50 || cfg.loyalty().MaxSharePercent != 30 {
+		t.Fatalf("the variables: %v %+v", err, cfg)
+	}
+	if _, err := parseConfig([]string{"-addr", "a:1", "-menu", menu, "-database-url", "postgres://x"}, env(map[string]string{envEarnPer: "many"}), io.Discard); err == nil {
+		t.Error("a variable that is not a number was accepted")
+	}
+	if cfg, _ = parseConfig(good, env(nil), io.Discard); cfg.loyalty().On() || cfg.openRegistration {
+		t.Error("the program or the registration is on with nothing asked for")
 	}
 	// A variable stands in for a flag, and a flag wins.
 	cfg, err = parseConfig([]string{"-topic", "from-flag"}, env(map[string]string{
